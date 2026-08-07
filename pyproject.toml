@@ -1,0 +1,39 @@
+[project]
+name = "cycles-volume-override"
+version = "0.1.0"
+description = "Blender add-on: per-object render-engine override (Cycles + external volume renderer), composited via depth-clipped Alpha Over."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+# Pinned to match the pip-installable `bpy` dev/test dependency below (bpy
+# wheels track a specific CPython ABI per release). This constrains only the
+# *dev/test* venv created by `uv sync` here -- the add-on's actual runtime is
+# whatever Python your real Blender embeds; Blender never reads this file.
+dependencies = [
+    "numpy>=1.24",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    # PyPI-distributed Blender-as-a-Python-module, used ONLY for:
+    #   - the empirical Z-pass verification script (scripts/verify_zpass.py)
+    #   - unit tests that need real bpy datatypes (Image, Scene, etc.)
+    # The add-on itself is loaded by *real* Blender at runtime, not by this
+    # package. See README "Development & testing" for why the two are
+    # different bpy's and how to point tests at your own Blender instead.
+    "bpy==5.2.0",
+    "openexr>=3.4.13",
+]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
