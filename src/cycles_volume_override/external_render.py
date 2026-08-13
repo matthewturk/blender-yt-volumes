@@ -18,6 +18,12 @@ boundary behind `render_volume()` (rather than, say, having callers reach
 into a subprocess or socket themselves) is what makes swapping to a
 subprocess or network call later a one-function change -- see README
 "Swappable transport".
+
+Dataset identity + change tracking (`DatasetParams`, `VersionInfo` below)
+crosses this boundary too, separately from the per-frame shading knobs in
+`custom_params` -- see change_tracking.py and README "Dataset / change
+tracking" for why they're split and how to use the hash vs. the convenience
+`changed` flag.
 """
 
 from dataclasses import dataclass, field
@@ -158,12 +164,122 @@ class DepthBuffer:
 
 
 @dataclass
+class VersionInfo:
+    """A content hash + a Blender-computed "changed since I last built a
+    request for this object" convenience flag. Used for BOTH
+    `VolumeObjectParams.params_version` (custom_params) and
+    `DatasetParams.version` (the dataset itself) -- two independent signals,
+    because they have very different costs on the renderer's side: shading
+    knobs are cheap to re-apply every frame, a multi-GB scientific dataset is
+    not something you want to reload/reparse unless it actually changed.
+
+    `hash` is the transport-safe source of truth for caching: it's a plain
+    content hash (see change_tracking.py), stable across process restarts
+    and independent of Blender's own bookkeeping. Cache your loaded/parsed
+    data keyed by (`DatasetParams.dataset_id`, `hash`); if the incoming hash
+    matches what you have cached, reuse it -- this works correctly even if
+    your renderer process restarted, the transport changed (in-process ->
+    subprocess -> network), or Blender's own change-tracking state was
+    cleared for any reason. THIS is what "did it change" should really mean.
+
+    `changed` is a convenience on top of that, computed by Blender comparing
+    this call's hash to the last hash IT sent for this object
+    (change_tracking.py's in-memory record). It is NOT authoritative:
+      - Resets on add-on reload / Blender restart -- the first call after
+        either always reports `changed=True` regardless of whether anything
+        actually changed, because Blender has no memory of what it last sent.
+      - Only reflects whether BLENDER's inputs changed -- says nothing about
+        whether your OWN cache is still warm (e.g. your subprocess restarted
+        independently of Blender).
+    Treat `changed=False` as a reliable fast-path ("definitely nothing to
+    do"); do NOT treat `changed=True` as proof you need to redo work --
+    always fall back to comparing `hash` against your own cache to be sure.
+    """
+
+    hash: str
+    changed: bool
+
+
+@dataclass
+class DatasetParams:
+    """Identity of the actual (potentially large/expensive-to-load) dataset
+    this volume object represents -- deliberately generic, NOT tied to any
+    one file format. The end goal is arbitrary scientific datasets (e.g. a
+    yt-loadable simulation output), with Blender-native VDB `Volume` objects
+    as just one possible source Blender happens to be able to introspect
+    automatically -- see `dataset_kind`.
+
+    `dataset_path`/`dataset_kind` mirror `properties.py`'s
+    `dataset_path`/`dataset_kind` fields directly (whatever the user typed
+    there) UNLESS the flagged object is a Blender `Volume` object, in which
+    case `operators.build_dataset_params()` overrides them with values read
+    from `obj.data` (native VDB filepath/sequence info) instead -- Blender
+    already knows that path itself, no need to duplicate it by hand. Either
+    way, any loader-specific arguments beyond a path (a yt field name, an
+    HDF5 dataset key, a unit system) belong in
+    `VolumeObjectParams.custom_params`, not here.
+    """
+
+    dataset_id: str  # stable cache key -- properties.ensure_dataset_uuid(obj), NOT obj.name (survives renames)
+    dataset_kind: str  # free-form: "yt" | "vdb" | "hdf5" | "" (unset) | anything your loaders recognize
+    dataset_path: str | None  # absolute path/URI; None if unset
+
+    # --- Blender frame -> dataset time mapping ---
+    # `requested_time` is Blender's resolved answer to "what point in the
+    # dataset's own timeline does the current frame correspond to" --
+    # deliberately NOT snapped to an actual timestep/snapshot. Blender
+    # doesn't open the dataset, so it has no way to know what timesteps
+    # actually exist; snapping `requested_time` to the nearest real one is
+    # the renderer's job. `mapping_policy` records which
+    # properties.py policy produced it (DIRECT/AFFINE/MANUAL -- see
+    # operators.resolve_requested_time()), for introspection/debugging, not
+    # something the renderer needs to branch on. `time_units` says what the
+    # number actually means (a plain frame index vs. seconds vs. redshift
+    # vs. something dataset-specific) -- same "be explicit, don't assume"
+    # discipline as `DepthBuffer.units`.
+    #
+    # Deliberately EXCLUDED from `version`'s hash below, even though it's
+    # right here next to dataset_path/dataset_kind: it changes essentially
+    # every frame by design (that's the whole point), so hashing it in would
+    # make `version.changed` report True every single frame regardless of
+    # whether the SNAPPED result actually differs -- exactly the
+    # over-invalidation `params_version`/`dataset.version`'s split was meant
+    # to avoid in the first place. The renderer, which knows the real
+    # timesteps, is better positioned to decide for itself whether two
+    # different `requested_time` values snap to the same timestep and skip
+    # reloading -- that decision needs dataset knowledge Blender doesn't have.
+    requested_time: float
+    time_units: str  # "FRAME_INDEX" | "SECONDS" | "REDSHIFT" | "CUSTOM"
+    mapping_policy: str  # "DIRECT" | "AFFINE" | "MANUAL" -- see properties.py
+
+    # Populated only when the flagged object is a Blender `Volume` object
+    # (obj.type == "VOLUME") wrapping a VDB (sequence); None/False otherwise.
+    # NOT independently empirically verified the way the Z-pass/camera
+    # projection findings were -- `resolved_frame` in particular replicates
+    # Blender's documented start/duration/offset/clip-extend-repeat-pingpong
+    # semantics from reading the docs, not from a round-trip render check.
+    # Re-verify against a real VDB sequence before trusting it exactly.
+    is_blender_volume_sequence: bool
+    sequence_frame_start: int | None
+    sequence_frame_duration: int | None
+    sequence_frame_offset: int | None
+    sequence_mode: str | None  # "CLIP" | "EXTEND" | "REPEAT" | "PING_PONG"
+    resolved_sequence_frame: int | None  # best-effort; see caveat above
+    grid_names: list  # metadata only (names Blender reports for the loaded frame), NOT voxel data
+
+    version: VersionInfo  # see VersionInfo docstring -- use .hash as your cache key, not .changed alone
+
+
+@dataclass
 class VolumeObjectParams:
     matrix_world: list  # 4x4 nested list of float, object-to-world
     bounding_box_local: list  # 8 corners, object-local space
     custom_params: dict  # passthrough from the PropertyGroup:
     #                       density scale, absorption/scattering coeffs,
-    #                       VDB/grid file path, color, etc.
+    #                       color, extra key/value pairs, etc. -- NOT
+    #                       dataset identity, see `dataset` below.
+    params_version: VersionInfo  # change tracking for custom_params specifically
+    dataset: DatasetParams  # the (possibly large) dataset this object represents
 
 
 @dataclass

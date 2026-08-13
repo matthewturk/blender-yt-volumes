@@ -43,23 +43,31 @@ import tempfile
 
 import bpy
 
-from . import compositor_build, external_render, properties, scene_sync
+from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync
 
 PASS2_ENGINE = "BLENDER_WORKBENCH"
+
+# Keyed by VolumeOverridePreferences.renderer_mode -- see that enum's items
+# for what each option is for.
+RENDERER_MODES = {
+    "STUB": external_render.render_volume,
+    "DEBUG_FLAT": external_render.debug_fake_render_volume,
+    "SAMPLE_CONSTANT": sample_renderers.constant_density_renderer,
+}
 
 
 class VolumeOverridePreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
-    debug_fake_volume_renderer: bpy.props.BoolProperty(
-        name="Use debug fake volume renderer",
-        description=(
-            "render_volume() is a stub (NotImplementedError) until the real "
-            "external renderer is wired in. Enable this to exercise the "
-            "rest of the pipeline (depth clipping, two-pass compositing) "
-            "with a flat placeholder color instead of crashing"
-        ),
-        default=False,
+    renderer_mode: bpy.props.EnumProperty(
+        name="Renderer",
+        description="Which render_volume() implementation the two-pass pipeline actually calls",
+        items=[
+            ("STUB", "Real renderer (stub)", "external_render.render_volume() -- raises NotImplementedError until wired in"),
+            ("DEBUG_FLAT", "Debug: flat placeholder", "A flat semi-transparent color filling the whole frame, ignoring geometry -- see external_render.debug_fake_render_volume()"),
+            ("SAMPLE_CONSTANT", "Sample: depth x constant", "A real (if non-physical) demo: ray/volume-box intersection, depth-clipped, output = path length x a constant -- see sample_renderers.constant_density_renderer()"),
+        ],
+        default="STUB",
     )
     work_dir: bpy.props.StringProperty(
         name="Working Directory",
@@ -69,8 +77,9 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
     )
 
     def draw(self, context):
-        self.layout.prop(self, "debug_fake_volume_renderer")
+        self.layout.prop(self, "renderer_mode")
         self.layout.prop(self, "work_dir")
+        self.layout.operator("volume_override.reset_change_tracking")
 
 
 def _get_prefs(context):
@@ -189,11 +198,143 @@ def build_dof_params(camera_obj, cam):
 
 
 def build_volume_params(obj):
+    custom_params = obj.volume_override.to_custom_params()
+    cache_key = properties.ensure_dataset_uuid(obj)
     return external_render.VolumeObjectParams(
         matrix_world=_matrix_to_list(obj.matrix_world),
         bounding_box_local=[list(corner) for corner in obj.bound_box],
-        custom_params=obj.volume_override.to_custom_params(),
+        custom_params=custom_params,
+        params_version=change_tracking.version_for(cache_key, "params", custom_params),
+        dataset=build_dataset_params(obj, cache_key),
     )
+
+
+def _safe_mtime(filepath):
+    return os.path.getmtime(filepath) if filepath and os.path.exists(filepath) else None
+
+
+def resolve_sequence_frame(frame_start, frame_duration, frame_offset, sequence_mode, scene_frame):
+    """Best-effort replica of Blender's Volume-sequence frame remapping
+    (start/duration/offset + clip/extend/repeat/ping-pong), used to populate
+    `DatasetParams.resolved_sequence_frame`.
+
+    NOT independently empirically verified against Blender's actual internal
+    resolution the way the Z-pass/camera-projection findings were -- this
+    follows the documented semantics of frame_start/frame_duration/
+    frame_offset/sequence_mode, but hasn't been checked against a real VDB
+    sequence's actual per-frame file selection. Re-verify (same marker-style
+    technique used elsewhere in this repo, adapted: render a sequence with
+    known frame contents and confirm which frame shows at which scene frame)
+    before trusting the exact number for anything precision-sensitive.
+    """
+    if not frame_duration:
+        return None
+    local = scene_frame - frame_start + frame_offset
+    n = frame_duration
+    if sequence_mode == "CLIP":
+        return local if 0 <= local < n else None
+    if sequence_mode == "EXTEND":
+        return max(0, min(n - 1, local))
+    if sequence_mode == "REPEAT":
+        return local % n
+    if sequence_mode == "PING_PONG":
+        period = 2 * n
+        local = local % period
+        return local if local < n else period - 1 - local
+    return local
+
+
+def build_dataset_params(obj, cache_key):
+    """Dataset identity for `obj`, generic-first (see external_render.py's
+    `DatasetParams` docstring): primarily whatever the user typed into
+    `properties.py`'s `dataset_path`/`dataset_kind` fields, which works for
+    ANY dataset your renderer's loaders understand (a yt-loadable simulation
+    output, an HDF5 file, ...) regardless of what kind of Blender object is
+    carrying the flag.
+
+    If `obj` happens to be a Blender `Volume` object (native VDB support),
+    override path/sequence fields with what Blender itself already knows
+    about it instead of trusting the user to duplicate that by hand.
+    """
+    props = obj.volume_override
+    dataset_path = bpy.path.abspath(props.dataset_path) if props.dataset_path else None
+    dataset_kind = props.dataset_kind
+    is_sequence = False
+    frame_start = frame_duration = frame_offset = None
+    sequence_mode = None
+    resolved_frame = None
+    grid_names = []
+
+    if obj.type == "VOLUME":
+        vol = obj.data
+        if vol.filepath:
+            dataset_path = bpy.path.abspath(vol.filepath)
+            dataset_kind = dataset_kind or "vdb"
+        is_sequence = vol.is_sequence
+        grid_names = [g.name for g in vol.grids]
+        if is_sequence:
+            frame_start, frame_duration, frame_offset = vol.frame_start, vol.frame_duration, vol.frame_offset
+            sequence_mode = vol.sequence_mode
+            resolved_frame = resolve_sequence_frame(
+                frame_start, frame_duration, frame_offset, sequence_mode,
+                bpy.context.scene.frame_current,
+            )
+
+    # NOTE: `resolved_frame` (and `requested_time` below) are deliberately
+    # NOT part of `identity` -- they change every frame by design, and
+    # hashing them in would make `version.changed` report True every frame
+    # regardless of whether the renderer would actually need to reload
+    # anything. `identity` covers only what's genuinely expensive to change:
+    # which dataset this object points to, not which moment of it.
+    identity = {
+        "dataset_path": dataset_path,
+        "dataset_kind": dataset_kind,
+        "mtime": _safe_mtime(dataset_path),
+        "is_sequence": is_sequence,
+    }
+    return external_render.DatasetParams(
+        dataset_id=cache_key,
+        dataset_kind=dataset_kind,
+        dataset_path=dataset_path,
+        requested_time=resolve_requested_time(obj),
+        time_units=props.time_units,
+        mapping_policy=props.mapping_policy,
+        is_blender_volume_sequence=is_sequence,
+        sequence_frame_start=frame_start,
+        sequence_frame_duration=frame_duration,
+        sequence_frame_offset=frame_offset,
+        sequence_mode=sequence_mode,
+        resolved_sequence_frame=resolved_frame,
+        grid_names=grid_names,
+        version=change_tracking.version_for(cache_key, "dataset", identity),
+    )
+
+
+def resolve_requested_time(obj):
+    """DIRECT/AFFINE/MANUAL policy resolution -- see properties.py's
+    `mapping_policy` field and README "Dataset / change tracking" -> "Time
+    mapping" for the full design discussion (in particular, why this is a
+    plain Python function and not a Blender Driver: a driver alone can
+    produce this same scalar, but has no way to know what timesteps the
+    dataset actually has -- that snapping step still has to happen
+    somewhere, and it happens on the renderer side, not here).
+
+    MANUAL reads `manual_time` directly -- it doesn't care whether that
+    property got its value from a plain keyframe or a Driver, both work
+    identically from this function's point of view (it just reads the
+    already-evaluated property; by the time this runs, the depsgraph has
+    already been updated for this frame, same requirement `matrix_world`
+    already relies on elsewhere in this module).
+    """
+    props = obj.volume_override
+    frame = bpy.context.scene.frame_current
+    if props.mapping_policy == "DIRECT":
+        return float(frame)
+    if props.mapping_policy == "AFFINE":
+        return frame * props.time_scale + props.time_offset
+    if props.mapping_policy == "MANUAL":
+        return props.manual_time
+    raise ValueError(f"unknown mapping_policy {props.mapping_policy!r}")
 
 
 def build_frame_params(scene):
@@ -317,11 +458,7 @@ def render_current_frame(context):
         frame_params = build_frame_params(scene)
 
         prefs = _get_prefs(context)
-        render_fn = (
-            external_render.debug_fake_render_volume
-            if prefs.debug_fake_volume_renderer
-            else external_render.render_volume
-        )
+        render_fn = RENDERER_MODES[prefs.renderer_mode]
 
         volume_layers = []
         for obj in _sorted_far_to_near(scene, flagged):
@@ -418,9 +555,33 @@ def draw_render_menu(self, context):
     ).animation = True
 
 
+class VOLUMEOVERRIDE_OT_reset_change_tracking(bpy.types.Operator):
+    """Force every flagged object's next RenderRequest to report
+    params_version.changed / dataset.version.changed = True, regardless of
+    whether anything actually changed. Use this when you know the
+    renderer's own cache was invalidated independently of Blender (e.g. you
+    restarted a subprocess renderer, or manually cleared its cache) and want
+    Blender's convenience flag to stop reporting False for things it thinks
+    are unchanged but the renderer no longer has cached.
+
+    Does NOT affect `.hash` -- that's a pure content hash of the current
+    state either way. Only resets the "last hash I sent" bookkeeping this
+    flag is compared against.
+    """
+
+    bl_idname = "volume_override.reset_change_tracking"
+    bl_label = "Reset Change Tracking"
+
+    def execute(self, context):
+        change_tracking.reset()
+        self.report({"INFO"}, "Change tracking reset -- next render reports everything as changed")
+        return {"FINISHED"}
+
+
 CLASSES = (
     VolumeOverridePreferences,
     VOLUMEOVERRIDE_OT_render,
+    VOLUMEOVERRIDE_OT_reset_change_tracking,
 )
 
 
@@ -428,6 +589,7 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_render.append(draw_render_menu)
+    change_tracking.reset()  # fresh registration -- see change_tracking.reset()'s docstring
 
 
 def unregister():

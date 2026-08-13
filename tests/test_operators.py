@@ -4,7 +4,7 @@ import bpy
 import pytest
 from mathutils import Vector
 
-from cycles_volume_override import operators
+from cycles_volume_override import change_tracking, operators, properties
 
 
 def _fake_obj(name, location):
@@ -88,3 +88,162 @@ def test_build_dof_params_resolves_focus_object_to_euclidean_distance(clean_scen
 
     dof = operators.build_dof_params(cam_obj, cam_obj.data)
     assert dof.focus_distance_m == pytest.approx(5.0)
+
+
+# --- Dataset / change tracking ----------------------------------------------
+
+@pytest.fixture
+def clean_scene_with_props():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    properties.register()
+    change_tracking.reset()
+    yield bpy.context.scene
+    properties.unregister()
+
+
+def test_build_dataset_params_generic_path_not_a_volume_object(clean_scene_with_props):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    obj.volume_override.dataset_path = "/data/sim_001"
+    obj.volume_override.dataset_kind = "yt"
+
+    cache_key = properties.ensure_dataset_uuid(obj)
+    dataset = operators.build_dataset_params(obj, cache_key)
+
+    assert dataset.dataset_kind == "yt"
+    assert dataset.dataset_path.endswith("sim_001")
+    assert dataset.is_blender_volume_sequence is False
+    assert dataset.dataset_id == cache_key
+    assert dataset.version.changed is True  # first time seen
+
+
+def test_build_dataset_params_repeat_call_same_value_reports_unchanged(clean_scene_with_props):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    obj.volume_override.dataset_path = "/data/sim_001"
+    cache_key = properties.ensure_dataset_uuid(obj)
+
+    operators.build_dataset_params(obj, cache_key)
+    second = operators.build_dataset_params(obj, cache_key)
+    assert second.version.changed is False
+
+
+def test_build_dataset_params_path_change_reports_changed(clean_scene_with_props):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    obj.volume_override.dataset_path = "/data/sim_001"
+    cache_key = properties.ensure_dataset_uuid(obj)
+
+    operators.build_dataset_params(obj, cache_key)
+    obj.volume_override.dataset_path = "/data/sim_002"
+    second = operators.build_dataset_params(obj, cache_key)
+    assert second.version.changed is True
+
+
+def test_build_dataset_params_volume_object_overrides_path_from_blender_data(clean_scene_with_props):
+    vol_data = bpy.data.volumes.new("V")
+    vol_data.filepath = "/data/smoke.vdb"
+    obj = bpy.data.objects.new("VolObj", vol_data)
+    clean_scene_with_props.collection.objects.link(obj)
+    obj.volume_override.is_volume_override = True
+    obj.volume_override.dataset_path = "this should be overridden"
+
+    cache_key = properties.ensure_dataset_uuid(obj)
+    dataset = operators.build_dataset_params(obj, cache_key)
+
+    assert dataset.dataset_path.endswith("smoke.vdb")
+    assert dataset.dataset_kind == "vdb"
+
+
+def test_build_volume_params_dataset_and_params_version_are_independent(clean_scene_with_props):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    obj.volume_override.dataset_path = "/data/sim_001"
+    obj.volume_override.density_scale = 1.0
+
+    operators.build_volume_params(obj)  # first call, establishes history
+
+    obj.volume_override.density_scale = 2.0  # cheap param changes, dataset doesn't
+    second = operators.build_volume_params(obj)
+    assert second.params_version.changed is True
+    assert second.dataset.version.changed is False
+
+
+@pytest.mark.parametrize(
+    "sequence_mode,scene_frame,expected",
+    [
+        ("CLIP", 5, 5),
+        ("CLIP", 20, None),  # past frame_duration, no wrap -> no data
+        ("CLIP", -3, None),  # before frame_start -> no data
+        ("EXTEND", 20, 9),  # clamps to last frame (duration=10 -> indices 0..9)
+        ("EXTEND", -3, 0),  # clamps to first frame
+        ("REPEAT", 12, 2),  # wraps around
+        ("PING_PONG", 12, 7),  # bounces back: 10,9,8,7 for local=10,11,12... see below
+    ],
+)
+def test_resolve_sequence_frame(sequence_mode, scene_frame, expected):
+    # frame_start=0, frame_duration=10, frame_offset=0
+    result = operators.resolve_sequence_frame(0, 10, 0, sequence_mode, scene_frame)
+    assert result == expected
+
+
+def test_resolve_sequence_frame_no_duration_returns_none():
+    assert operators.resolve_sequence_frame(0, 0, 0, "CLIP", 5) is None
+
+
+# --- Time mapping (requested_time) ------------------------------------------
+
+def _flagged_cube(scene):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    return obj
+
+
+def test_resolve_requested_time_direct_matches_scene_frame(clean_scene_with_props):
+    obj = _flagged_cube(clean_scene_with_props)
+    obj.volume_override.mapping_policy = "DIRECT"
+    clean_scene_with_props.frame_set(7)
+    assert operators.resolve_requested_time(obj) == 7.0
+
+
+def test_resolve_requested_time_affine_applies_scale_and_offset(clean_scene_with_props):
+    obj = _flagged_cube(clean_scene_with_props)
+    obj.volume_override.mapping_policy = "AFFINE"
+    obj.volume_override.time_scale = 2.0
+    obj.volume_override.time_offset = 100.0
+    clean_scene_with_props.frame_set(7)
+    assert operators.resolve_requested_time(obj) == pytest.approx(114.0)  # 7*2+100
+
+
+def test_resolve_requested_time_manual_reads_property_directly(clean_scene_with_props):
+    obj = _flagged_cube(clean_scene_with_props)
+    obj.volume_override.mapping_policy = "MANUAL"
+    obj.volume_override.manual_time = 42.5
+    clean_scene_with_props.frame_set(999)  # irrelevant under MANUAL
+    assert operators.resolve_requested_time(obj) == pytest.approx(42.5)
+
+
+def test_requested_time_change_does_not_flip_dataset_version_changed(clean_scene_with_props):
+    """The whole point of excluding requested_time from the identity hash:
+    advancing frames (the normal case) must NOT look like "the dataset
+    changed" to the renderer, or every frame would force a reload.
+    """
+    obj = _flagged_cube(clean_scene_with_props)
+    obj.volume_override.dataset_path = "/data/sim_001"
+    obj.volume_override.mapping_policy = "DIRECT"
+    cache_key = properties.ensure_dataset_uuid(obj)
+
+    clean_scene_with_props.frame_set(1)
+    first = operators.build_dataset_params(obj, cache_key)
+    assert first.requested_time == 1.0
+
+    clean_scene_with_props.frame_set(2)
+    second = operators.build_dataset_params(obj, cache_key)
+    assert second.requested_time == 2.0
+    assert second.version.changed is False  # only requested_time moved
+    assert second.version.hash == first.version.hash

@@ -122,6 +122,23 @@ def _make_minimal_request(resolution=(2, 2)):
         matrix_world=IDENTITY_4X4,
         bounding_box_local=[[0, 0, 0]] * 8,
         custom_params={"color": (0.4, 0.6, 1.0), "density_scale": 1.0},
+        params_version=er.VersionInfo(hash="deadbeef", changed=True),
+        dataset=er.DatasetParams(
+            dataset_id="test-obj-uuid",
+            dataset_kind="",
+            dataset_path=None,
+            requested_time=1.0,
+            time_units="FRAME_INDEX",
+            mapping_policy="DIRECT",
+            is_blender_volume_sequence=False,
+            sequence_frame_start=None,
+            sequence_frame_duration=None,
+            sequence_frame_offset=None,
+            sequence_mode=None,
+            resolved_sequence_frame=None,
+            grid_names=[],
+            version=er.VersionInfo(hash="cafef00d", changed=True),
+        ),
     )
     frame = er.FrameParams(frame_number=1, scene_time_seconds=0.0)
     return er.RenderRequest(camera=cam, depth=depth, volume=volume, frame=frame)

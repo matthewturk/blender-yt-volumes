@@ -24,7 +24,7 @@ bl_info = {
     "category": "Render",
 }
 
-from . import compositor_build, external_render, handlers, operators, properties, scene_sync  # noqa: E402,F401
+from . import change_tracking, compositor_build, external_render, handlers, operators, properties, sample_renderers, scene_sync  # noqa: E402,F401
 
 
 def register():

@@ -10,12 +10,14 @@ animation render. Final + animation render only (see "Out of scope").
 ```
 src/cycles_volume_override/
     __init__.py          bl_info, register()/unregister()
-    properties.py         PropertyGroup: flag + custom_params fields, UI panel
+    properties.py         PropertyGroup: flag + custom_params + dataset_path/kind fields, UI panel
     scene_sync.py          hidden sync Scene, main-scene visibility toggle
     external_render.py     the frozen interface contract + stubbed render_volume()
+    change_tracking.py      content-hash bookkeeping behind VersionInfo -- see "Dataset / change tracking"
     compositor_build.py    programmatic compositor node graph (2 graphs: pass 1 capture, pass 2 composite)
     operators.py            two-pass render orchestration, RenderRequest building
     handlers.py             render_cancel safety net, F12/Ctrl+F12 keymap takeover
+    sample_renderers.py      worked-example render_volume() -- rays/depth/position wired up, no real shading
 scripts/verify_zpass.py               empirical Z-pass/row-order verification tool
 scripts/verify_camera_projection.py    empirical PERSP/ORTHO projection_matrix round-trip check
 scripts/verify_pano_equirect.py        empirical equirectangular panorama mapping check
@@ -34,9 +36,13 @@ installs for itself -- Blender doesn't consult `pyproject.toml`. Either:
 
 Then enable **Cycles + External Volume Renderer Override** in Preferences.
 Its own preferences panel has:
-- **Use debug fake volume renderer** -- `render_volume()` is a stub
-  (`NotImplementedError`) until you wire in the real renderer; check this to
-  exercise the whole pipeline with a flat placeholder volume color instead.
+- **Renderer** -- which `render_volume()`-shaped function the pipeline
+  actually calls, three options: `STUB` (the real, not-yet-implemented
+  renderer -- raises `NotImplementedError`, the honest default), `DEBUG_FLAT`
+  (a flat placeholder color ignoring all geometry -- `external_render.
+  debug_fake_render_volume`), `SAMPLE_CONSTANT` (a real if non-physical
+  worked example -- `sample_renderers.constant_density_renderer`, see
+  "Sample renderer" below).
 - **Working Directory** -- where per-frame EXR intermediates go (default:
   system temp dir).
 
@@ -46,6 +52,34 @@ Everything lives behind `external_render.render_volume(request) -> result`.
 Replace its body. Don't change the dataclass shapes without also updating
 whatever's on the other side of that boundary -- they're the whole point of
 this file. See "Swappable transport" below for why it's structured this way.
+
+## Sample renderer
+
+`sample_renderers.constant_density_renderer()` is a worked example, not a
+stand-in for the real renderer: it exercises the *entire* `RenderRequest`
+contract -- generates real per-pixel rays from `CameraParams`, intersects
+them against the volume's actual world-space bounding box (from
+`VolumeObjectParams`), clips the resulting path length at the solid surface
+(`DepthBuffer`, respecting its `depth_convention`/`row_order` rather than
+assuming) -- but the "shading" is deliberately as dumb as the brief asked
+for: **`output = clipped path length x density_scale`**, no density
+sampling, no marching, no scattering. It's there so there's something
+visibly volume-shaped and *correctly occluded* to look at, and so the ray/
+depth/position wiring is demonstrably exercised, before the real renderer
+exists.
+
+Pure numpy, deliberately importing nothing from `bpy` -- it only knows what
+`RenderRequest` tells it, which is also why it's unit-testable
+(`tests/test_sample_renderers.py`) without any Blender fixture for the
+PANO/equirectangular path, and with only a thin bpy fixture for PERSP/ORTHO
+(just to get a real, verified `projection_matrix` -- see "Camera projection").
+
+Supports PERSP/ORTHO and PANO-equirectangular (the two camera paths with
+empirically-confirmed formulas); any other panorama sub-type raises
+`NotImplementedError` rather than silently rendering something wrong.
+Select it via the **Renderer** preference (`SAMPLE_CONSTANT`) to see it run
+through the real two-pass pipeline, or call it directly on a hand-built
+`RenderRequest` for a quick sanity check.
 
 ## Architecture
 
@@ -307,13 +341,158 @@ right-hand column above as a starting map.
 ## Custom properties -> `VolumeObjectParams.custom_params`
 
 `properties.VolumeOverrideProperties` (on `obj.volume_override`) exposes
-`density_scale`, `absorption` (RGB), `scattering` (RGB), `color` (RGB),
-`vdb_filepath` as typed fields, plus a free-form key/value table
-(`custom_params_extra`) for anything the real renderer needs that isn't
-anticipated here. `to_custom_params()` merges both into the one dict that
-becomes `VolumeObjectParams.custom_params` -- extending the real renderer's
+`density_scale`, `absorption` (RGB), `scattering` (RGB), `color` (RGB) as
+typed fields, plus a free-form key/value table (`custom_params_extra`) for
+anything the real renderer needs that isn't anticipated here.
+`to_custom_params()` merges both into the one dict that becomes
+`VolumeObjectParams.custom_params` -- extending the real renderer's
 parameter set never requires touching this add-on's Python, just adding a
-row in the object's panel.
+row in the object's panel. Dataset identity (`dataset_path`/`dataset_kind`)
+is deliberately NOT part of this dict -- see the next section.
+
+## Dataset / change tracking
+
+The end goal here is arbitrary **scientific datasets** (a yt-loadable
+simulation output, say), not just VDB -- so this is designed generic-first,
+with Blender's native VDB `Volume` object support as one optional
+enrichment path, not the primary one.
+
+### Two independent things cross the boundary per object, not one
+
+1. **Shading knobs** (`VolumeObjectParams.custom_params` -- density scale,
+   color, any `custom_params_extra` row): cheap to recompute and re-apply
+   every frame.
+2. **The dataset itself** (`VolumeObjectParams.dataset`, a `DatasetParams`):
+   potentially large, potentially expensive to load/parse -- the thing you
+   actually want to avoid redoing unless it truly changed.
+
+Each gets its own `VersionInfo` (a content hash + a convenience `changed`
+bool): `VolumeObjectParams.params_version` for (1), `DatasetParams.version`
+for (2). Splitting them means a camera-only move across an animation (which
+changes nothing about the dataset) doesn't look like "everything changed" to
+a renderer trying to decide what's worth re-loading.
+
+### How to actually use this (renderer side)
+
+**The hash is the real cache key, `changed` is a convenience shortcut, not a
+substitute.** Keep your own cache keyed by `(DatasetParams.dataset_id, DatasetParams.version.hash)`
+(and separately by `(dataset_id, params_version.hash)` for shading state, if
+you cache that too). When a request comes in, compare its hash to your
+cache; reload/reparse only on a miss. This is correct regardless of what
+Blender's `changed` flag says, and survives your process restarting,
+switching transports (in-process -> subprocess -> network), or anything else
+on the Blender side going sideways.
+
+`changed=False` is a reliable "definitely nothing to do" fast path, so it's
+fine to skip the hash comparison in that specific case as an optimization.
+`changed=True` is NOT proof you need to do anything -- it just means Blender
+doesn't remember sending this exact value before (which is trivially true
+after every Blender restart or add-on reload, whether or not your renderer's
+own cache is still warm). Always let the hash decide, never the boolean
+alone, if you actually care about correctness across restarts.
+
+`change_tracking.reset()` runs on every add-on registration (Blender
+startup, add-on reload) so a fresh instance doesn't inherit stale bookkeeping
+from a previous one. There's also a manual **Reset Change Tracking** button
+(object panel and add-on preferences) for the reverse case: you know your
+renderer's own cache was cleared independently and want Blender's `changed`
+flag to stop reporting `False` for things that would actually need reloading.
+
+### What actually populates `DatasetParams`
+
+`operators.build_dataset_params()`:
+
+- **Primary path, any object**: `properties.py`'s `dataset_path` (a path/URI
+  to whatever your loader expects) and `dataset_kind` (a free-form label --
+  `"yt"`, `"hdf5"`, `"vdb"`, anything; Blender never interprets it, it's
+  pure passthrough for the renderer to dispatch on). Any loader-specific
+  argument beyond a bare path (a yt field name, an HDF5 dataset key, a unit
+  system override) goes in `custom_params_extra`, same free-form table as
+  everything else -- there's no dataset-format-specific typed field here on
+  purpose, since the whole point is not being tied to one format.
+- **Bonus path, `obj.type == "VOLUME"`**: if the flagged object happens to
+  be a Blender-native `Volume` datablock (VDB support), `dataset_path`/
+  `dataset_kind` are overridden from what Blender already knows
+  (`obj.data.filepath`, defaulting `dataset_kind` to `"vdb"`), and the
+  sequence fields (`is_blender_volume_sequence`, `sequence_frame_start/
+  duration/offset`, `sequence_mode`, `resolved_sequence_frame`, `grid_names`)
+  get populated too. `resolved_sequence_frame` replicates Blender's
+  documented start/duration/offset + clip/extend/repeat/ping-pong semantics
+  in plain Python (`operators.resolve_sequence_frame()`) -- **not**
+  empirically verified against a real VDB sequence the way the Z-pass/camera
+  findings were; re-check against actual sequence data before trusting the
+  exact frame number.
+- **`dataset_id`**: `properties.ensure_dataset_uuid(obj)`, a UUID generated
+  once and stored in the .blend file -- NOT `obj.name`, so renaming the
+  object doesn't look like a brand-new dataset with no history to whatever's
+  caching against this id (Blender's own `change_tracking.py` bookkeeping
+  included).
+
+### Time mapping: which point in the dataset's timeline does this frame mean?
+
+**Blender resolves a single scalar (`DatasetParams.requested_time`) and hands
+it over; snapping that to an actual timestep the dataset has is the
+renderer's job, confirmed as the right split -- Blender doesn't open the
+dataset, so it can't know what timesteps exist (a yt-loadable simulation's
+snapshots are typically irregular, not evenly spaced), and the renderer
+already has to open it anyway.**
+
+**Is a Blender Driver enough by itself? No, but it's a legitimate piece of
+one option.** Tested empirically before committing to this design:
+
+- A **Driver with a scripted expression** (e.g. `frame_current` fed through
+  a formula), with no keyframes added on top, works exactly as expected --
+  clean, predictable, good for parametric formulas.
+- **Plain keyframes on a custom property, no driver at all**, also work
+  exactly as expected -- standard interpolation, the simplest way to let
+  someone hand-author an arbitrary Blender-frame -> time curve using
+  Blender's normal animation tools.
+- **Combining the two** -- keyframing a driver's own f-curve on top of a
+  scripted expression, thinking of it as a "remap curve" -- does NOT work
+  cleanly. Tried it: with keyframes at `(0, 100)` and `(10, 200)` on a
+  driver whose expression is just `frame`, frame 5 evaluated to `51.2`
+  (not the ~150 either linear or sane bezier interpolation would give), and
+  a single keyframe produced runaway extrapolation (`-890` at frame 10).
+  Don't reach for this combination; use one mechanism or the other.
+- **Gotcha specific to `SCRIPTED` drivers**: Blender disables all `SCRIPTED`
+  drivers outright when "Auto Run Python Scripts" is off -- a driver that
+  works for you can silently stop working for anyone else opening the file.
+  Doesn't apply to plain keyframes or non-scripted driver types
+  (Average/Sum/Min/Max).
+
+Either way, a driver or keyframed curve only produces **a continuous
+scalar over Blender's timeline** -- necessary but not sufficient, since it
+says nothing about what timesteps actually exist, needs a landing property
+we read post-depsgraph (same requirement `matrix_world` already has), and
+is inherently per-object (two flagged volumes could legitimately be
+retimed independently).
+
+**Design**: `properties.py`'s `mapping_policy` (per object):
+
+| Policy | `requested_time =` | Use for |
+|---|---|---|
+| `DIRECT` (default) | current Blender frame, unchanged | dataset frame indices line up 1:1 with Blender frames |
+| `AFFINE` | `frame * time_scale + time_offset` | simple constant-rate retiming/offset, no Python needed |
+| `MANUAL` | `manual_time` property, read as-is | anything else -- keyframe `manual_time` directly (recommended) or drive it (Driver, with the `SCRIPTED` caveat above) |
+
+`time_units` (`FRAME_INDEX` | `SECONDS` | `REDSHIFT` | `CUSTOM`) says what
+`requested_time` actually means, same "be explicit, don't assume"
+discipline as `DepthBuffer.units` -- a yt dataset's natural time axis might
+be simulation seconds or redshift, not a frame index at all.
+
+**Deliberately excluded from `DatasetParams.version`'s hash**, even though
+it lives right next to `dataset_path`/`dataset_kind`: `requested_time`
+changes every frame by design, so hashing it in would make
+`version.changed` report `True` on every single frame regardless of
+whether the *snapped* timestep the renderer would actually use differs --
+exactly the over-invalidation the `params_version`/`dataset.version` split
+was meant to avoid in the first place (confirmed by
+`test_requested_time_change_does_not_flip_dataset_version_changed`). The
+renderer, which knows the real timestep list, is better positioned to
+decide for itself whether two different `requested_time` values snap to
+the same timestep and skip reloading. The same reasoning applies to
+`resolved_sequence_frame` for native VDB sequences -- also excluded from
+the hash for the same reason.
 
 ## No lighting/shadow interchange (v1, by design)
 

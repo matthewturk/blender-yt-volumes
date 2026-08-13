@@ -1,11 +1,24 @@
 """Marks objects for external volume rendering and holds the parameters that
-get passed straight through as `VolumeObjectParams.custom_params`.
+get passed straight through as `VolumeObjectParams.custom_params`, plus the
+dataset identity fields consumed by `operators.build_dataset_params()` (see
+change_tracking.py and README "Dataset / change tracking").
 
 A handful of common volume parameters are exposed as first-class fields (so
 they get a normal, typed UI) plus a free-form string key/value table for
 anything the real renderer needs that we haven't anticipated -- both feed
 into the same `custom_params` dict, so growing the renderer's parameter set
 never requires touching this add-on's Python.
+
+`dataset_path`/`dataset_kind` are deliberately generic, not VDB-specific:
+the end goal is arbitrary scientific datasets (e.g. a yt-loadable simulation
+output), not just Blender-native volumetric formats. `dataset_kind` is a
+free-form label (`"yt"`, `"vdb"`, `"hdf5"`, whatever your renderer's loaders
+recognize) -- Blender doesn't interpret it, it's just carried through to
+`DatasetParams.dataset_kind` for the renderer to dispatch on. Anything a
+specific loader needs beyond a path (a yt field name, a unit system
+override, an HDF5 dataset key) goes in `custom_params_extra` below, the same
+free-form table as any other renderer parameter -- there's nothing dataset-
+loader-specific that needs its own typed UI field here.
 """
 
 import bpy
@@ -65,29 +78,125 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
     )
-    vdb_filepath: bpy.props.StringProperty(
-        name="VDB / Grid File",
-        description="Passed through as custom_params['vdb_filepath']",
+    dataset_path: bpy.props.StringProperty(
+        name="Dataset Path",
+        description=(
+            "Path to the actual scientific dataset this object represents -- "
+            "a yt-loadable simulation output, an HDF5/VDB file, a directory "
+            "of timestep files, whatever your renderer's loader expects. "
+            "See DatasetParams.dataset_kind for how the renderer is told "
+            "what KIND of thing this path points to"
+        ),
         subtype="FILE_PATH",
         default="",
+    )
+    dataset_kind: bpy.props.StringProperty(
+        name="Dataset Kind",
+        description=(
+            "Free-form label for which loader the renderer should use for "
+            "dataset_path (e.g. 'yt', 'vdb', 'hdf5') -- not interpreted by "
+            "Blender at all, just carried through to DatasetParams.dataset_kind"
+        ),
+        default="",
+    )
+    dataset_uuid: bpy.props.StringProperty(
+        name="Dataset ID",
+        description=(
+            "Stable per-object identifier for change-tracking cache keys, "
+            "auto-generated once and stored in the .blend file (survives "
+            "renaming the object, unlike using its name as the key). "
+            "Read-only -- see change_tracking.py"
+        ),
+        default="",
+    )
+
+    # --- Blender frame -> dataset time mapping ---
+    # See operators.resolve_requested_time() and README "Dataset / change
+    # tracking" -> "Time mapping". Blender only resolves a single requested
+    # scalar and hands it over as DatasetParams.requested_time -- snapping
+    # that to an actual timestep the dataset has is the renderer's job (it's
+    # the one that knows what timesteps exist), not Blender's.
+    mapping_policy: bpy.props.EnumProperty(
+        name="Time Mapping",
+        description="How the current Blender frame maps to DatasetParams.requested_time",
+        items=[
+            ("DIRECT", "Direct", "requested_time = current Blender frame number, unchanged"),
+            ("AFFINE", "Affine", "requested_time = frame * Time Scale + Time Offset"),
+            ("MANUAL", "Manual", "requested_time = Manual Time below -- keyframe or drive it yourself"),
+        ],
+        default="DIRECT",
+    )
+    time_units: bpy.props.EnumProperty(
+        name="Time Units",
+        description="What DatasetParams.requested_time actually means, for the renderer to interpret correctly",
+        items=[
+            ("FRAME_INDEX", "Frame Index", "An integer-ish index into the dataset's own timestep list"),
+            ("SECONDS", "Seconds", "Physical/simulation time in seconds"),
+            ("REDSHIFT", "Redshift", "Cosmological redshift"),
+            ("CUSTOM", "Custom", "Some other convention your renderer/loader defines"),
+        ],
+        default="FRAME_INDEX",
+    )
+    time_scale: bpy.props.FloatProperty(
+        name="Time Scale",
+        description="AFFINE policy only: requested_time = frame * time_scale + time_offset",
+        default=1.0,
+    )
+    time_offset: bpy.props.FloatProperty(
+        name="Time Offset",
+        description="AFFINE policy only: requested_time = frame * time_scale + time_offset",
+        default=0.0,
+    )
+    manual_time: bpy.props.FloatProperty(
+        name="Manual Time",
+        description=(
+            "MANUAL policy only: requested_time is read directly from this "
+            "property. Free to animate however you like -- keyframe it "
+            "directly (simplest, most robust) or drive it with a Driver. If "
+            "you use a SCRIPTED driver expression here, note Blender "
+            "disables SCRIPTED drivers entirely when 'Auto Run Python "
+            "Scripts' is off, which can silently break this for anyone "
+            "else opening the file; a non-scripted driver type (Average/"
+            "Sum/Min/Max) or plain keyframes don't have that risk"
+        ),
+        default=0.0,
     )
 
     custom_params_extra: bpy.props.CollectionProperty(type=VolumeOverrideCustomParam)
     custom_params_extra_active_index: bpy.props.IntProperty(default=0)
 
     def to_custom_params(self) -> dict:
-        """Build the `VolumeObjectParams.custom_params` dict for this object."""
+        """Build the `VolumeObjectParams.custom_params` dict for this object.
+
+        Deliberately does NOT include dataset_path/dataset_kind -- those are
+        dataset *identity*, handled separately by
+        `operators.build_dataset_params()` -> `DatasetParams`, with their own
+        change-tracking hash. Everything here is a "cheap to recompute,
+        doesn't require reloading the dataset" shading knob.
+        """
         params = {
             "density_scale": self.density_scale,
             "absorption": tuple(self.absorption),
             "scattering": tuple(self.scattering),
             "color": tuple(self.color),
-            "vdb_filepath": self.vdb_filepath,
         }
         for item in self.custom_params_extra:
             if item.key:
                 params[item.key] = item.value
         return params
+
+
+def ensure_dataset_uuid(obj) -> str:
+    """Generate and persist `dataset_uuid` on first use, then always return
+    it. Called from `operators.build_dataset_params()` -- not eagerly on
+    flagging, so toggling the flag on/off/on before ever rendering doesn't
+    burn through UUIDs for no reason.
+    """
+    props = obj.volume_override
+    if not props.dataset_uuid:
+        import uuid
+        props.dataset_uuid = uuid.uuid4().hex
+    return props.dataset_uuid
 
 
 class VOLUMEOVERRIDE_UL_custom_params(bpy.types.UIList):
@@ -140,7 +249,22 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.prop(props, "absorption")
         col.prop(props, "scattering")
         col.prop(props, "color")
-        col.prop(props, "vdb_filepath")
+        col.separator()
+        col.prop(props, "dataset_path")
+        col.prop(props, "dataset_kind")
+        if props.dataset_uuid:
+            row = col.row()
+            row.enabled = False
+            row.prop(props, "dataset_uuid", text="Dataset ID")
+
+        col.separator()
+        col.prop(props, "mapping_policy")
+        col.prop(props, "time_units")
+        if props.mapping_policy == "AFFINE":
+            col.prop(props, "time_scale")
+            col.prop(props, "time_offset")
+        elif props.mapping_policy == "MANUAL":
+            col.prop(props, "manual_time")
 
         col.label(text="Extra custom_params:")
         row = col.row()
@@ -153,6 +277,8 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         sub = row.column(align=True)
         sub.operator("volume_override.add_custom_param", icon="ADD", text="")
         sub.operator("volume_override.remove_custom_param", icon="REMOVE", text="")
+
+        col.operator("volume_override.reset_change_tracking", icon="FILE_REFRESH")
 
 
 CLASSES = (
