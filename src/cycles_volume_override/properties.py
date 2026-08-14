@@ -74,7 +74,13 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         description="Passed through as custom_params['color'] (RGB)",
         subtype="COLOR",
         size=3,
-        default=(0.4, 0.6, 1.0),
+        # Loud, obviously-synthetic red by default -- deliberately NOT a
+        # plausible "real" volume color -- so a flagged object's placeholder
+        # output (DEBUG_FLAT / SAMPLE_CONSTANT renderer modes; see
+        # operators.RENDERER_MODES) is unmistakable against Cycles' own
+        # render while debugging the pipeline. Change it once you're past
+        # "is this wired up at all" and into "does this look right".
+        default=(1.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
     )

@@ -89,11 +89,16 @@ def _get_or_create_compositor_tree(scene):
 
 
 def _make_file_output(tree, directory, name, socket_type, source_output):
+    # item name deliberately empty, not `name` -- a non-empty item name
+    # writes this file as a NAMED EXR part, which bpy.data.images.load()
+    # doesn't reliably decode (reproducibly returns a 0x0/0-channel image).
+    # See compositor_build.py's `_configure_single_file_output` docstring --
+    # this was found via a real add-on bug, not specific to this script.
     node = tree.nodes.new("CompositorNodeOutputFile")
     if hasattr(node, "file_output_items"):
         node.directory = directory
         node.file_name = name
-        item = node.file_output_items.new(socket_type, name)
+        item = node.file_output_items.new(socket_type, "")
         item.override_node_format = True
         item.format.file_format = "OPEN_EXR"
         item.format.color_depth = "32"

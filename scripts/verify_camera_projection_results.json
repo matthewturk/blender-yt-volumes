@@ -1,42 +1,42 @@
 {
   "PERSP": {
     "camera_type": "PERSP",
-    "readback_method": "OpenEXR-fallback",
+    "readback_method": "bpy.data.images.load",
     "marker_world": [
       1.0,
       -0.5,
       4.0
     ],
     "actual_pixel_row_col": [
-      30.894144144144143,
+      16.105855855855857,
       46.346846846846844
     ],
     "predicted_col": 46.81481424967448,
     "predicted_row_from_top": 31.4074068069458,
     "predicted_row_from_bottom": 16.5925931930542,
     "col_error_px": 0.4679674028276324,
-    "row_error_px_matching_convention": 0.5132626628016581,
-    "matched_row_convention": "TOP_LEFT_ORIGIN",
+    "row_error_px_matching_convention": 0.4867373371983419,
+    "matched_row_convention": "BOTTOM_LEFT_ORIGIN",
     "PASS": true
   },
   "ORTHO": {
     "camera_type": "ORTHO",
-    "readback_method": "OpenEXR-fallback",
+    "readback_method": "bpy.data.images.load",
     "marker_world": [
       1.0,
       -0.5,
       4.0
     ],
     "actual_pixel_row_col": [
-      27.46268656716418,
+      19.53731343283582,
       39.47761194029851
     ],
     "predicted_col": 40.0,
     "predicted_row_from_top": 28.00000011920929,
     "predicted_row_from_bottom": 19.99999988079071,
     "col_error_px": 0.5223880597014912,
-    "row_error_px_matching_convention": 0.5373135520451093,
-    "matched_row_convention": "TOP_LEFT_ORIGIN",
+    "row_error_px_matching_convention": 0.46268644795489067,
+    "matched_row_convention": "BOTTOM_LEFT_ORIGIN",
     "PASS": true
   }
 }

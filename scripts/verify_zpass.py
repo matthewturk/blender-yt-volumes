@@ -162,6 +162,20 @@ def _make_file_output(tree, directory, name, socket_type, source_output):
     'OPEN_EXR_MULTILAYER' once items exist; to get a plain single-layer EXR
     per item you must set `item.override_node_format = True` and configure
     `item.format` instead of the node-level format.
+
+    `item`'s own name is left EMPTY (not `name`) -- a REAL bug found while
+    porting the actual add-on (see compositor_build.py's
+    `_configure_single_file_output` docstring), not just a cosmetic choice:
+    a non-empty item name makes Blender write this file as a NAMED EXR
+    "part", which `bpy.data.images.load()` + `.pixels` (what this script's
+    primary read path, and the add-on's `read_depth_buffer()`, both use)
+    fails to decode -- reproducibly returns a 0x0/0-channel image even
+    though the file is valid and non-empty on disk (confirmed by directly
+    comparing named vs. empty item names on this exact pip wheel). This is
+    NOT the wheel-specific "broken EXR decoder" this function's caller used
+    to blame it on -- it reproduces identically and was independently
+    reported against a real Blender 5.x install. An empty item name keeps
+    the part unnamed with plain, universally-loadable `RGBA` channels.
     """
     node = tree.nodes.new("CompositorNodeOutputFile")
     if hasattr(node, "file_output_items"):
@@ -170,7 +184,7 @@ def _make_file_output(tree, directory, name, socket_type, source_output):
                                 # the in-container layer name, NOT the file
                                 # name (defaults to "{blend_name}" otherwise,
                                 # which collides across nodes when unsaved)
-        item = node.file_output_items.new(socket_type, name)
+        item = node.file_output_items.new(socket_type, "")
         item.override_node_format = True
         item.format.file_format = "OPEN_EXR"
         item.format.color_depth = "32"
@@ -212,14 +226,16 @@ def load_exr(path_prefix):
     add-on will actually produce. Only falls back to the `OpenEXR` PyPI
     package if that pathway is broken.
 
-    On this sandbox's pip-installable `bpy==5.2.0` wheel, `bpy.data.images.load()`
-    silently returns a (0, 0) image and misreports `file_format` as 'TARGA'
-    for a verified-valid EXR (confirmed valid via the `file` utility);
-    `bpy.app.build_options.image_openexr` reports True, so this looks like a
-    packaging defect specific to this wheel, not a real-Blender limitation.
-    See README "Verification caveats" -- when this script is run against a
-    real Blender install, the primary path is expected to succeed and this
-    function's fallback branch (and its row-order caveat) becomes moot.
+    CORRECTION to an earlier version of this docstring: the (0, 0)/0-channel
+    failure previously seen here was NOT a packaging defect specific to this
+    pip wheel -- it was `_make_file_output` writing a NAMED EXR part (see its
+    docstring), which `bpy.data.images.load()` doesn't reliably decode
+    regardless of Blender build; independently reproduced against a real
+    Blender 5.x install via the shipped add-on's own equivalent code path.
+    Fixed there by using an empty item name, so the primary path here is now
+    expected to succeed rather than fall back. This function's fallback
+    branch is kept as a safety net, not because the primary path is expected
+    to fail anymore.
 
     Returns (array, method_used).
     """

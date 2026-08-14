@@ -40,12 +40,70 @@ overridden render operator" option) rather than handlers alone:
 import math
 import os
 import tempfile
+import time
 
 import bpy
 
 from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync
 
 PASS2_ENGINE = "BLENDER_WORKBENCH"
+
+# --- Debug logging -----------------------------------------------------------
+#
+# Added while diagnosing a reported hang: prints a timestamped line to
+# Blender's system console (Window > Toggle System Console on Windows; just
+# the terminal you launched Blender from on Linux/macOS) before/after every
+# step of the two-pass pipeline that can plausibly block -- both
+# `bpy.ops.render.render()` calls, every per-object `render_volume()` call,
+# and the EXR read/write round-trips -- so a hang shows up as "the last line
+# printed" instead of a silent freeze with no way to tell which step it's in.
+# Gated on `VolumeOverridePreferences.verbose_logging` (default on) so it can
+# be switched off once the pipeline is known-good; see draw() below.
+_LOG_PREFIX = "[VolumeOverride]"
+_log_start_time = None
+
+
+def _log(msg):
+    global _log_start_time
+    now = time.monotonic()
+    if _log_start_time is None:
+        _log_start_time = now
+    print(f"{_LOG_PREFIX} [+{now - _log_start_time:7.2f}s] {msg}", flush=True)
+
+
+class _StepTimer:
+    """`with _StepTimer("pass 1 render"): ...` -- logs entry immediately (so
+    you see it start even if it never finishes) and exit with elapsed time.
+    """
+
+    def __init__(self, label):
+        self.label = label
+
+    def __enter__(self):
+        _log(f"START {self.label}")
+        self._t0 = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        elapsed = time.monotonic() - self._t0
+        if exc_type is None:
+            _log(f"DONE  {self.label} ({elapsed:.2f}s)")
+        else:
+            _log(f"FAILED {self.label} ({elapsed:.2f}s): {exc_type.__name__}: {exc}")
+        return False
+
+
+class _NullStepTimer:
+    """No-op stand-in for `_StepTimer` when `verbose_logging` is off."""
+
+    def __init__(self, label):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 # Keyed by VolumeOverridePreferences.renderer_mode -- see that enum's items
 # for what each option is for.
@@ -75,10 +133,22 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
         subtype="DIR_PATH",
         default="",
     )
+    verbose_logging: bpy.props.BoolProperty(
+        name="Verbose Logging",
+        description=(
+            "Print timestamped progress for every step of the two-pass render "
+            "pipeline to Blender's system console (Window > Toggle System "
+            "Console on Windows; the terminal you launched Blender from on "
+            "Linux/macOS). Turn on if a render seems stuck or fails -- the "
+            "last line printed tells you which step it's in"
+        ),
+        default=True,
+    )
 
     def draw(self, context):
         self.layout.prop(self, "renderer_mode")
         self.layout.prop(self, "work_dir")
+        self.layout.prop(self, "verbose_logging")
         self.layout.operator("volume_override.reset_change_tracking")
 
 
@@ -385,6 +455,26 @@ def read_depth_buffer(scene, path):
     try:
         w, h = img.size[0], img.size[1]
         channels = img.channels
+        if w == 0 or h == 0 or channels == 0:
+            # Real bug hit once (Blender 5.x, real install, not just the pip
+            # test module): bpy.data.images.load() + .pixels silently
+            # decoded a genuinely-written, non-empty EXR as 0x0/0-channel
+            # instead of raising -- traced to compositor_build.py writing
+            # this file as a NAMED multi-part EXR, which that Python-facing
+            # pixel-buffer path doesn't reliably support (see
+            # _configure_single_file_output's docstring for the fix -- item
+            # names are empty now). Failing loudly here with the actual
+            # on-disk facts is the safety net if that regresses, or if some
+            # other Blender version hits the same failure mode differently.
+            on_disk = os.path.exists(path)
+            size_bytes = os.path.getsize(path) if on_disk else None
+            raise RuntimeError(
+                f"read_depth_buffer: {path!r} loaded as size={img.size[:]} "
+                f"channels={channels} (expected a real image) -- "
+                f"file exists on disk: {on_disk}, size: {size_bytes} bytes, "
+                f"img.file_format={img.file_format!r}. See "
+                "_configure_single_file_output's docstring in compositor_build.py."
+            )
         data = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, channels)
         data = data[..., 0]  # single-channel Z; ignore any padding channels
     finally:
@@ -411,7 +501,7 @@ def write_render_result(result, path):
     """
     h, w = result.rgba.shape[:2]
     img = bpy.data.images.new(f"vo_result_tmp", width=w, height=h, alpha=True, float_buffer=True)
-    img.colorspace_settings.name = "Linear"
+    compositor_build.set_linear_colorspace(img)
     img.pixels.foreach_set(result.rgba.astype("float32").ravel())
     img.filepath_raw = path
     img.file_format = "OPEN_EXR"
@@ -436,8 +526,16 @@ def render_current_frame(context):
     if scene.camera is None:
         raise RuntimeError("Scene has no active camera")
 
+    verbose = _get_prefs(context).verbose_logging
+    log = _log if verbose else (lambda *a, **k: None)
+    step = _StepTimer if verbose else _NullStepTimer
+
+    log(f"render_current_frame: frame={scene.frame_current} engine={scene.render.engine} "
+        f"resolution={scene.render.resolution_x}x{scene.render.resolution_y}")
+
     work_dir = _work_dir(context)
     flagged = properties.flagged_objects(scene)
+    log(f"flagged objects: {[o.name for o in flagged]}, work_dir={work_dir}")
     scene_sync.sync_scene_state(scene, flagged)
 
     view_layer = context.view_layer
@@ -447,18 +545,24 @@ def render_current_frame(context):
     prev_engine = scene.render.engine
     try:
         # --- Pass 1: real Cycles beauty + Z, flagged objects hidden -----
-        beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
-            scene, work_dir, scene.frame_current,
-        )
+        with step("pass1 build compositor graph"):
+            beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
+                scene, work_dir, scene.frame_current,
+            )
+        log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with scene_sync.hidden_from_main_render(flagged):
-            bpy.ops.render.render(write_still=False)
+            with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
+                bpy.ops.render.render(write_still=False)
+        log(f"pass1 wrote beauty exists={os.path.exists(beauty_path)} depth exists={os.path.exists(depth_path)}")
 
-        depth_buffer = read_depth_buffer(scene, depth_path)
+        with step("read_depth_buffer"):
+            depth_buffer = read_depth_buffer(scene, depth_path)
         camera_params = build_camera_params(scene, scene.camera)
         frame_params = build_frame_params(scene)
 
         prefs = _get_prefs(context)
         render_fn = RENDERER_MODES[prefs.renderer_mode]
+        log(f"renderer_mode={prefs.renderer_mode!r} ({render_fn.__module__}.{render_fn.__qualname__})")
 
         volume_layers = []
         for obj in _sorted_far_to_near(scene, flagged):
@@ -468,22 +572,55 @@ def render_current_frame(context):
                 volume=build_volume_params(obj),
                 frame=frame_params,
             )
-            result = render_fn(request)
+            with step(f"render_volume for {obj.name!r}"):
+                result = render_fn(request)
             assert result.alpha_mode == "PREMULTIPLIED"
             assert result.color_space == "LINEAR"
             result_path = os.path.join(
                 work_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
             )
-            write_render_result(result, result_path)
+            with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
+                write_render_result(result, result_path)
             volume_layers.append((obj.name, result_path))
 
         # --- Pass 2: compositor-only (cheap engine), writes the real output
-        compositor_build.build_or_update_graph(scene, beauty_path, volume_layers)
+        with step("pass2 build/update compositor graph"):
+            compositor_build.build_or_update_graph(scene, beauty_path, volume_layers)
         scene.render.engine = PASS2_ENGINE
-        bpy.ops.render.render(write_still=True)
+        with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={PASS2_ENGINE}"):
+            bpy.ops.render.render(write_still=True)
+        log(f"pass2 done; final output at {scene.render.frame_path()!r} "
+            f"(Render Result image also holds it -- see _show_render_result)")
     finally:
         scene.render.engine = prev_engine
         view_layer.use_pass_z = prev_use_pass_z
+
+
+def _show_render_result(context):
+    """Pop Blender's own Render Result viewer, same as a normal F12 press.
+
+    Our two-pass pipeline calls `bpy.ops.render.render()` in plain
+    EXEC_DEFAULT (no `'INVOKE_DEFAULT'`) so it stays fully synchronous --
+    pass 2 must not start until pass 1 and the per-object renders are done,
+    and the render-engine swap around it (see module docstring) would race
+    against an async invoke. The tradeoff: EXEC_DEFAULT never pops the
+    Render Result window or updates an open Image Editor the way a normal
+    F12 does, even though `bpy.data.images["Render Result"]` genuinely holds
+    our correct composited output afterward (confirmed -- pass 2's own
+    render.render() call always updates it) -- reported as "I don't see it
+    anywhere" even though real EXR files were written correctly.
+    `render.view_show()` only displays whatever's already there; it doesn't
+    re-render, so calling it after the fact is safe regardless of how the
+    pipeline above ran.
+    """
+    try:
+        bpy.ops.render.view_show("INVOKE_DEFAULT")
+    except RuntimeError as exc:
+        # Not fatal -- the render itself already succeeded and wrote real
+        # output files; failing to pop the viewer (e.g. no valid window
+        # context, such as a background/headless call) shouldn't be reported
+        # as a render failure.
+        _log(f"could not show Render Result ({exc}) -- output was still written to disk/Render Result")
 
 
 class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
@@ -507,6 +644,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
             except Exception as exc:
                 self.report({"ERROR"}, f"Volume override render failed: {exc}")
                 return {"CANCELLED"}
+            _show_render_result(context)
             return {"FINISHED"}
 
         scene = context.scene
@@ -528,6 +666,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
         frame = next(self._frame_iter, None)
         if frame is None:
             self._finish(context)
+            _show_render_result(context)  # show the LAST frame rendered, like F12 would
             return {"FINISHED"}
 
         context.scene.frame_set(frame)

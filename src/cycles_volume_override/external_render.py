@@ -336,7 +336,12 @@ def debug_fake_render_volume(request: RenderRequest) -> RenderResult:
 
     h, w = request.depth.data.shape
     rgba = np.zeros((h, w, 4), dtype=np.float32)
-    color = request.volume.custom_params.get("color", (0.4, 0.6, 1.0))
+    # Loud, obviously-synthetic red fallback -- matches properties.py's
+    # `color` field default, kept in sync here for anyone calling this
+    # directly without going through the UI/custom_params pipeline. See that
+    # field's docstring for why: distinguishing this debug output from
+    # Cycles' own render at a glance while wiring the pipeline up.
+    color = request.volume.custom_params.get("color", (1.0, 0.0, 0.0))
     alpha = 0.25
     rgba[..., 0] = color[0] * alpha
     rgba[..., 1] = color[1] * alpha

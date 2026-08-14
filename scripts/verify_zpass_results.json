@@ -1,13 +1,12 @@
 {
-  "readback_method_beauty": "OpenEXR-fallback (bpy.data.images.load produced a 0x0 image on this wheel)",
-  "readback_method_depth": "OpenEXR-fallback (bpy.data.images.load produced a 0x0 image on this wheel)",
-  "row_order_caveat": "row_order below reflects the OpenEXR-fallback read, i.e. the raw on-disk EXR scanline order -- NOT bpy.data.images.load().pixels (which real Blender is documented to return bottom-left-origin, applying its own flip on load regardless of on-disk order). Re-run this script against a real Blender to close this loop; see README 'Verification caveats'.",
-  "row_order": "TOP_LEFT_ORIGIN",
+  "readback_method_beauty": "bpy.data.images.load",
+  "readback_method_depth": "bpy.data.images.load",
+  "row_order": "BOTTOM_LEFT_ORIGIN",
   "row_order_evidence": {
-    "top_half_red_mean": 0.2890380620956421,
-    "bottom_half_red_mean": 0.18625487387180328,
-    "top_half_blue_mean": 0.1862548589706421,
-    "bottom_half_blue_mean": 0.2897704839706421
+    "top_half_red_mean": 0.18625487387180328,
+    "bottom_half_red_mean": 0.2890380918979645,
+    "top_half_blue_mean": 0.2897704839706421,
+    "bottom_half_blue_mean": 0.18625488877296448
   },
   "depth_center_value": 10.0,
   "depth_edge_value": 10.0,

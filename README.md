@@ -281,62 +281,72 @@ the view axis):
 |---|---|---|
 | `depth_convention` | `"PLANAR"` | Center pixel and an off-axis pixel (still on the same flat plane) both read exactly `10.0`. A Euclidean/ray-distance convention would have read `~10.205` off-axis (computed from the camera's actual FOV) -- it did not. **This contradicts the commonly-repeated claim that Blender's Z pass is ray distance; trust the measurement, not that claim.** |
 | `no_hit_value` | `1e10` exactly | Sampled a frame-corner pixel deliberately outside a background plane sized to miss the frustum corners; matches Blender's long-documented sentinel. |
-| `row_order` | `"TOP_LEFT_ORIGIN"` for the *raw on-disk EXR* | A card at world +Y (the camera's "up", given identity rotation) rendered pure red; it dominates the array's first-half rows under a direct OpenEXR-library read. |
+| `row_order` | `"BOTTOM_LEFT_ORIGIN"`, confirmed via the add-on's own real read path | A card at world +Y (the camera's "up", given identity rotation) rendered pure red; it dominates the array's *second*-half rows (`row_order_evidence` in `verify_zpass_results.json`) read back via `bpy.data.images.load(path).pixels` -- matches `operators.py`'s `DEPTH_ROW_ORDER` assumption. |
 | `units` | scene `unit_settings.scale_length` (`1.0` in this test, `METRIC`) | Raw Z values are in Blender units; multiply by `scale_length` for meters. |
 
 ### Verification caveats
 
-**`row_order` was not closed-loop-verified end to end.** The add-on's actual
-read-back path (`operators.read_depth_buffer`) uses
-`bpy.data.images.load(path).pixels`, which is well-documented, longstanding
-Blender behavior to be **bottom-left-origin** (it also always contains 4
-channels regardless of the source EXR's channel count) -- that's what
-`operators.py` assumes (`DEPTH_ROW_ORDER = "BOTTOM_LEFT_ORIGIN"`). But the
-pip `bpy==5.2.0` wheel used to run the verification script has a broken EXR
-decoder in this environment: `bpy.data.images.load()` silently returns a
-0×0 image and misreports `file_format` as `'TARGA'` for a file confirmed
-valid by the `file` utility, even though `bpy.app.build_options.image_openexr`
-reports `True`. `verify_zpass.py` tries the real `bpy.data.images.load()`
-path first and only falls back to the `OpenEXR` PyPI package when that
-fails (it did, here) -- so the `row_order` figure above describes the raw
-file's on-disk scanline order via that fallback, not proof of the in-memory
-`Image.pixels` convention this add-on actually relies on. **Re-run
-`scripts/verify_zpass.py` against your real Blender** (point `uv run` at its
-bundled Python, or just run the script inside Blender's Python console) --
-if the primary `bpy.data.images.load()` path succeeds there (it should, in a
-full Blender install), `verify_zpass_results.json`'s
-`readback_method_depth`/`readback_method_beauty` will say so and the
-`row_order` finding becomes fully authoritative for that Blender. If it
-disagrees with `"BOTTOM_LEFT_ORIGIN"`, flip `DEPTH_ROW_ORDER` in
-`operators.py`.
+**Closed this session, previously open.** `row_order` used to only be
+verifiable via a `bpy.data.images.load()`-bypassing `OpenEXR`-library
+fallback, because the primary path -- the add-on's own real read path,
+`operators.read_depth_buffer`'s `bpy.data.images.load(path).pixels` --
+reproducibly returned a 0×0/0-channel image on the EXRs this repo's own
+File Output helpers wrote, misdiagnosed at the time as "a broken EXR decoder
+specific to the pip `bpy==5.2.0` wheel."
+
+That diagnosis was wrong. The actual cause, found while porting the real
+add-on to Blender 5.0+ (see "Blender 5.0+ compositor" below): those helpers
+wrote each EXR with a **named** `file_output_items` entry, which Blender
+5.0+ writes as a named EXR "part" -- and `bpy.data.images.load()` doesn't
+reliably decode a named-part EXR, on the pip wheel *or* a real Blender 5.x
+install (independently reproduced against both). `compositor_build.py`'s
+`_configure_single_file_output` and all three `scripts/verify_*.py` helpers
+now use an empty item name, which keeps the part unnamed with plain `RGBA`
+channels -- the shape `bpy.data.images.load()` does handle. Re-running
+`scripts/verify_zpass.py` after that fix: `readback_method_depth`/
+`readback_method_beauty` now both say `"bpy.data.images.load"` (the
+fallback never triggers), and the resulting `row_order` above is fully
+authoritative -- not just consistent with the add-on's assumption, but
+produced by the add-on's own code path. `verify_camera_projection.py` and
+`verify_pano_equirect.py` show the same primary-path success after the same
+fix (their own results JSON files).
 
 **`depth_convention` and `no_hit_value` came from real Cycles output either
-way** (both read-back methods return the same numeric values; the fallback
-only affects array *indexing/orientation*, not the *values* in it), so those
-two findings don't carry the same caveat.
+way** (both read-back methods always returned the same numeric values; only
+array *indexing/orientation* was ever in question), so those two findings
+never carried this caveat.
 
-## Blender 5.0+ compositor (known gap, discovered while building this)
+## Blender 5.0+ compositor
 
-While building against pip `bpy==5.2.0` (the only pip-installable version
-available at the time), discovered that Blender 5.0 replaced the entire
-classic compositor scripting API this add-on's own idiom targets:
+`compositor_build.py` now supports BOTH compositor scripting APIs, detected
+at runtime via `hasattr`/capability checks -- never a parsed version string
+-- so the same code path handles Blender 3.x/4.x and 5.0+ transparently:
 
 | Classic (3.x/4.x) | Blender 5.0+ |
 |---|---|
-| `scene.node_tree` (auto-created by `scene.use_nodes = True`) | `scene.compositing_node_group` (must create + assign a `CompositorNodeTree` node-group datablock explicitly) |
-| `CompositorNodeOutputFile.base_path` / `.file_slots[i].path` | `.directory` / `.file_output_items.new(socket_type, name)` + `.file_name` (node-level filename; `file_output_items` are in-container layer names, not filenames) + per-item `.format`/`.override_node_format` for single-layer output (node-level `.format.file_format` is locked to `'OPEN_EXR_MULTILAYER'` once items exist) |
-| `CompositorNodeComposite` node type | **does not exist** -- compositor trees became generic node groups; final output appears to go through the tree's `NodeTreeInterface`, not explored further (out of scope -- see below) |
-| `CompositorNodeAlphaOver.use_premultiply` (assumed name, not independently confirmed on a real <5.0 Blender) | a `"Straight Alpha"` **input socket** instead of a node property |
+| `scene.node_tree` (auto-created by `scene.use_nodes = True`) | `scene.compositing_node_group` (must create + assign a `CompositorNodeTree` node-group datablock explicitly -- `ensure_compositor_tree()` now does this) |
+| `CompositorNodeOutputFile.base_path` / `.file_slots[i].path` (frame number auto-appended) | `.directory` / `.file_name` (node-level filename **template** -- a literal `####` run gets the zero-padded frame number substituted; NOT automatic, confirmed empirically) + one `.file_output_items.new('RGBA', name)` entry, with per-item `.format`/`.override_node_format = True` for plain single-layer OPEN_EXR (node-level `.format.file_format` is locked to `'OPEN_EXR_MULTILAYER'` once items exist -- `item.name` is only the in-container part/layer label, NOT the filename) |
+| `CompositorNodeComposite` node type | **does not exist**. Final output is whatever's wired into a `NodeTreeInterface` OUTPUT socket (named `"Image"` by this add-on) via a `NodeGroupOutput` node -- confirmed empirically by rendering through a differently-named output socket and observing it drive the actual saved pixels |
+| `CompositorNodeAlphaOver.use_premultiply` (assumed name, not independently confirmed on a real <5.0 Blender) | a `"Straight Alpha"` **input socket** instead of a node property (confirmed default value is already `False`, i.e. "treat inputs as already premultiplied" -- the behavior this add-on wants) |
+| Image node reading a plain file-slot EXR back always exposes generic `"Image"`/`"Alpha"` outputs | An Image node reading back an EXR whose part *was* named (true of this add-on's own beauty/depth EXRs, via `file_output_items`) exposes its single color output **under that part's name instead** -- `_color_output_socket()` falls back to `outputs[0]` when `"Image"` isn't present, to cover both shapes without needing to know the exact part name |
+| `img.colorspace_settings.name = "Linear"` always valid | that literal name **no longer exists** in Blender 5.0's default OCIO config (raises `TypeError`; the equivalent space is `"Linear Rec.709"` there) -- `compositor_build.set_linear_colorspace()` tries a short candidate list, ending in the portable OCIO `scene_linear` role alias, which should keep working even against a still-different future config |
 
-`compositor_build.ensure_compositor_tree()` detects the >=5.0 shape and
-raises a clear `RuntimeError` rather than silently building a broken graph
-(covered by `tests/test_compositor_build.py`). **This add-on currently only
-works on Blender 3.x/4.x.** Given the project's own stated node-scripting
-idiom (`node_tree.nodes.new(...)`, `.links.new(...)`) matches the classic
-API, this was the reasonable default target rather than chasing a brand-new,
-still-evolving 5.0 redesign speculatively -- but if your real Blender turns
-out to be 5.0+, `compositor_build.py` needs a follow-up patch using the
-right-hand column above as a starting map.
+All of the above confirmed empirically against pip `bpy==5.2.0` -- including
+a real render through the full two-pass pipeline shape (`tests/
+test_compositor_build.py`'s `test_build_or_update_graph_composites_named_part_beauty_and_result_exrs`)
+-- not assumed from documentation. `scripts/verify_zpass.py`,
+`verify_camera_projection.py`, and `verify_pano_equirect.py` independently
+reached the same `directory`/`file_output_items`/`override_node_format`
+shape for their own (simpler, no-final-output-needed) use of File Output
+nodes, which is a second confirmation of that part of the table.
+
+**Not yet independently verified**: all of this against a real Blender
+5.0+ install (only the pip module has been available so far) and against a
+real Blender < 5.0 (to confirm the classic branch still matches -- untouched
+by this port, but also not re-confirmed). If either turns out to disagree,
+the relevant `hasattr`-gated branch in `compositor_build.py` is the one
+place to fix -- both branches are exercised independently by
+`tests/test_compositor_build.py`.
 
 ## Custom properties -> `VolumeObjectParams.custom_params`
 
@@ -519,7 +529,6 @@ replacement for it.
   premultiplied Alpha Over instead.
 - **Viewport/Eevee preview**: out of scope, F12/animation-render only.
 - **Motion blur matching**: out of scope.
-- **Blender 5.0+**: see dedicated section above.
 
 ## Test scenes to verify depth-clipped integration
 
@@ -572,9 +581,11 @@ uv run python scripts/verify_pano_equirect.py      # empirical equirectangular m
 `bpy==5.2.0` is the pip-installable "Blender as a Python module" package
 (no GUI, headless), used only for tests/verification -- it is a genuinely
 different Blender (5.2) than whatever real Blender loads this add-on at
-runtime, which is why `compositor_build.py` deliberately targets the older
-API most of the codebase assumes (see "Blender 5.0+ compositor") rather than
-whatever this particular dev dependency happens to be. `requires-python` is
+runtime. `compositor_build.py` now detects and supports both the classic
+(3.x/4.x) and 5.0+ compositor APIs at runtime (see "Blender 5.0+
+compositor"), so this dev dependency's version doesn't need to match your
+real Blender's for the tests to be meaningful -- only the >=5.0 branch gets
+exercised by this particular `bpy` wheel, though. `requires-python` is
 pinned to `>=3.13,<3.14` only because that's what this `bpy` wheel needs; it
 does not constrain the add-on's actual runtime Python (whatever your real
 Blender embeds).
