@@ -81,6 +81,229 @@ Select it via the **Renderer** preference (`SAMPLE_CONSTANT`) to see it run
 through the real two-pass pipeline, or call it directly on a hand-built
 `RenderRequest` for a quick sanity check.
 
+## yt_idv integration (exploratory)
+
+`yt_idv_renderer.py` calls the REAL [yt_idv](
+https://github.com/yt-project/yt_idv) volume renderer -- real offscreen
+OpenGL, not a toy stand-in -- in three modes, all selectable via the
+**Renderer** preference: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
+Projection), `YT_IDV_TRANSFER_FUNCTION` (a real transfer function --
+isocontour layers at fixed densities in log space,
+`yt.ColorTransferFunction.add_layers`, not a placeholder colormap), and
+`YT_IDV_PROJECTION` (unweighted line-of-sight integration -- tends to look
+smoother/less speckled than MIP for the same data). Deliberately scoped
+down, per the brief this was written against: all three always render one
+hardcoded sample dataset (`yt.load_sample("IsolatedGalaxy")`), never
+`request.volume.dataset.dataset_path` -- real dataset selection is future
+work. See `yt_idv_renderer.py`'s own module docstring for the full, current
+account of what is and isn't real -- this section just orients you and
+covers installation.
+
+**All three now depth-clip against Cycles' real Z pass, and the camera's
+real position (not just orientation) carries over too** -- both use the
+flagged object's own `bounding_box_local`/`matrix_world` (already part of
+`VolumeObjectParams`, no new field needed) as the registration between
+Blender world space and yt_idv's unitary domain: a unitary point lives at
+`bbox_min + u*bbox_extent`, then `matrix_world` into Blender world space.
+yt_idv itself CAN stop a ray's integration early at an externally-supplied
+per-pixel depth (`yt_idv_renderer.set_external_depth_clip` -- required a
+real, small yt_idv shader modification, see "Four real yt_idv bugs" below)
+-- Cycles' own Z-buffer gets reconstructed into world-space hit points
+(reusing the exact ray math already verified in
+`sample_renderers._persp_ortho_rays`), transformed through the registration
+into unitary space, then projected through yt_idv's own
+now-correctly-positioned camera to get its window-space depth convention.
+No new yt_idv Camera subclass needed -- `BaseCamera.update(position=...,
+focus=..., up=..., ...)` was already general enough, it just needed
+genuinely-transformed values fed in instead of an orbit-at-a-fixed-distance
+heuristic. Still approximate in two specific, undisguised ways: yt_idv
+renders square while Blender's camera essentially never is (so depth
+reconstruction happens on Blender's real pixel grid, then gets
+center-padded/cropped to align with the square canvas -- a square-aspect
+camera can't reproduce Blender's true horizontal FOV), and the object's
+bounding box has to actually correspond to where you want the dataset
+positioned (a registration you place by sizing/moving the flagged object,
+not inferred from the dataset). Verified against a real, disc-shaped
+fabricated Cycles Z-buffer producing a genuine disc-shaped hole in the
+render, AND the underlying math separately verified against a real
+bpy-computed `projection_matrix` in `tests/test_yt_idv_renderer.py` -- see
+`scripts/yt_idv_exploration/explore_cycles_zbuffer_depth_clip.py`.
+
+### Installing yt_idv into your Blender's Python
+
+Real Blender's own embedded Python is NOT the same Python as this repo's
+`bpy==5.2.0` pip wheel dev venv (see "Development & testing" below) -- it
+doesn't have that wheel's version constraints, so installing `yt_idv` there
+is a normal "add a third-party package to Blender" operation: find
+Blender's bundled Python (e.g. `blender --python-expr "import
+sys;print(sys.executable)"`, or the `python.exe`/`python3.1x` under
+Blender's own install directory) and `pip install` into it directly (using
+that interpreter's own `-m pip`, ensuring pip first via `-m ensurepip` if
+needed) -- see Blender's manual, "Installing Python Modules", for the
+general mechanism this relies on. Install `yt_idv` itself (`pip install
+yt_idv`, or `pip install -e /path/to/a/checkout`) plus `pooch`/`pandas`/
+`h5py` (lazy dependencies `yt.load_sample`'s Enzo/IsolatedGalaxy path needs
+that aren't part of `yt_idv`'s own declared dependencies).
+
+### Five real yt_idv bugs found while wiring this up
+
+All found by testing NON-square resolutions -- every one of yt_idv's own
+examples/tests uses a square one (`width=height=1024`), so these went
+unnoticed upstream. Full detail, reproduction scripts, and reference images
+in `scripts/yt_idv_exploration/` (retained, not just described):
+
+1. **Wrong axis order.** `yt_idv.scene_graph.SceneGraph.image` returns
+   `(width, height, 4)` for non-square renders instead of the conventional
+   `(height, width, 4)`, because its own corrective `arr.swapaxes(0, 1)`
+   call discards the return value -- a complete no-op. Worked around
+   entirely on this add-on's side (`_fix_yt_idv_axis_order`); no yt_idv
+   edit needed.
+2. **OSMesa backend corrupts non-square renders** (not just mis-shapes them
+   -- genuinely tiled/repeated garbage). The obvious suspected fix
+   (`OSMesaMakeCurrent`'s width/height argument order) did NOT resolve it;
+   real cause still open. This is why `yt_idv_renderer.DEFAULT_BACKEND` is
+   `"egl"`, not `"osmesa"`, despite EGL needing a working GPU + driver
+   stack that OSMesa doesn't.
+3. **Exact period-4 banding on non-square EGL renders**, found while
+   testing camera motion. Confirmed via a raw scanline dump (`[value, 0, 0,
+   value]` repeating); tested and REJECTED `sample_factor` (ray-march
+   sample count) as the cause up to 10x -- pixel-identical regardless.
+   Confirmed a square render of the same scene/camera is clean. Root cause
+   still open (candidates: EGL surface/multisample config, a width/height
+   mixup in yt_idv's own viewport or grid-expansion geometry shader for
+   non-square viewports specifically). **Worked around by rendering square
+   and center-cropping** to the requested shape (`yt_idv_max_intensity_
+   renderer`'s own docstring has the mechanics and cost).
+4. **A wrong doc comment on yt_idv's own `viewport` uniform.**
+   `known_uniforms.inc.glsl` documents `viewport` as `(offset_x, offset_y,
+   1 / screen_x, 1 / screen_y)` (multiply by `.zw` for a UV); it's actually
+   set from the raw `GL.glGetIntegerv(GL_VIEWPORT)` -- `(x, y, width,
+   height)` in pixels (divide, don't multiply). Found while adding the
+   external depth clip below: multiplying (as the comment says) sends the
+   computed screen UV far outside `[0, 1]`, and with the texture's default
+   "clamp" boundary, every fragment samples the same corner texel
+   regardless of its real position -- invisible for a spatially-uniform
+   test value, but a per-pixel-varying one had zero effect anywhere until
+   this was found.
+5. **The EGL context requests no alpha bits at all.** `egl_context.py`'s
+   `config_attribs` asks for 8 bits each of red/green/blue but never
+   `EGL_ALPHA_SIZE` -- so the framebuffer has no real alpha channel, and
+   every pixel read back via `glReadPixels(..., GL_RGBA, ...)` comes back
+   with alpha exactly `1.0`, even genuinely-empty background pixels (RGB
+   correctly `(0, 0, 0)` there). This silently turned "transparent"
+   background into opaque black through Alpha-Over compositing. Found while
+   verifying the real end-to-end sphere-and-volume demo's background
+   (below) -- fixed by adding `EGL_ALPHA_SIZE, 8` to the config request;
+   confirmed via the same demo, background alpha going from `1.0` to `0.0`.
+
+None of these are this add-on's bugs to fix, but they're load-bearing for
+`yt_idv_renderer.py`'s design decisions (backend choice, the axis-order
+correction, the square-render-then-crop approach, the depth-clip shader
+addition) -- worth real yt_idv fixes and upstream bug reports before this
+graduates past exploration.
+
+### External depth clip -- a real, small yt_idv shader modification
+
+GLSL can't be monkeypatched the way Python can, so making a solid occluder
+actually stop a ray's integration early (rather than an all-or-nothing flat
+cutout) required editing `yt_idv/shaders/ray_tracing.frag.glsl` +
+`known_uniforms.inc.glsl` + `yt_idv/scene_components/blocks.py` -- see
+`scripts/yt_idv_exploration/yt_idv_external_depth_clip.patch` for the exact
+diff. New uniform pair, off by default, zero effect on existing behavior
+when unused. Verified with a real per-pixel, sphere-shaped depth (analytic
+ray/sphere intersection): a genuine, clean partial "bite" taken out of the
+rendered nebula, gas outside the sphere's silhouette rendering completely
+normally -- something the flat alpha-over composite below can never
+produce. Full story, including bug 4 above, in `yt_idv_renderer.py`'s
+"External depth clip" docstring section and `scripts/yt_idv_exploration/
+explore_external_depth_clip.py`.
+
+### The real end-to-end demo: a real Cycles sphere composited with real yt_idv volume content
+
+`scripts/yt_idv_exploration/blender_scene/render_real_demo.py` is the whole
+pipeline, run for real: a genuine Cycles render (real BSDF material, real
+sun lamp, 64 samples, denoised) of a sphere centered at a corner of the
+flagged volume box, radius = half the box's edge length, composited with
+real yt_idv volume content -- via the add-on's actual, unmodified
+`operators.render_current_frame()` two-pass pipeline, not a hand-built
+`RenderRequest` and not a numpy composite. The only substitution from a
+fully in-process real-Blender run: yt_idv still can't be imported into
+Blender 5.3's own bundled Python 3.13 (confirmed by trying -- one of its
+compiled dependencies has no cp313 wheel and fails to build against 3.13's
+changed C API), so `RENDERER_MODES`'s yt_idv entry is monkey-patched to
+bridge to the throwaway yt_idv venv via a subprocess for this one call;
+everything else in the pipeline is the real code, unmodified.
+
+Result: `images/24_real_demo_sphere_and_volume.png` -- the sphere renders as
+real lit Cycles geometry, the volume fills the rest of the box's silhouette,
+and a genuine crescent-shaped gap appears at the sphere's base where the
+real depth clip (driven by the sphere's own real Cycles Z-buffer) stops the
+volume's ray march -- not a flat, all-or-nothing cutout. This run is also
+what caught yt_idv bug 5 above: the background initially composited as
+opaque black instead of transparent, traced to the EGL context's missing
+alpha bits. Fixed, then verified two ways: a direct alpha-value check on a
+background pixel (`~0.0`), and `images/25_real_demo_over_checkerboard.png`,
+the same result composited over a checkerboard -- the checker pattern shows
+through everywhere neither the sphere nor the volume is present, which an
+opaque background could not produce.
+
+**Two more real bugs found via this same demo, both in THIS ADD-ON's own
+code (not yt_idv), both fixed:**
+
+1. **The actual one that mattered: `_render_with_yt_idv` never called
+   `scene.camera._update_matrices()` after `scene.camera.update(...)`.**
+   `yt_idv.cameras.trackball_camera.TrackballCamera` overrides
+   `_compute_matrices` (the hook `.update()`'s own trait-change observer is
+   supposed to call) to a literal no-op, so `.update(position=..., fov=...,
+   near_plane=..., ...)` alone sets those traits but never recomputes
+   `projection_matrix`/`view_matrix` from them -- yt_idv's own internal code
+   always follows `.update()` with an explicit `._update_matrices()` for
+   exactly this reason. Effect: `view_matrix` "accidentally" still looked
+   right (its own lazy default computes from whatever position/focus/up is
+   CURRENT the first time something reads it, and nothing read it before our
+   `.update()` call), but `projection_matrix` silently kept a
+   construction-time default (`fov=45`, `near_plane=0.001`) -- meaning every
+   yt_idv render this project has ever produced had the right camera
+   POSITION but the WRONG field of view and near/far planes, invisibly,
+   the entire time it worked on this project. First appeared as a
+   full-opacity "leak" through the depth clip right on top of the real
+   Cycles sphere's own silhouette; fixed by adding the missing call.
+   Confirmed: re-rendering the demo after the fix produces a clean sphere
+   with no leak, and a visibly tighter/more accurate field of view than
+   every earlier render in this whole exploration.
+2. A smaller, independent precision issue in the SAME area:
+   `_registered_camera_kwargs`'s near/far-plane heuristic (`0.01x`/`4x` the
+   distance to the domain CENTER) produced a constant 400:1 near/far ratio
+   regardless of the domain's actual size, needlessly compressing the
+   domain's usable depth range near NDC depth 1.0 (perspective projection is
+   nonlinear in depth). Fixed in `_near_far_planes`: near/far are now sized
+   around the domain's own 8 unitary-cube corners instead.
+
+See `yt_idv_renderer.py`'s module docstring for the full account of both,
+including exactly how the first one was diagnosed (comparing
+`scene.camera.projection_matrix` against a freshly-computed
+`get_perspective_matrix(...)` before/after the fix).
+
+### Also demonstrated (retained in `scripts/yt_idv_exploration/blender_scene/`)
+
+A real Blender scene -- flagged cube, orbiting camera, reference wireframe
+boxes visualizing the sample dataset's AMR grid structure (mapped onto the
+flagged object's bounding box; a placeholder mapping, not real spatial
+registration), and a composited marker sphere -- driving `operators.
+build_camera_params()` across multiple frames and getting back a genuinely
+different yt_idv render each time. Confirms the camera-motion path works
+through the real boundary, not just a single static call. See that
+directory's own README for the mechanics (a subprocess bridge, needed only
+because `bpy` and `yt_idv` can't share one Python in the environment this
+was built in -- not a real Blender limitation) and what else it caught
+(Empties don't render; use real wireframe mesh geometry -- `hide_render`,
+not `display_type='WIRE'`, is what actually keeps an object out of
+Workbench's rendered output -- and a large, dead-centered sphere reads as a
+flat sticker, not "partly in front of" the content, until shrunk/offset).
+This predates the Cycles Z-buffer wiring and still uses the OLD flat
+alpha-over composite technique for its multi-frame orbit -- the demo above
+is the real-depth-clip redo, but only for a single still frame.
+
 ## Architecture
 
 ### Per-frame pipeline (F12 / animation render)

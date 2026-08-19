@@ -1,0 +1,169 @@
+diff --git a/yt_idv/rendering_contexts/egl_context.py b/yt_idv/rendering_contexts/egl_context.py
+index d6ed706..87b3128 100644
+--- a/yt_idv/rendering_contexts/egl_context.py
++++ b/yt_idv/rendering_contexts/egl_context.py
+@@ -40,6 +40,24 @@ class EGLRenderingContext(OffscreenRenderingContext):
+                 8,
+                 EGL.EGL_BLUE_SIZE,
+                 8,
++                # EGL_ALPHA_SIZE was missing here -- the requested config had
++                # NO alpha bits at all, so the pbuffer surface's default
++                # framebuffer had no real alpha channel to read back.
++                # scene_graph.SceneGraph.image() falls back to reading the
++                # DEFAULT framebuffer (via glReadPixels(..., GL_RGBA, ...))
++                # whenever `scene.fb` is None, which it is for a top-level
++                # offscreen render -- with no alpha bits present, that read
++                # came back as a uniform 1.0 for every pixel regardless of
++                # what was actually drawn (confirmed empirically: a real
++                # render's `image[..., 3]` was exactly 1.0 min/max/everywhere,
++                # even at genuinely empty background pixels that were
++                # otherwise correctly (0, 0, 0) in RGB). This silently broke
++                # every consumer relying on the framebuffer's real alpha for
++                # compositing -- see cycles-volume-override's yt_idv_
++                # renderer.py, which depends on background/clipped pixels
++                # reading alpha=0 for correct Alpha-Over compositing.
++                EGL.EGL_ALPHA_SIZE,
++                8,
+                 EGL.EGL_DEPTH_SIZE,
+                 24,
+                 EGL.EGL_STENCIL_SIZE,
+diff --git a/yt_idv/scene_components/blocks.py b/yt_idv/scene_components/blocks.py
+index 3e51f70..a2acf47 100644
+--- a/yt_idv/scene_components/blocks.py
++++ b/yt_idv/scene_components/blocks.py
+@@ -1,3 +1,4 @@
++import contextlib
+ from math import ceil, floor
+ 
+ import numpy as np
+@@ -5,7 +6,7 @@ import traitlets
+ from OpenGL import GL
+ 
+ from yt_idv.gui_support import add_popup_help
+-from yt_idv.opengl_support import TransferFunctionTexture
++from yt_idv.opengl_support import Texture2D, TransferFunctionTexture
+ from yt_idv.scene_components.base_component import SceneComponent
+ from yt_idv.scene_data.block_collection import BlockCollection
+ from yt_idv.shader_objects import component_shaders, get_shader_combos
+@@ -29,6 +30,16 @@ class BlockRendering(SceneComponent):
+     tf_log = traitlets.Bool(True)
+     slice_position = traitlets.Tuple((0.5, 0.5, 0.5)).tag(trait=traitlets.CFloat())
+     slice_normal = traitlets.Tuple((1.0, 0.0, 0.0)).tag(trait=traitlets.CFloat())
++    # External depth clip (cycles-volume-override addition -- see
++    # ray_tracing.frag.glsl's own comment on the shader-side half of this):
++    # lets a caller stop each ray's integration early at a per-pixel max
++    # window-space depth, e.g. from an already-rendered opaque occluder.
++    # `external_depth_texture` is a single-channel (H, W) float32 Texture2D
++    # in the SAME window-space-depth convention `gl_FragDepth` already uses
++    # in this shader (0..1); None/`use_external_depth_clip=False` (the
++    # default) is a complete no-op, identical to upstream behavior.
++    external_depth_texture = traitlets.Instance(Texture2D, allow_none=True, default_value=None)
++    use_external_depth_clip = traitlets.Bool(False)
+ 
+     priority = 10
+ 
+@@ -157,11 +168,18 @@ class BlockRendering(SceneComponent):
+         each = self.data.vertex_array.each
+         GL.glEnable(GL.GL_CULL_FACE)
+         GL.glCullFace(GL.GL_BACK)
++        depth_clip_active = self.use_external_depth_clip and self.external_depth_texture is not None
++        depth_ctx = (
++            self.external_depth_texture.bind(target=3)
++            if depth_clip_active
++            else contextlib.nullcontext()
++        )
+         with self.transfer_function.bind(target=2):
+-            for tex_ind, tex, bitmap_tex in self.data.viewpoint_iter(scene.camera):
+-                with tex.bind(target=0):
+-                    with bitmap_tex.bind(target=1):
+-                        GL.glDrawArrays(GL.GL_POINTS, tex_ind * each, each)
++            with depth_ctx:
++                for tex_ind, tex, bitmap_tex in self.data.viewpoint_iter(scene.camera):
++                    with tex.bind(target=0):
++                        with bitmap_tex.bind(target=1):
++                            GL.glDrawArrays(GL.GL_POINTS, tex_ind * each, each)
+ 
+     def _set_uniforms(self, scene, shader_program):
+         if self.data._yt_geom_str == "spherical":
+@@ -175,6 +193,11 @@ class BlockRendering(SceneComponent):
+         shader_program._set_uniform("ds_tex", np.array([0, 0, 0, 0, 0, 0]))
+         shader_program._set_uniform("bitmap_tex", 1)
+         shader_program._set_uniform("tf_tex", 2)
++        shader_program._set_uniform("external_depth_tex", 3)
++        shader_program._set_uniform(
++            "use_external_depth_clip",
++            float(self.use_external_depth_clip and self.external_depth_texture is not None),
++        )
+         shader_program._set_uniform("tf_min", self.tf_min)
+         shader_program._set_uniform("tf_max", self.tf_max)
+         shader_program._set_uniform("tf_log", float(self.tf_log))
+diff --git a/yt_idv/shaders/known_uniforms.inc.glsl b/yt_idv/shaders/known_uniforms.inc.glsl
+index 83a9533..8a15299 100644
+--- a/yt_idv/shaders/known_uniforms.inc.glsl
++++ b/yt_idv/shaders/known_uniforms.inc.glsl
+@@ -51,6 +51,15 @@ uniform sampler3D ds_tex[6];
+ // ray tracing control
+ uniform float sample_factor;
+ 
++// external depth clip -- lets a ray's integration be stopped early at a
++// per-pixel max window-space depth supplied by the caller (e.g. an opaque
++// occluder rendered elsewhere), rather than always integrating out to the
++// block's own bounding-box exit. use_external_depth_clip == 0 disables it
++// (external_depth_tex is not sampled/read in that case). Added for
++// cycles-volume-override's yt_idv integration -- see ray_tracing.frag.glsl.
++uniform sampler2D external_depth_tex;
++uniform float use_external_depth_clip;
++
+ // curve drawing control
+ uniform vec4 curve_rgba;
+ 
+diff --git a/yt_idv/shaders/ray_tracing.frag.glsl b/yt_idv/shaders/ray_tracing.frag.glsl
+index e56b16f..81e66a3 100644
+--- a/yt_idv/shaders/ray_tracing.frag.glsl
++++ b/yt_idv/shaders/ray_tracing.frag.glsl
+@@ -132,10 +132,45 @@ void main()
+     float f_ndc_depth;
+     float depth = 1.0;
+ 
++    // External depth clip (cycles-volume-override addition): lets a caller
++    // stop this ray's integration early at a per-pixel max window-space
++    // depth (e.g. an already-rendered opaque occluder), rather than always
++    // integrating all the way out to t1 (this block's own bounding-box
++    // exit). Sampled ONCE per fragment, not per ray-march step -- it's a
++    // per-pixel constant, computing it every iteration would be wasted
++    // work. Disabled (use_external_depth_clip == 0) means external_max_depth
++    // is never actually compared against, so behavior is unchanged from
++    // upstream when this feature isn't used.
++    float external_max_depth = 1.0;
++    if (use_external_depth_clip > 0.5) {
++        // NOTE: known_uniforms.inc.glsl's comment on `viewport` (`(offset_x,
++        // offset_y, 1 / screen_x, 1 / screen_y)`) is WRONG/stale -- it's
++        // actually set from `GL.glGetIntegerv(GL_VIEWPORT)` verbatim (see
++        // yt_idv.cameras.base_camera.BaseCamera._set_uniforms), i.e. raw
++        // (x, y, width, height) in pixels, not reciprocals. Confirmed the
++        // hard way: multiplying by viewport.zw (as the comment implies)
++        // sends screen_uv far outside [0, 1], and with the texture's
++        // default "clamp" boundary that means EVERY fragment ends up
++        // sampling the same corner texel regardless of its real screen
++        // position -- silently "worked" for a spatially-uniform test depth
++        // (any single texel equals a uniform array's value) but a
++        // per-pixel-varying depth had zero effect anywhere. Divide, don't
++        // multiply.
++        vec2 screen_uv = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
++        external_max_depth = texture(external_depth_tex, screen_uv).r;
++    }
++
+     ray_position = p0;
+ 
+     while(t <= t1) {
+ 
++        if (use_external_depth_clip > 0.5) {
++            v_clip_coord = projection * modelview * vec4(ray_position, 1.0);
++            f_ndc_depth = v_clip_coord.z / v_clip_coord.w;
++            float current_depth = 0.5 * f_ndc_depth + 0.5;
++            if (current_depth >= external_max_depth) break;
++        }
++
+         // texture position
+         #ifdef SPHERICAL_GEOM
+         ray_position_native = cart_to_sphere_vec3(ray_position);

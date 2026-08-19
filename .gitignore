@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 scripts/*.exr
+scripts/yt_idv_exploration/blender_scene/output/
+scripts/yt_idv_exploration/blender_scene/images/

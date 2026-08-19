@@ -44,7 +44,7 @@ import time
 
 import bpy
 
-from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync
+from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, yt_idv_renderer
 
 PASS2_ENGINE = "BLENDER_WORKBENCH"
 
@@ -111,6 +111,9 @@ RENDERER_MODES = {
     "STUB": external_render.render_volume,
     "DEBUG_FLAT": external_render.debug_fake_render_volume,
     "SAMPLE_CONSTANT": sample_renderers.constant_density_renderer,
+    "YT_IDV_MAX_INTENSITY": yt_idv_renderer.yt_idv_max_intensity_renderer,
+    "YT_IDV_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_transfer_function_renderer,
+    "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
 }
 
 
@@ -124,6 +127,9 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
             ("STUB", "Real renderer (stub)", "external_render.render_volume() -- raises NotImplementedError until wired in"),
             ("DEBUG_FLAT", "Debug: flat placeholder", "A flat semi-transparent color filling the whole frame, ignoring geometry -- see external_render.debug_fake_render_volume()"),
             ("SAMPLE_CONSTANT", "Sample: depth x constant", "A real (if non-physical) demo: ray/volume-box intersection, depth-clipped, output = path length x a constant -- see sample_renderers.constant_density_renderer()"),
+            ("YT_IDV_MAX_INTENSITY", "yt_idv: Maximum Intensity Projection (exploratory)", "Real yt_idv offscreen volume renderer -- hardcoded IsolatedGalaxy sample dataset, depth-clipped against Cycles' own Z pass via the flagged object's bounding box as registration. Needs yt_idv installed in Blender's own Python -- see README 'yt_idv integration'. See yt_idv_renderer.py module docstring for exactly what is/isn't real here."),
+            ("YT_IDV_TRANSFER_FUNCTION", "yt_idv: Transfer Function (exploratory)", "Real yt_idv offscreen volume renderer with an actual transfer function -- isocontour layers at fixed densities in log space, yt.ColorTransferFunction.add_layers(). Same hardcoded dataset/depth-clip/camera registration as Maximum Intensity Projection -- see yt_idv_renderer.py module docstring."),
+            ("YT_IDV_PROJECTION", "yt_idv: Projective Integration (exploratory)", "Real yt_idv offscreen volume renderer using unweighted line-of-sight integration (additive, not max) -- tends to look smoother/less speckled than Maximum Intensity Projection. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
         ],
         default="STUB",
     )
