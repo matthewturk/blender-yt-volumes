@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Sets up a THROWAWAY venv for exploring yt_idv, separate from this repo's
-# own bpy==5.2.0/Python-3.13 dev venv (see pyproject.toml). Why separate:
-# bpy==5.2.0 simply isn't published for Python 3.12 (confirmed -- `pip
-# install bpy==5.2.0` fails there), and yt_idv's own supported range tops
-# out at 3.12 with a heavy compiled/OpenGL dependency stack that doesn't
-# belong in the lightweight bpy-testing venv anyway -- so there is currently
-# no single Python this repo's own venv could use to run both. Real
-# Blender's OWN embedded Python (NOT bpy-as-a-pip-wheel) doesn't have this
-# conflict -- see README "yt_idv integration".
+# HISTORICAL -- kept for the record, no longer the recommended path. This
+# separate venv existed to work around yt_idv's now-fixed unconditional
+# `imgui` dependency (no cp313 wheel, fails to build against Python 3.13's
+# changed C API): yt_idv's own supported range topped out at 3.12, which
+# doesn't match this repo's own bpy==5.2.0/Python-3.13 dev venv (see
+# pyproject.toml), so there was no single Python version that could hold
+# both. Fixed upstream 2026-09-15 (yt-project/yt_idv#268, "imgui-optional")
+# -- imgui is now an opt-in extra, so a plain install no longer needs it,
+# and `bpy` + real `yt_idv` now coexist in ONE Python-3.13 venv. Prefer
+# `uv sync --group ytidv` in this repo's own venv instead -- see README
+# "Development & testing" -> "Headless yt_idv testing, in this same venv".
+#
+# Original rationale, for context on why this script and the subprocess
+# bridge it enabled (ytidv_worker.py) exist at all:
 #
 # Usage:
 #   ./scripts/yt_idv_exploration/setup_ytidv_venv.sh /path/to/venv

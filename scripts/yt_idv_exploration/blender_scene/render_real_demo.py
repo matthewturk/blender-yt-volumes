@@ -1,32 +1,44 @@
 """Real, end-to-end demonstration of the whole pipeline: a genuine Cycles
-render of a sphere sitting at a corner of the flagged volume box (radius =
-half the box), composited with real yt_idv volume content via the add-on's
-ACTUAL two-pass pipeline (`operators.render_current_frame`) -- not a
-hand-rolled numpy composite, not a fabricated RenderRequest. Both the sphere
-and the volume end up in one final image, with the volume genuinely
-depth-clipped against the sphere via the real Cycles Z pass, and the
-background's alpha handled correctly throughout.
+render of a sphere embedded inside the flagged volume box, composited with
+real yt_idv volume content via the add-on's ACTUAL two-pass pipeline
+(`operators.render_current_frame`) -- not a hand-rolled numpy composite,
+not a fabricated RenderRequest. Both the sphere and the volume end up in
+one final image, with real occlusion in BOTH directions visible at once:
+genuine volume in front of the sphere veils part of it (ordinary Alpha
+Over, no depth clip involved), and the real depth clip (driven by the
+sphere's own real Cycles Z pass) removes the volume behind it, so the
+sphere also visibly occludes something. Background alpha is handled
+correctly throughout too.
 
-Run with REAL Blender itself (see BLENDER_BIN below), not the pip bpy wheel
-used for this repo's own tests -- this needs a genuine Cycles render:
+Runs entirely in-process now, via this repo's own `uv`-managed dev venv --
+NOT real Blender, and no subprocess bridge either:
 
-    /data/SteamLibrary/steamapps/common/Blender/blender --background \\
-        --python scripts/yt_idv_exploration/blender_scene/render_real_demo.py
+    env -u LD_PRELOAD uv run --group ytidv python \\
+        scripts/yt_idv_exploration/blender_scene/render_real_demo.py
 
-The one substitution from a fully in-process real-Blender run: yt_idv still
-cannot be imported into Blender 5.3's own bundled Python 3.13 -- confirmed by
-actually trying (`imgui`, one of yt_idv's compiled dependencies, has no
-cp313 wheel on PyPI and fails to build from source against 3.13's C API,
-which removed the `_PyLong_AsByteArray` signature imgui's generated Cython
-code still assumes). So `operators.RENDERER_MODES[...]` is monkey-patched
-here to `_bridge_render`, a subprocess bridge to the throwaway yt_idv/
-Python-3.12 venv (ytidv_worker.py's `render_with_depth` command) instead of
-calling yt_idv in-process the way real Blender normally would (see
-yt_idv_renderer.py's module docstring). Everything else -- Pass 1's real
+This used to need a genuine yt_idv subprocess bridge (a throwaway
+Python-3.12 venv, `ytidv_worker.py`) because PyPI's yt_idv release (0.5.4)
+lists `imgui` as an unconditional install dependency, which has no cp313
+wheel and fails to build from source against 3.13's changed C API -- and
+this repo's own dev venv is pinned to Python 3.13 to match the pip `bpy`
+wheel below. Fixed upstream 2026-09-15 (yt-project/yt_idv#268,
+"imgui-optional"): imgui moved to an opt-in `gui` extra (only needed for the
+interactive pyglet+imgui control panel -- never for this add-on's own
+`egl`-backend, no-GUI rendering path), so a plain `pip install yt_idv` no
+longer needs it, and `bpy` + real `yt_idv` now coexist in ONE Python 3.13
+interpreter -- confirmed empirically (`import bpy; import yt_idv` together,
+a real offscreen EGL render, and this whole script end to end, all in this
+repo's own venv). Not yet in a PyPI release as of this writing (0.5.4
+predates it), hence the git dependency in `pyproject.toml`'s `ytidv` group
+-- see README "yt_idv integration" for the full story.
+
+`operators.RENDERER_MODES` is used completely unmodified -- no monkeypatch
+needed any more. Everything, including the real yt_idv render itself, is
+`operators.render_current_frame()` run against a real scene: Pass 1's real
 Cycles beauty+Z render, `read_depth_buffer`, per-object `RenderRequest`
-construction, `write_render_result`, Pass 2's real compositor Alpha-Over
-graph and final render -- is `operators.render_current_frame()` itself,
-unmodified, run against a real scene.
+construction (satisfied by the real `yt_idv_*_renderer` functions in
+`yt_idv_renderer.py`), `write_render_result`, Pass 2's real compositor
+Alpha-Over graph and final render.
 
 Black-background handling, addressed three ways:
   1. `scene.render.film_transparent = True` -- Pass 1's own Cycles beauty
@@ -46,9 +58,7 @@ Black-background handling, addressed three ways:
      pattern show through).
 """
 
-import json
 import os
-import subprocess
 import sys
 
 import bpy
@@ -60,11 +70,6 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 ADDON_SRC_PARENT = os.path.join(REPO_ROOT, "src")
 IMAGES_DIR = os.path.normpath(os.path.join(HERE, "..", "images"))
 
-YTIDV_VENV_PYTHON = os.environ.get(
-    "YTIDV_VENV_PYTHON",
-    "/tmp/claude-1000/-home-mturk-yt-cycles-yt/db045906-ff8b-426c-bb6d-8949e7ae6506/scratchpad/ytidv_venv/bin/python",
-)
-WORKER_SCRIPT = os.path.join(HERE, "ytidv_worker.py")
 WORK_DIR = os.path.join(HERE, "_real_demo_work")
 
 RENDERER_MODE = os.environ.get("VOLUME_OVERRIDE_MODE", "projection")  # max_intensity | transfer_function | projection
@@ -78,63 +83,7 @@ os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_volume_override import external_render, operators, properties  # noqa: E402
-
-
-def _bridge_render(request):
-    """Drop-in replacement for a yt_idv_renderer.yt_idv_*_renderer function
-    -- same RenderRequest -> RenderResult signature `operators.
-    RENDERER_MODES` expects -- that shells out to the yt_idv/Python-3.12 venv
-    instead of calling yt_idv in-process. See module docstring for why.
-    """
-    req_json = {
-        "camera": {
-            "matrix_world": request.camera.matrix_world,
-            "projection": request.camera.projection,
-            "lens_mm": request.camera.lens_mm,
-            "sensor_width_mm": request.camera.sensor_width_mm,
-            "sensor_height_mm": request.camera.sensor_height_mm,
-            "sensor_fit": request.camera.sensor_fit,
-            "shift_x": request.camera.shift_x,
-            "shift_y": request.camera.shift_y,
-            "ortho_scale": request.camera.ortho_scale,
-            "clip_start": request.camera.clip_start,
-            "clip_end": request.camera.clip_end,
-            "resolution_x": request.camera.resolution_x,
-            "resolution_y": request.camera.resolution_y,
-            "pixel_aspect_x": request.camera.pixel_aspect_x,
-            "pixel_aspect_y": request.camera.pixel_aspect_y,
-            "projection_matrix": request.camera.projection_matrix,
-        },
-        "depth": {
-            "depth_convention": request.depth.depth_convention,
-            "no_hit_value": request.depth.no_hit_value,
-            "row_order": request.depth.row_order,
-            "units": request.depth.units,
-        },
-        "volume": {
-            "matrix_world": request.volume.matrix_world,
-            "bounding_box_local": request.volume.bounding_box_local,
-        },
-        "frame_number": request.frame.frame_number,
-    }
-    req_path = os.path.join(WORK_DIR, "bridge_request.json")
-    depth_path = os.path.join(WORK_DIR, "bridge_depth.npy")
-    out_path = os.path.join(WORK_DIR, "bridge_result.npy")
-    with open(req_path, "w") as f:
-        json.dump(req_json, f)
-    np.save(depth_path, np.asarray(request.depth.data, dtype=np.float32))
-
-    subprocess.run(
-        [
-            YTIDV_VENV_PYTHON, WORKER_SCRIPT, "render_with_depth",
-            "--request", req_path, "--depth-npy", depth_path,
-            "--mode", RENDERER_MODE, "--out-npy", out_path,
-        ],
-        check=True, cwd=HERE,
-    )
-    rgba = np.load(out_path)
-    return external_render.RenderResult(rgba=rgba, alpha_mode="PREMULTIPLIED", color_space="LINEAR")
+from cycles_volume_override import operators, properties  # noqa: E402
 
 
 class _StubPrefs:
@@ -158,22 +107,38 @@ def build_scene():
     box.name = "FlaggedVolumeBox"
     box.volume_override.is_volume_override = True
 
-    # Sphere centered at a corner of the box, radius = half the box's edge
-    # length (edge length 2 -> radius 1) -- per the requested demo. Corner
-    # (1, 1, 1) is sqrt(3) ~= 1.73 from the box's own center, which is
-    # bigger than the sphere's radius (1): the sphere pokes INTO the box
-    # from one corner without swallowing it whole, a genuine partial-
-    # occlusion test rather than a full cutout.
+    # Sphere embedded INSIDE the box, off toward the camera but not poking
+    # out past the box's own near face -- chosen for BOTH occlusion
+    # directions to be visible at once, not just one:
+    #   - genuine volume in FRONT of the sphere (between the box's near
+    #     face and the sphere's own near surface) draws OVER the sphere via
+    #     the compositor's Alpha Over (foreground=volume, background=beauty
+    #     -- see compositor_build.py's module docstring), so part of the
+    #     sphere should read as veiled/occluded by gas, not fully opaque.
+    #   - genuine volume BEHIND the sphere gets removed by the real depth
+    #     clip, so the sphere still visibly occludes something too.
+    # This used to sit at a box CORNER with radius = half the box's edge
+    # (an earlier iteration): first at the corner FARTHEST from the camera,
+    # which left ~nothing behind the sphere for the clip to remove at all
+    # (confirmed by verify_overlap.py: 0.0% alpha drop in every mode); then
+    # at the NEAREST corner, which fixed the clip but, combined with a
+    # sphere half as wide as the box, ended up occluding the box's entire
+    # visible silhouette from camera -- no volume showed at all, and there
+    # was no near-side volume left to occlude the sphere either (the sphere
+    # sat right at the box's own near face, nothing in front of it).
+    # Smaller and more central fixes both: room for the box's own
+    # silhouette to show around it, AND room for real volume on both sides
+    # of it along camera rays.
     box_edge_length = 2.0
-    sphere_radius = box_edge_length / 2.0
-    corner = (1.0, 1.0, 1.0)
+    sphere_radius = box_edge_length * 0.28
+    sphere_center = (-0.55, -0.55, 0.55)
     bpy.ops.mesh.primitive_uv_sphere_add(
-        radius=sphere_radius, location=corner, segments=64, ring_count=32,
+        radius=sphere_radius, location=sphere_center, segments=64, ring_count=32,
     )
     sphere = bpy.context.active_object
-    sphere.name = "CornerSphere"
+    sphere.name = "EmbeddedSphere"
 
-    mat = bpy.data.materials.new("CornerSphereMaterial")
+    mat = bpy.data.materials.new("EmbeddedSphereMaterial")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf is not None:
@@ -182,9 +147,10 @@ def build_scene():
             bsdf.inputs["Roughness"].default_value = 0.35
     sphere.data.materials.append(mat)
 
-    # Camera: pulled back on the diagonal opposite the sphere's corner so
-    # both the box's silhouette (where the volume shows through) and the
-    # sphere's "bite" out of one corner are clearly visible together.
+    # Camera: pulled back on the diagonal so the box's own silhouette (where
+    # the volume shows through around the sphere) and the embedded sphere
+    # (partly veiled by near-side volume, partly occluding far-side volume)
+    # are both clearly visible together.
     bpy.ops.object.camera_add(location=(-3.4, -4.0, 2.6))
     cam = bpy.context.active_object
     cam.name = "DemoCamera"
@@ -305,7 +271,6 @@ def _verify_and_export(scene):
 
 def main():
     properties.register()
-    operators.RENDERER_MODES[MODE_KEY_BY_NAME[RENDERER_MODE]] = _bridge_render
     operators._get_prefs = lambda context: _StubPrefs()
 
     box, sphere, cam = build_scene()

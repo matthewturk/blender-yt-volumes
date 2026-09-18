@@ -6,14 +6,23 @@ yt_idv stub across a MOVING Blender camera, and what does inserting
 reference objects for the dataset's structure into the Blender scene look
 like?
 
-## Why a subprocess bridge
+**This directory's subprocess bridge is now historical** -- it existed to
+work around yt_idv's now-fixed unconditional `imgui` dependency (see
+`../README.md` and top-level README "yt_idv integration"). `bpy` and real
+`yt_idv` now coexist in one Python-3.13 venv (`uv sync --group ytidv`);
+`render_real_demo.py` (one level up) was ported off the bridge as the
+worked example -- prefer that pattern for anything new. The rest of this
+README describes the original bridge-based exploration for the record.
+
+## Why a subprocess bridge (historical)
 
 `bpy` (this repo's own dev venv) and `yt_idv` (the throwaway venv, see
-`../setup_ytidv_venv.sh`) can't be installed together here -- same root
-cause as everywhere else in this exploration (see `../README.md`). In real
-Blender this isn't an issue (`yt_idv_renderer.py` calls yt_idv in-process,
-see its module docstring) -- `ytidv_worker.py` exists purely so this sandbox
-can drive the real yt_idv render function with a REAL Blender camera.
+`../setup_ytidv_venv.sh`) couldn't be installed together here before the
+imgui fix above -- same root cause as everywhere else in this exploration
+(see `../README.md`). In real Blender this wasn't an issue
+(`yt_idv_renderer.py` calls yt_idv in-process, see its module docstring) --
+`ytidv_worker.py` existed purely so this sandbox could drive the real
+yt_idv render function with a REAL Blender camera.
 
 `render_frames_in_blender.py` (run with this repo's own venv, has `bpy`)
 builds the scene and drives the camera; `ytidv_worker.py` (run in the

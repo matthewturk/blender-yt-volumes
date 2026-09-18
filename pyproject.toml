@@ -24,6 +24,54 @@ dev = [
     "bpy==5.2.0",
     "openexr>=3.4.13",
 ]
+# Optional -- `uv sync --group ytidv` on top of the default `dev` group --
+# real yt_idv, installable alongside `bpy` in THIS SAME Python-3.13 venv now
+# (confirmed empirically: `import bpy; import yt_idv` in one interpreter).
+# Needs a LOCAL, patched yt_idv checkout, not a plain `pip install yt_idv`/
+# git-main install -- see below for why, and README "yt_idv integration"
+# for the full story and how this replaces the old two-venv/subprocess-
+# bridge setup:
+#
+# 1. Python-3.13 install was impossible at all until 2026-09-15
+#    (yt-project/yt_idv#268, "imgui-optional", merged to `main`): PyPI's
+#    release (0.5.4) lists `imgui` as an unconditional install_requires,
+#    which has no cp313 wheel and fails to build from source against 3.13's
+#    C API. Fixed by moving imgui to an opt-in `gui` extra (only needed for
+#    the interactive pyglet+imgui control panel, never for this add-on's
+#    own `egl`-backend, no-GUI path).
+# 2. yt_idv_renderer.py's whole depth-clip feature (the actual point of
+#    wiring Cycles' Z-buffer through at all -- see its module docstring)
+#    needs `BlockRendering.use_external_depth_clip`/`external_depth_texture`
+#    plus the matching shader/uniform changes -- these do NOT exist on
+#    `main` at all. They're yt-project/yt_idv#247 ("Fixing for external
+#    usage"), open, authored by this repo's own author, branch
+#    `external-usage` -- confirmed via `verify_overlap.py`: installing
+#    plain `main` makes `set_external_depth_clip` silently a no-op (no
+#    component has the attribute, so its own `hasattr` guard skips every
+#    one) -- the clip measurably does NOTHING, in EVERY renderer mode, not
+#    just MIP, until this PR's changes are present.
+#
+# #247 predates the imgui-optional fix and doesn't merge cleanly onto
+# current `main` anymore (a real conflict, not just staleness -- `main`
+# added `rendered_image_plane`/`RenderedImagePlane` after #247 branched).
+# Until #247 is rebased and merged upstream, point this at a LOCAL checkout
+# with both merged by hand:
+#
+#     git clone https://github.com/yt-project/yt_idv.git ../yt_idv   # from repo root: ./yt_idv
+#     cd ../yt_idv && git fetch origin pull/247/head:pr-247 && git checkout pr-247
+#     git merge main   # resolve the 2 conflicts (egl_context.py, blocks.py -- both additive, trivial)
+#
+# (`/yt_idv/` is gitignored here -- it's a real separate upstream checkout,
+# not vendored code.) Once #247 merges (or is rebased and re-opened), this
+# can go back to a plain git/PyPI dependency.
+ytidv = [
+    "yt_idv @ file:///home/mturk/yt/cycles-override/yt_idv",
+    # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
+    # of yt_idv's own declared dependencies.
+    "pooch>=1.8",
+    "pandas>=2.0",
+    "h5py>=3.10",
+]
 
 [tool.uv]
 package = true

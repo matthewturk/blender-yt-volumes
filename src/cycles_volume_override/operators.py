@@ -116,6 +116,13 @@ RENDERER_MODES = {
     "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
 }
 
+# Renderer modes that create their own offscreen EGL context (yt_idv) --
+# see render_current_frame()'s `compositor_device` override for why this
+# set specifically, not all of RENDERER_MODES, needs it.
+YT_IDV_RENDERER_MODES = {
+    "YT_IDV_MAX_INTENSITY", "YT_IDV_TRANSFER_FUNCTION", "YT_IDV_PROJECTION",
+}
+
 
 class VolumeOverridePreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
@@ -532,7 +539,8 @@ def render_current_frame(context):
     if scene.camera is None:
         raise RuntimeError("Scene has no active camera")
 
-    verbose = _get_prefs(context).verbose_logging
+    prefs = _get_prefs(context)
+    verbose = prefs.verbose_logging
     log = _log if verbose else (lambda *a, **k: None)
     step = _StepTimer if verbose else _NullStepTimer
 
@@ -549,6 +557,27 @@ def render_current_frame(context):
     view_layer.use_pass_z = True
 
     prev_engine = scene.render.engine
+    prev_compositor_device = scene.render.compositor_device
+    if prefs.renderer_mode in YT_IDV_RENDERER_MODES:
+        # Real, reproducible finding: Blender's own realtime compositor
+        # (the default `compositor_device == "GPU"`) grabs a GPU/EGL context
+        # as soon as ANY render runs through a scene's compositor node tree
+        # -- even a trivial one with no GPU-only nodes at all (confirmed:
+        # reproduces with nothing but a Render Layers -> File Output graph,
+        # i.e. exactly pass 1's own graph below). Once that's happened in
+        # THIS process, yt_idv's own subsequent `yt_idv.render_context("egl",
+        # ...)` call fails with `EGLError(err=EGL_BAD_ACCESS, baseOperation=
+        # eglMakeCurrent, ...)` -- confirmed via a minimal repro isolating
+        # exactly this (Cycles render alone: fine; Cycles render through ANY
+        # compositor tree, then a fresh yt_idv EGL context: fails every
+        # time). Forcing the compositor to `"CPU"` for the duration of a
+        # yt_idv-mode render avoids the GPU/EGL grab entirely and was
+        # confirmed to fix it end to end (see scripts/yt_idv_exploration/
+        # blender_scene/render_real_demo.py, now runs fully in-process with
+        # real bpy + real yt_idv in one interpreter). Scoped to yt_idv modes
+        # only -- the other renderer modes never touch EGL/GL, so there's no
+        # reason to override this scene setting for them.
+        scene.render.compositor_device = "CPU"
     try:
         # --- Pass 1: real Cycles beauty + Z, flagged objects hidden -----
         with step("pass1 build compositor graph"):
@@ -566,7 +595,6 @@ def render_current_frame(context):
         camera_params = build_camera_params(scene, scene.camera)
         frame_params = build_frame_params(scene)
 
-        prefs = _get_prefs(context)
         render_fn = RENDERER_MODES[prefs.renderer_mode]
         log(f"renderer_mode={prefs.renderer_mode!r} ({render_fn.__module__}.{render_fn.__qualname__})")
 
@@ -600,6 +628,7 @@ def render_current_frame(context):
     finally:
         scene.render.engine = prev_engine
         view_layer.use_pass_z = prev_use_pass_z
+        scene.render.compositor_device = prev_compositor_device
 
 
 def _show_render_result(context):
@@ -644,6 +673,19 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     _frame_iter = None
 
     def execute(self, context):
+        if not properties.flagged_objects(context.scene):
+            # Nothing in this scene opts into the override -- delegate
+            # straight to Blender's own render operator instead of running
+            # the two-pass pipeline (which forces the Z pass on, rebuilds
+            # the compositor graph, and swaps the engine to Workbench for
+            # the final write). Without this, enabling the add-on breaks
+            # ordinary Cycles rendering for every scene, even ones that
+            # never use the override -- F12/Ctrl+F12 are unconditionally
+            # remapped to this operator (see handlers.py), so this check is
+            # what keeps that remap a no-op until a volume is actually
+            # flagged.
+            return bpy.ops.render.render("INVOKE_DEFAULT", animation=self.animation)
+
         if not self.animation:
             try:
                 render_current_frame(context)

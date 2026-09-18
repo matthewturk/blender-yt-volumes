@@ -1,12 +1,27 @@
-"""Subprocess worker: the yt_idv side of a bridge between this repo's own
+"""HISTORICAL -- kept for the record, no longer the recommended path. This
+subprocess worker bridged this repo's own bpy==5.2.0/Python-3.13 dev venv
+to a throwaway yt_idv/Python-3.12 venv (see ../README.md and
+../setup_ytidv_venv.sh) to work around yt_idv's now-fixed unconditional
+`imgui` dependency, which used to make it uninstallable under Python 3.13
+at all. Fixed upstream 2026-09-15 (yt-project/yt_idv#268,
+"imgui-optional") -- `bpy` and real `yt_idv` now coexist in ONE Python-3.13
+venv (`uv sync --group ytidv` in this repo's own venv; see README
+"Development & testing" -> "Headless yt_idv testing, in this same venv"),
+so a script needing both no longer needs this bridge at all --
+`render_real_demo.py` in this same directory was ported off it as the
+worked example.
+
+Original docstring, for context on why this worker exists:
+
+Subprocess worker: the yt_idv side of a bridge between this repo's own
 bpy==5.2.0/Python-3.13 dev venv and the throwaway yt_idv/Python-3.12 venv
-(see ../README.md and ../setup_ytidv_venv.sh -- bpy and yt_idv can't be
-installed in the same venv here).
+(see ../README.md and ../setup_ytidv_venv.sh -- bpy and yt_idv couldn't be
+installed in the same venv before the imgui fix above).
 
 This is NOT part of the shipped add-on -- in real Blender, yt_idv_renderer.py
 calls yt_idv in-process (see its module docstring), because real Blender's
 own embedded Python doesn't have the bpy-as-a-pip-wheel version conflict
-that forces this sandbox into two venvs. This worker exists purely so this
+that forced this sandbox into two venvs. This worker exists purely so this
 sandbox can exercise the real `yt_idv_max_intensity_renderer` function
 driven by a REAL Blender camera (built with the add-on's own
 `operators.build_camera_params()`) across multiple frames, which needs bpy

@@ -140,10 +140,49 @@ sys;print(sys.executable)"`, or the `python.exe`/`python3.1x` under
 Blender's own install directory) and `pip install` into it directly (using
 that interpreter's own `-m pip`, ensuring pip first via `-m ensurepip` if
 needed) -- see Blender's manual, "Installing Python Modules", for the
-general mechanism this relies on. Install `yt_idv` itself (`pip install
-yt_idv`, or `pip install -e /path/to/a/checkout`) plus `pooch`/`pandas`/
-`h5py` (lazy dependencies `yt.load_sample`'s Enzo/IsolatedGalaxy path needs
-that aren't part of `yt_idv`'s own declared dependencies).
+general mechanism this relies on. Install `yt_idv` itself plus `pooch`/
+`pandas`/`h5py` (lazy dependencies `yt.load_sample`'s Enzo/IsolatedGalaxy
+path needs that aren't part of `yt_idv`'s own declared dependencies).
+
+**On Python 3.13+ (e.g. Blender 5.x's own bundled Python), install yt_idv
+from git for now, not `pip install yt_idv` / PyPI.** PyPI's latest release
+(0.5.4, as of this writing) lists `imgui` as an unconditional dependency,
+which has no cp313 wheel and fails to build from source against 3.13's
+changed C API -- this is exactly what used to make `yt_idv` uninstallable
+into a modern Blender's own Python at all (see "Real yt_idv bugs" below,
+and the now-corrected claim this repo's own `yt_idv_renderer.py` module
+docstring used to make about that). Fixed upstream 2026-09-15
+(yt-project/yt_idv#268, "imgui-optional"): imgui moved to an opt-in `gui`
+extra, needed only for the interactive pyglet+imgui control panel -- never
+for this add-on's own `egl`-backend, no-GUI rendering path -- so installing
+without it no longer touches imgui at all. Not yet in a PyPI release
+(0.5.4 predates the fix), so for now:
+
+```
+pip install "git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py
+```
+
+into Blender's own Python, or use its `test`/`gui` extras if you also want
+yt_idv's own test suite or the interactive GUI (`pip install
+"yt_idv[gui] @ git+https://github.com/yt-project/yt_idv.git"` -- imgui does
+build fine on Python <=3.12, just not 3.13+). Once a release ships the fix,
+a plain `pip install yt_idv` will work the same way. This repo's own dev
+venv installs yt_idv the same way, via the optional `ytidv` dependency
+group -- see "Development & testing" below; it's no longer a separate
+Python/venv story from your real Blender's install, just a separate
+`pip`/`uv` invocation.
+
+**If you want the real external depth clip to actually do anything, plain
+`main` isn't enough either -- see "External depth clip" below.** The
+`imgui-optional` fix above only makes `yt_idv` *installable* on Python
+3.13+; the depth-clip feature this add-on's whole Z-buffer-wiring story
+depends on (see "yt_idv integration" above) is a SEPARATE, still-unmerged
+change (yt-project/yt_idv#247). Installing plain `main` gets you a yt_idv
+that imports and renders fine but silently ignores every depth clip call --
+confirmed directly (`scripts/yt_idv_exploration/blender_scene/
+verify_overlap.py`: a 0.0% measured effect in every renderer mode, not a
+crash, not a warning). Use the checkout-plus-merge recipe in
+pyproject.toml's `ytidv` group instead until #247 is rebased and merged.
 
 ### Five real yt_idv bugs found while wiring this up
 
@@ -218,27 +257,74 @@ produce. Full story, including bug 4 above, in `yt_idv_renderer.py`'s
 "External depth clip" docstring section and `scripts/yt_idv_exploration/
 explore_external_depth_clip.py`.
 
+**Status upstream: this is yt-project/yt_idv#247 ("Fixing for external
+usage"), open, not yet merged into `main` or released.** It's NOT on PyPI
+and NOT on the `main` branch that the `imgui-optional` fix above lives on
+-- the patch file in this repo predates the PR and matches it closely, but
+the PR itself is the maintained version. #247 was branched before `main`
+grew `rendered_image_plane`/`RenderedImagePlane`, so it no longer merges
+onto current `main` cleanly (2 conflicts, both trivially additive -- see
+pyproject.toml's `ytidv` group for the exact merge recipe used here).
+**This isn't a hypothetical caveat**: installing plain `main` yt_idv (which
+DOES have the `imgui-optional` fix and imports/renders just fine) makes
+`yt_idv_renderer.set_external_depth_clip` silently do nothing on every
+call -- no error, no warning, a perfectly plausible-looking render either
+way -- because no component has the `use_external_depth_clip` attribute at
+all. Caught directly, not suspected, by `scripts/yt_idv_exploration/
+blender_scene/verify_overlap.py`: diffing a real clipped render against a
+real unclipped one against plain `main` measured a flat 0.0% difference in
+EVERY renderer mode (not just MIP, where a small/no difference can be
+legitimate -- see that script's own docstring). `set_external_depth_clip`
+now raises instead of silently no-opping when this happens (see its own
+docstring) specifically so this can't go unnoticed again the way it did
+here. See "The real end-to-end demo" below for what it looks like once the
+clip is actually active.
+
 ### The real end-to-end demo: a real Cycles sphere composited with real yt_idv volume content
 
 `scripts/yt_idv_exploration/blender_scene/render_real_demo.py` is the whole
 pipeline, run for real: a genuine Cycles render (real BSDF material, real
-sun lamp, 64 samples, denoised) of a sphere centered at a corner of the
-flagged volume box, radius = half the box's edge length, composited with
-real yt_idv volume content -- via the add-on's actual, unmodified
-`operators.render_current_frame()` two-pass pipeline, not a hand-built
-`RenderRequest` and not a numpy composite. The only substitution from a
-fully in-process real-Blender run: yt_idv still can't be imported into
-Blender 5.3's own bundled Python 3.13 (confirmed by trying -- one of its
-compiled dependencies has no cp313 wheel and fails to build against 3.13's
-changed C API), so `RENDERER_MODES`'s yt_idv entry is monkey-patched to
-bridge to the throwaway yt_idv venv via a subprocess for this one call;
-everything else in the pipeline is the real code, unmodified.
+sun lamp, 64 samples, denoised) of a sphere embedded inside the flagged
+volume box, composited with real yt_idv volume content -- via the add-on's
+actual, unmodified `operators.render_current_frame()` two-pass pipeline,
+not a hand-built `RenderRequest` and not a numpy composite. Runs entirely
+in-process now (real `bpy` + real, patched `yt_idv` in one Python 3.13
+interpreter, via this repo's own `uv`-managed dev venv -- see "yt_idv
+integration" and "Development & testing" above) -- no subprocess bridge, no
+monkeypatched `RENDERER_MODES`, `operators.render_current_frame()`
+unmodified end to end.
 
-Result: `images/24_real_demo_sphere_and_volume.png` -- the sphere renders as
-real lit Cycles geometry, the volume fills the rest of the box's silhouette,
-and a genuine crescent-shaped gap appears at the sphere's base where the
-real depth clip (driven by the sphere's own real Cycles Z-buffer) stops the
-volume's ray march -- not a flat, all-or-nothing cutout. This run is also
+**Where the sphere sits matters, and it took two more tries to get right.**
+Originally centered at a box CORNER, radius = half the box's edge:
+
+1. **At the corner FARTHEST from the camera** -- the very first version --
+   left little to no volume density actually behind the sphere for the
+   depth clip to remove: the box's own domain had already mostly ended
+   right around there. Confirmed directly by `verify_overlap.py` (below):
+   disabling the depth clip changed NOTHING, even in `projection` mode.
+2. **Moved to the NEAREST corner instead** -- fixed the clip (a real,
+   measurable 100% alpha drop where the sphere was), but combined with a
+   sphere half as wide as the box, it ended up occluding the box's ENTIRE
+   visible silhouette from the camera: no volume showed anywhere, and
+   there was no near-side volume left in front of the sphere either (it
+   sat right at the box's own near face), so the sphere itself always
+   looked fully opaque -- occlusion only ever ran ONE direction.
+
+**Fixed by shrinking the sphere and embedding it more centrally**, off
+toward the camera but not poking past the box's near face: now genuine
+volume shows on BOTH sides of it along camera rays -- some in front
+(ordinary Alpha Over veils part of the sphere in a soft haze, no depth clip
+involved) and some behind (the real depth clip removes it, so the sphere
+still visibly occludes something too) -- while the box's own silhouette
+stays visible all around it. Both occlusion directions visible in the same
+image is the actual point: proof the two objects genuinely share the same
+3D space, not just that one always wins.
+
+Result: `images/24_real_demo_sphere_and_volume.png` -- the sphere renders
+as real lit Cycles geometry, clearly a solid ball (not washed out), with
+real gas from the volume veiling part of its surface and clean depth-
+clipped gas visible around/behind it -- not a flat, all-or-nothing cutout,
+and not two disconnected shapes floating near each other. This run is also
 what caught yt_idv bug 5 above: the background initially composited as
 opaque black instead of transparent, traced to the EGL context's missing
 alpha bits. Fixed, then verified two ways: a direct alpha-value check on a
@@ -246,6 +332,54 @@ background pixel (`~0.0`), and `images/25_real_demo_over_checkerboard.png`,
 the same result composited over a checkerboard -- the checker pattern shows
 through everywhere neither the sphere nor the volume is present, which an
 opaque background could not produce.
+
+### Verifying the sphere and volume actually interact, not just look plausible
+
+A composited image that merely LOOKS plausible isn't proof the depth clip
+did anything -- see "External depth clip" above for a real case where it
+silently did nothing while still producing a normal-looking render.
+`scripts/yt_idv_exploration/blender_scene/verify_overlap.py` is the actual
+test: it renders the SAME real scene through the SAME real pipeline TWICE
+per renderer mode -- once with the depth clip enabled (normal), once
+forced off (`yt_idv_renderer.set_external_depth_clip` monkeypatched to
+always pass `depth=None`, its own documented "disable" contract) -- and
+diffs the two. The sphere's own Cycles beauty pass never touches the depth
+clip at all (rendered once in pass 1, before the volume renderer even
+runs), so it's checked bit-identical between the two runs first, as a
+sanity check on the comparison itself; only the volume layer's own alpha,
+specifically inside vs. outside the sphere's on-screen silhouette (read
+straight from that same beauty pass's alpha channel -- the sphere is the
+only opaque geometry in the scene), is the actual signal.
+
+With the final, embedded sphere placement above, on both `projection` and
+`max_intensity`:
+
+```
+mean volume alpha INSIDE sphere silhouette:  unclipped=1.0000 clipped=0.4010  drop=0.5990 (59.9%)
+mean volume alpha OUTSIDE sphere silhouette: unclipped=0.2119 clipped=0.2119  drop=0.0000
+```
+
+-- a ~60% drop exactly where the sphere is, 0% everywhere else:
+spatially-localized, not a global effect, and PARTIAL this time -- some of
+the sphere's silhouette already had near-side volume saturating to full
+alpha before the clip point (no room left for the clip to remove anything
+more there), the rest had thin/low near-side alpha, so clipping away the
+far-side volume there makes a big difference. See
+`images/29_verify_overlap_diff_projection.png`, a per-pixel heatmap where
+red is "alpha the clip removed" and a faint green outline traces the
+sphere's silhouette for registration: the red lobes line up almost exactly
+with the reddish-brown UNVEILED parts of the sphere in image 24, and the
+dark (no-drop) regions line up with the pink-VEILED parts -- the same
+story, told two ways. **This still does NOT distinguish MIP from
+`projection`** -- both happen to show the same 59.9% drop with this exact
+geometry. MIP keeps only the single brightest sample along each ray and
+discards where along the ray it came from, so a PARTIAL depth occlusion
+(the far-side clip removing only SOME of a ray's density, not all of it)
+is exactly the case where MIP's own blind spot COULD show up (the peak
+sample surviving the clip either way) -- it just doesn't happen to here.
+Demonstrating that asymmetry for real would need a geometry specifically
+tuned so the density peak sits on the near side of the clip plane for some
+pixels; not attempted here.
 
 **Two more real bugs found via this same demo, both in THIS ADD-ON's own
 code (not yt_idv), both fixed:**
@@ -800,6 +934,39 @@ uv run python scripts/verify_pano_equirect.py      # empirical equirectangular m
 ```
 
 (All three verification scripts touch a real Cycles render, not just Blender's Python API, so `LD_PRELOAD` from your shell profile may need unsetting if it references something not present in a minimal environment: `env -u LD_PRELOAD uv run python scripts/....py`.)
+
+### Headless yt_idv testing, in this same venv
+
+`uv sync --group ytidv` installs real `yt_idv` (from git -- see "Installing
+yt_idv into your Blender's Python" above for why) plus `pooch`/`pandas`/
+`h5py` alongside everything `uv sync` already installs, into this SAME
+Python-3.13 venv as `bpy`. Confirmed empirically: `bpy` and `yt_idv` import
+and run together in one interpreter (a real offscreen EGL context creates
+and renders fine), so `scripts/yt_idv_exploration/blender_scene/
+render_real_demo.py` -- the real end-to-end demo (see "The real end-to-end
+demo" below) -- now runs entirely through `uv run --group ytidv python
+...`, no separate throwaway venv or subprocess bridge needed:
+
+```
+env -u LD_PRELOAD uv sync --group ytidv
+env -u LD_PRELOAD uv run --group ytidv python \
+    scripts/yt_idv_exploration/blender_scene/render_real_demo.py
+```
+
+This used to require a second, throwaway Python-3.12 venv
+(`scripts/yt_idv_exploration/setup_ytidv_venv.sh`) plus a subprocess bridge
+(`blender_scene/ytidv_worker.py`) purely to work around `yt_idv`'s
+now-fixed unconditional `imgui` dependency (see "Installing yt_idv into
+your Blender's Python" above) -- those scripts are kept for the historical
+record of that exploration (per this repo's own "retained, not just
+described" habit) but are no longer the recommended path; prefer the
+`ytidv` group above for anything new. One separate, real incompatibility
+surfaced while retiring the bridge: Blender's own realtime compositor grabs
+a GPU/EGL context that collides with yt_idv's own offscreen EGL context in
+the same process -- `operators.render_current_frame` now works around this
+itself (forces `scene.render.compositor_device = "CPU"` for yt_idv-mode
+renders specifically) rather than something you need to handle by hand; see
+`yt_idv_renderer.py`'s module docstring for the full finding.
 
 `bpy==5.2.0` is the pip-installable "Blender as a Python module" package
 (no GUI, headless), used only for tests/verification -- it is a genuinely

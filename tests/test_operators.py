@@ -247,3 +247,57 @@ def test_requested_time_change_does_not_flip_dataset_version_changed(clean_scene
     assert second.requested_time == 2.0
     assert second.version.changed is False  # only requested_time moved
     assert second.version.hash == first.version.hash
+
+
+# --- F12 pass-through when nothing is flagged --------------------------------
+
+@pytest.fixture
+def registered_render_operator():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    properties.register()
+    operators.register()
+    yield
+    operators.unregister()
+    properties.unregister()
+
+
+def test_render_operator_delegates_to_plain_render_when_nothing_flagged(registered_render_operator, monkeypatch):
+    """Enabling this add-on remaps F12/Ctrl+F12 to render.volume_override
+    unconditionally (see handlers.py) -- so for a scene with no flagged
+    volumes, this operator must behave exactly like Blender's own
+    render.render, not run the two-pass pipeline (which forces the Z pass
+    on, rebuilds the compositor graph, and swaps the engine to Workbench).
+    Otherwise installing the add-on breaks ordinary rendering everywhere,
+    even in scenes that never use the override.
+    """
+    scene = bpy.context.scene
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "BLENDER_WORKBENCH"
+    bpy.ops.object.camera_add(location=(0, 0, 5))
+    scene.camera = bpy.context.active_object
+    assert properties.flagged_objects(scene) == []
+
+    called = []
+    monkeypatch.setattr(operators, "render_current_frame", lambda *a, **k: called.append(True))
+
+    result = bpy.ops.render.volume_override(animation=False)
+
+    assert result == {"FINISHED"}
+    assert called == []  # the two-pass pipeline must not run
+
+
+def test_render_operator_runs_pipeline_when_something_flagged(registered_render_operator, monkeypatch):
+    scene = bpy.context.scene
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    called = []
+    monkeypatch.setattr(operators, "render_current_frame", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(operators, "_show_render_result", lambda *a, **k: None)
+
+    result = bpy.ops.render.volume_override(animation=False)
+
+    assert result == {"FINISHED"}
+    assert called == [True]

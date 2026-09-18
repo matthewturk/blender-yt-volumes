@@ -313,22 +313,49 @@ not a separate unsolved problem. See `_render_with_yt_idv`'s docstring for
 exactly how the (possibly non-square) Blender depth grid gets aligned with
 yt_idv's forced-square render canvas.
 
-NOT wired into this repo's own pytest suite beyond the pure-Python helpers
-below (`_camera_update_kwargs`, `_approx_vertical_fov_deg`, `_to_row_order`):
-that suite's venv is pinned to `bpy==5.2.0`/Python 3.13 for the *unrelated*
-reason of matching the pip `bpy` wheel's ABI (see pyproject.toml) -- and
-`bpy==5.2.0` simply isn't published for Python 3.12 (confirmed: `pip
-install bpy==5.2.0` fails there), while yt_idv's own supported range tops
-out at Python 3.12 with a heavy compiled/OpenGL dependency stack besides --
-so there is currently no single Python version this sandbox can install
-both `bpy` and `yt_idv` into, let alone one that also belongs in this
-project's lightweight test venv. `yt`/`yt_idv` are imported lazily (inside
-functions, not at module level) specifically so importing THIS module --
-and therefore registering the whole add-on -- never requires them to be
-installed; only actually selecting this renderer mode and rendering does.
-See README "yt_idv integration" for how to install yt_idv into your real
-Blender's Python (which, unlike this sandbox, is not `bpy`-as-a-pip-wheel
-and so isn't subject to that particular version conflict).
+NOT wired into this repo's own default pytest run beyond the pure-Python
+helpers below (`_camera_update_kwargs`, `_approx_vertical_fov_deg`,
+`_to_row_order`) -- but CAN be, in the same `bpy`/Python-3.13 dev venv this
+repo already uses for everything else, via the optional `ytidv` dependency
+group (`uv sync --group ytidv`; see pyproject.toml and README "yt_idv
+integration"). This used to be impossible: PyPI's yt_idv release (0.5.4)
+lists `imgui` as an unconditional install dependency, which has no cp313
+wheel and fails to build from source against 3.13's changed C API -- and
+this repo's dev venv is pinned to Python 3.13 to match the pip `bpy`
+wheel's ABI, so there was no single Python version that could hold both.
+Fixed upstream 2026-09-15 (yt-project/yt_idv#268, "imgui-optional"): imgui
+moved to an opt-in `gui` extra (only needed for the interactive
+pyglet+imgui control panel -- never for this module's own `egl`-backend,
+no-GUI path), so a plain install no longer needs it. Confirmed empirically:
+`bpy` and real `yt_idv` now import together in ONE Python 3.13 interpreter,
+a real offscreen EGL context renders through it, and
+`scripts/yt_idv_exploration/blender_scene/render_real_demo.py` runs the
+add-on's actual two-pass pipeline against real Cycles + real yt_idv content
+end to end this way, with no subprocess bridge -- see that script's module
+docstring. Not yet in a PyPI release as of this writing (0.5.4 predates it),
+hence the git dependency in the `ytidv` group.
+
+**A real, separate incompatibility found while making that in-process run
+work, NOT a yt_idv bug:** Blender's own realtime compositor (the default
+`scene.render.compositor_device == "GPU"`) grabs a GPU/EGL context as soon
+as ANY render runs through a scene's compositor node tree -- confirmed via
+a minimal repro isolating exactly this (a bare Cycles render: fine; the
+same render through nothing more than a Render Layers -> File Output graph,
+i.e. exactly this add-on's own pass 1: fails). Once that's happened in this
+process, yt_idv's own subsequent `yt_idv.render_context("egl", ...)` fails
+with `EGLError(err=EGL_BAD_ACCESS, baseOperation=eglMakeCurrent, ...)` --
+apparently Blender's own EGL context stays bound in a way `eglMakeCurrent`
+for a second, unrelated context can't share. `operators.render_current_frame`
+now forces `scene.render.compositor_device = "CPU"` for the duration of a
+yt_idv-mode render specifically (restored afterward) to avoid this -- see
+its own docstring/comment for the confirmation. `yt`/`yt_idv` are still
+imported lazily here (inside functions, not at module level) so importing
+this module -- and therefore registering the whole add-on -- never requires
+them installed; only actually selecting a yt_idv renderer mode and
+rendering does. See README "yt_idv integration" for installing yt_idv into
+your real interactive Blender's own Python too (a separate install from
+this repo's dev venv either way, but no longer blocked by the same
+imgui/Python-version conflict).
 
 Known rough edges, beyond the scope points above:
   - The dataset + offscreen GL context are cached at module level
@@ -483,7 +510,8 @@ def _to_texture2d_axis_convention(depth):
 def set_external_depth_clip(scene, depth=None):
     """Enable/disable the external depth clip on every component in `scene`
     -- see module docstring's "External depth clip" section for what this
-    is and its current limitation (not yet wired to Blender's real Z-buffer).
+    is; wired into both renderer functions against Blender's real Z-buffer
+    (`_cycles_depth_to_yt_idv_window_depth` below).
 
     `depth`: a `(height, width)` float32 array in ordinary top-down image
     convention (row 0 = top) and yt_idv's own window-space depth convention
@@ -495,6 +523,20 @@ def set_external_depth_clip(scene, depth=None):
     baseline -- see scripts/yt_idv_exploration/explore_external_depth_clip.py).
     Must match the render's actual (square, post-`_render_with_yt_idv`)
     pixel dimensions.
+
+    Raises if `depth` is given but NO component in `scene` actually
+    supports the clip -- a real failure mode, not a hypothetical one: this
+    feature needs yt_idv changes (yt-project/yt_idv#247, "Fixing for
+    external usage") that are NOT on PyPI or `main` as of this writing (see
+    README "yt_idv integration" and pyproject.toml's `ytidv` group for how
+    to get a checkout that has them). Before this check existed, installing
+    a plain/unpatched yt_idv made this function silently do nothing on
+    every call (the `hasattr` guard below just skipped every component) --
+    every render still "worked" and looked plausible, but the clip measured
+    a flat 0.0% effect in EVERY renderer mode, not just MIP, until
+    `scripts/yt_idv_exploration/blender_scene/verify_overlap.py` caught it
+    by actually diffing a clipped vs. unclipped render instead of trusting
+    that a plausible-looking image meant the clip was doing anything.
     """
     try:
         from yt_idv.opengl_support import Texture2D
@@ -504,15 +546,28 @@ def set_external_depth_clip(scene, depth=None):
             "Python -- see README 'yt_idv integration' for how to install "
             "it there."
         ) from exc
+    any_component_supports_clip = False
     for component in scene.components:
         if not hasattr(component, "use_external_depth_clip"):
             continue  # e.g. annotation components that aren't block_rendering
+        any_component_supports_clip = True
         if depth is None:
             component.use_external_depth_clip = False
             continue
         texture_data = _to_texture2d_axis_convention(np.asarray(depth, dtype="f4"))
         component.external_depth_texture = Texture2D(data=np.ascontiguousarray(texture_data))
         component.use_external_depth_clip = True
+    if depth is not None and not any_component_supports_clip:
+        raise RuntimeError(
+            "set_external_depth_clip(depth=...) was asked to enable the "
+            "depth clip, but no component in this yt_idv scene has a "
+            "`use_external_depth_clip` attribute -- this yt_idv install is "
+            "missing the external-depth-clip changes (yt-project/"
+            "yt_idv#247), so the clip would silently do nothing while every "
+            "render still looked plausible. See this function's own "
+            "docstring and README 'yt_idv integration' for how to get a "
+            "yt_idv checkout that actually supports it."
+        )
 
 
 def _build_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap, nbins=TF_NBINS):
