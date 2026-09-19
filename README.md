@@ -184,7 +184,7 @@ verify_overlap.py`: a 0.0% measured effect in every renderer mode, not a
 crash, not a warning). Use the checkout-plus-merge recipe in
 pyproject.toml's `ytidv` group instead until #247 is rebased and merged.
 
-### Five real yt_idv bugs found while wiring this up
+### Six real yt_idv bugs found while wiring this up
 
 All found by testing NON-square resolutions -- every one of yt_idv's own
 examples/tests uses a square one (`width=height=1024`), so these went
@@ -234,6 +234,20 @@ in `scripts/yt_idv_exploration/` (retained, not just described):
    verifying the real end-to-end sphere-and-volume demo's background
    (below) -- fixed by adding `EGL_ALPHA_SIZE, 8` to the config request;
    confirmed via the same demo, background alpha going from `1.0` to `0.0`.
+   (Since independently fixed upstream too, on `main` -- the local `yt_idv/`
+   checkout's own rebase onto current `main` picks up the identical fix
+   natively now, so this repo no longer carries it as part of its own
+   patch.)
+6. **`passthrough.frag.glsl` (used as `block_rendering.transfer_function`'s
+   own second pass) unconditionally sets `color.a = 1.0`**, discarding the
+   first pass's real per-pixel accumulated alpha entirely -- so any
+   `"transfer_function"`-render-method render (isocontours, or the new
+   threshold-fog mode below) composited its background as opaque black
+   instead of transparent. Not fixed by editing that shared shader in place
+   (several OTHER usages -- outlines, text, line plots -- genuinely want
+   always-opaque); fixed by adding a new sibling shader,
+   `passthrough_alpha.frag.glsl` (same, minus that one line), and pointing
+   only `block_rendering.transfer_function`'s `second_fragment` at it.
 
 None of these are this add-on's bugs to fix, but they're load-bearing for
 `yt_idv_renderer.py`'s design decisions (backend choice, the axis-order
@@ -259,13 +273,17 @@ explore_external_depth_clip.py`.
 
 **Status upstream: this is yt-project/yt_idv#247 ("Fixing for external
 usage"), open, not yet merged into `main` or released.** It's NOT on PyPI
-and NOT on the `main` branch that the `imgui-optional` fix above lives on
--- the patch file in this repo predates the PR and matches it closely, but
-the PR itself is the maintained version. #247 was branched before `main`
-grew `rendered_image_plane`/`RenderedImagePlane`, so it no longer merges
-onto current `main` cleanly (2 conflicts, both trivially additive -- see
-pyproject.toml's `ytidv` group for the exact merge recipe used here).
-**This isn't a hypothetical caveat**: installing plain `main` yt_idv (which
+and NOT on `main`. #247 was branched before `main` grew `rendered_image_
+plane`/`RenderedImagePlane`, so it doesn't merge onto current `main`
+cleanly on its own (2 conflicts -- an import-list merge in `blocks.py`,
+and an EGL alpha-bits fix `main` has since ALSO picked up independently --
+both trivially additive). The local `yt_idv/` checkout's `external-usage`
+branch is kept rebased onto current `main` with those conflicts resolved
+(most recently 2026-09-19, past `main`'s own `imgui-optional` fix and its
+later full move to `pyproject.toml`) -- `scripts/yt_idv_exploration/
+yt_idv_external_depth_clip.patch` is the diff of that branch against
+`main`, regenerated after each rebase; see pyproject.toml's `ytidv` group
+for the exact recipe. **This isn't a hypothetical caveat**: installing plain `main` yt_idv (which
 DOES have the `imgui-optional` fix and imports/renders just fine) makes
 `yt_idv_renderer.set_external_depth_clip` silently do nothing on every
 call -- no error, no warning, a perfectly plausible-looking render either
@@ -279,6 +297,72 @@ now raises instead of silently no-opping when this happens (see its own
 docstring) specifically so this can't go unnoticed again the way it did
 here. See "The real end-to-end demo" below for what it looks like once the
 clip is actually active.
+
+### Threshold fog transfer function -- a fourth render mode, `YT_IDV_THRESHOLD_FOG`
+
+Requested directly: "a colormap that is fully transparent except at some
+threshold value... ramp up the alpha to make it look foggy." Needed no new
+shader/uniform work -- `transfer_function.frag.glsl` already discards any
+sample below `tf_min` entirely, so setting `tf_min` to the threshold gives
+"fully transparent below this" for free; the new part is
+`_build_threshold_fog_transfer_function_data` building a CONTINUOUS ramp
+(alpha rising from 0 at the threshold up to `TF_FOG_ALPHA_MAX`, front-loaded
+via `TF_FOG_RAMP_POWER < 1` so it looks genuinely hazy rather than a hard
+line) instead of the existing mode's discrete isocontour layers. Finding
+good `TF_FOG_VALUE_MIN`/`MAX`/`RAMP_POWER` values took real, scene-specific
+tuning (see `yt_idv_renderer.py`'s own comment on `TF_FOG_RAMP_POWER` for
+why) -- and building the real end-to-end demo with it caught bug 6 above
+(background compositing as opaque black) along the way. Result:
+`images/34_partial_occlusion_fog_sphere_and_volume.png` -- a soft, glowing
+haze with a brighter core, genuinely translucent (confirmed against a
+checkerboard, `images/35_*`) rather than MIP/projection's harder,
+near-uniform floor fill.
+
+### Maximum Intensity with a value-driven alpha -- a fifth render mode, `YT_IDV_MAX_INTENSITY_ALPHA`
+
+Requested directly: zoom in on a real physical scale (10 kpc) and see MIP
+with transparency at the low end, opacity at the high end. Plain `max_
+intensity`'s own alpha is a binary "was anything found" flag, completely
+decoupled from the selected value -- it can't do this regardless of the
+colormap. Fixed with a new sibling shader, `apply_colormap_alpha.frag.glsl`
+(keeps the colormap's own alpha channel instead of overriding it) and a new
+`max_intensity_alpha` combo, plus a real alpha-ramped colormap
+(`_build_mip_alpha_colormap_data`, reusing the fog mode's own ramp shape)
+assigned directly to `component.colormap.data`.
+
+Getting the "zoom in on 10 kpc" framing right took real, empirical
+investigation, documented in full in `scripts/yt_idv_exploration/
+blender_scene/render_zoomed_core_demo.py`: a camera merely a few multiples
+of 10 kpc away produces a sharp, geometric TRIANGULAR artifact instead of
+organic gas structure (at that distance the camera sits against/inside a
+SINGLE AMR block's own triangulated bounding cube -- not resolved density
+at all), while backing off to 300-500 kpc lets the frame span many nested
+blocks and the structure resolves cleanly. The 10 kpc marker sphere is
+still there at 500 kpc, genuinely tiny -- an honest answer to "zoom in on a
+10 kpc feature" at this dataset's actual block resolution, not a failure to
+zoom. Result: `images/36_zoomed_core_sphere_and_volume.png` -- a soft
+glowing core (dusk colormap) with the marker sphere visible right at the
+peak, genuinely transparent at the edges (`images/37_*`).
+
+**Follow-up: "I can't quite see it."** The first version's marker sphere
+(10 kpc, bright yellow) was genuinely hard to spot. Three real, distinct
+causes, all fixed:
+1. Yellow sat too close to the "dusk" colormap's own warm orange/white
+   core color -- the sphere blended into the gas around it instead of
+   contrasting. Switched to a saturated green, a hue "dusk" never produces.
+2. `MIP_ALPHA_MAX` was 1.0 -- the volume's own near-camera material could
+   build up to FULL opacity before the ray ever reached the sphere, hiding
+   it completely via Alpha-Over regardless of its own real depth-clip
+   visibility. Lowered to 0.7 so something behind the densest visible gas
+   always shows through -- this is a real, general fix (affects every
+   `YT_IDV_MAX_INTENSITY_ALPHA` render, not just this one demo), not a
+   one-off tweak.
+3. The sphere itself was also enlarged, 10 -> 35 kpc, as a third,
+   complementary fix -- still tiny relative to the ~500 kpc frame.
+
+Re-rendered result (same `images/36_*`/`37_*` paths, overwritten): the green
+marker now reads clearly against the orange/white core in both the plain
+and checkerboard exports.
 
 ### The real end-to-end demo: a real Cycles sphere composited with real yt_idv volume content
 
@@ -417,6 +501,41 @@ See `yt_idv_renderer.py`'s module docstring for the full account of both,
 including exactly how the first one was diagnosed (comparing
 `scene.camera.projection_matrix` against a freshly-computed
 `get_perspective_matrix(...)` before/after the fix).
+
+### The reverse demo: a real sphere partially occluded BY the volume
+
+`scripts/yt_idv_exploration/blender_scene/render_partial_occlusion_demo.py`
+demonstrates the opposite compositing direction from the demo above: there,
+a solid sphere occluded the volume; here, the volume occludes part of a
+solid sphere. No code change was needed for this -- the add-on's existing
+Alpha-Over compositing already draws the volume layer over the Cycles
+beauty pass unconditionally, using the volume's own alpha -- only a scene
+geometry that puts a sphere partly behind real, opaque-looking volume
+content, from the camera's point of view.
+
+The first geometry attempt (sphere centered near the dataset's own density
+peak) hid the ENTIRE sphere, not just the part near the peak -- it turned
+out the current colormap's low-density opacity "floor" (already documented
+below) makes the WHOLE box interior read as nearly fully opaque past a
+modest depth into the domain, so anything placed meaningfully inside the
+volume disappears regardless of the peak. The fix: position the sphere
+BEHIND the box (past its far boundary along the camera's view direction)
+and OFFSET SIDEWAYS, so part of its silhouette overlaps the box's own
+screen footprint (hidden under real volume color) while the rest sticks
+out past the box's edge (fully visible, zero volume alpha there) -- tuned
+using Blender's own `world_to_camera_view` to check the sphere's projected
+screen columns against the box's. Verified directly against real pixel
+data: a sample point expected to be hidden shows a large color difference
+from its own Cycles-only render; a sample point expected to stay visible
+matches its Cycles-only color exactly (`|final - beauty| == 0.0000`).
+Result: `images/32_partial_occlusion_sphere_and_volume.png` -- the sphere's
+real material is clearly visible on one side and clearly replaced by the
+volume's own color on the other. See `scripts/yt_idv_exploration/README.md`
+("Sphere partially occluded by the volume") for the full writeup. The same
+script also runs with `VOLUME_OVERRIDE_MODE=threshold_fog` (see above),
+producing `images/34_partial_occlusion_fog_sphere_and_volume.png` -- a
+softer, hazier version of the same partial occlusion, using the new fog
+transfer function instead of MIP's harder color swap.
 
 ### Also demonstrated (retained in `scripts/yt_idv_exploration/blender_scene/`)
 
@@ -711,11 +830,142 @@ place to fix -- both branches are exercised independently by
 `density_scale`, `absorption` (RGB), `scattering` (RGB), `color` (RGB) as
 typed fields, plus a free-form key/value table (`custom_params_extra`) for
 anything the real renderer needs that isn't anticipated here.
+
+### `opacity` -- the one field NOT passed through `custom_params`, and the answer to "can I keyframe opacity?"
+
+`obj.volume_override.opacity` (default `1.0`) is applied by `operators.
+render_current_frame` AFTER `render_fn(request)` returns, to every
+renderer's output uniformly (`operators._apply_opacity`) -- unlike
+`density_scale`/`absorption`/`scattering`/`color` above, it never crosses
+`custom_params` for a renderer to interpret itself; multiplying the whole
+premultiplied-alpha `(H, W, 4)` array by one scalar is exact (see
+`_apply_opacity`'s own docstring for why), so this covers every
+`renderer_mode`, including future ones, without each needing to remember a
+`custom_params` key.
+
+**Yes, this one is keyframable with completely standard Blender keyframing**
+-- right-click > Insert Keyframe on the Opacity slider, or `obj.
+volume_override.keyframe_insert(data_path="opacity", frame=N)`, works
+exactly like any other Object property, because it lives on the Object
+itself (a real ID with `animation_data`). Confirmed directly: keyframed
+0.0 -> 1.0 across two frames, `frame_set` to a frame in between correctly
+read back the linearly-interpolated value.
+
+**The yt_idv-specific alpha controls in the Preferences panel (Fog/MIP
+Alpha Max, Ramp Power, and the curve-editor mechanism below) are NOT
+keyframable, and never can be** -- confirmed directly: `AddonPreferences`
+instances have no `animation_data` at all (`hasattr(prefs, "animation_data")
+` is `False`, `prefs.id_data` is `None`), and `keyframe_insert` on one
+raises `TypeError` outright. This isn't a bug or an oversight in this
+add-on's design -- Blender's `AddonPreferences` category simply isn't part
+of the animation system, full stop, regardless of what kind of property
+you put on it. (Separately, also confirmed: even a *hidden node's*
+CurveMapping -- which DOES live on a real animatable ID, a `ShaderNodeTree`
+-- can't have its own curve POINT positions keyframed either;
+`keyframe_insert(data_path="location")` on a curve point raises `could not
+make path to "location"`. That's a general Blender limitation on curve
+widgets everywhere, not specific to this add-on.) If you want an animated
+fade using the yt_idv renderers specifically, `opacity` above is the
+supported way -- it composes with whatever `renderer_mode`/colormap/curve
+you've picked, since it's applied to the final image regardless.
 `to_custom_params()` merges both into the one dict that becomes
 `VolumeObjectParams.custom_params` -- extending the real renderer's
 parameter set never requires touching this add-on's Python, just adding a
 row in the object's panel. Dataset identity (`dataset_path`/`dataset_kind`)
 is deliberately NOT part of this dict -- see the next section.
+
+### yt_idv-specific parameters, exposed the same way
+
+`operators.YtIdvRenderSettings` (a `PointerProperty` on `VolumeOverride
+Preferences.yt_idv`) exposes every yt_idv-specific rendering knob that used
+to be a hardcoded module constant in `yt_idv_renderer.py` -- backend
+(EGL/OSMesa), the isocontour transfer function's value range/layer
+count/colormap, the threshold fog's value range/colormap/alpha max/ramp
+power, and MIP-alpha's colormap/max/ramp power -- as real, editable fields
+in the add-on's Preferences panel, shown ONLY when `renderer_mode` is one
+of the `YT_IDV_*` options (selecting `STUB`/`DEBUG_FLAT`/`SAMPLE_CONSTANT`
+hides the whole section, so the panel stays uncluttered for other
+renderers). Deliberately does NOT expose dataset selection -- `yt_idv_
+renderer.py` still always renders the hardcoded `IsolatedGalaxy` sample;
+how you'd actually create/supply your own dataset is a separate,
+not-yet-designed problem.
+
+These settings reach `yt_idv_renderer.py` through the EXACT SAME mechanism
+as the generic per-object knobs above -- `operators._yt_idv_custom_params()`
+merges them into `VolumeObjectParams.custom_params` under `yt_idv_*`-
+prefixed keys (`build_volume_params` calls it for every flagged object,
+every frame, regardless of which renderer is active), and each yt_idv
+`_configure_*` function reads `custom_params.get("yt_idv_...", MODULE_
+CONSTANT)` -- falling back to the exact same hardcoded default as before
+when the key isn't present. This keeps `yt_idv_renderer.py` itself
+`bpy`-free (it never reads Preferences directly, staying testable via a
+hand-built `RenderRequest` alone, in-process or from the throwaway yt_idv
+venv) and keeps `external_render.py`'s dataclass contract untouched --
+exactly the same "add renderer-specific knobs via `custom_params`, not by
+growing the frozen contract" pattern the generic fields already use, just
+populated from Preferences instead of the object panel. A non-yt_idv
+renderer never sees these keys do anything -- they're simply absent from
+its own view of `custom_params` unless it happens to look for them, so
+selecting `STUB`/`DEBUG_FLAT`/`SAMPLE_CONSTANT` is completely unaffected by
+whatever the yt_idv fields are currently set to.
+
+### Curve-driven alpha / image-driven color
+
+For the two continuous-ramp yt_idv modes (`YT_IDV_THRESHOLD_FOG`/
+`YT_IDV_MAX_INTENSITY_ALPHA` -- NOT the isocontour `YT_IDV_TRANSFER_
+FUNCTION`, whose `add_layers()` shape doesn't reduce to one alpha-vs-
+position curve the same way), the Preferences panel adds two independent
+overrides to the ramp-power/named-colormap fields above:
+
+- **Alpha Source: Custom Curve** -- draws a real, native Blender curve
+  widget right in the panel (`UILayout.template_curve_mapping`), the same
+  widget a Shader Editor's N-panel shows. There's no way to put a real
+  `CurveMapping` directly on a custom settings field (`PointerProperty
+  (type=bpy.types.CurveMapping)` doesn't register at all -- `TypeError:
+  ... expected an RNA type derived from ID or ID Property Group`), so this
+  piggybacks on a hidden `ShaderNodeFloatCurve` node's own `.mapping`,
+  tucked into an internal node group (`VolumeOverride yt_idv Alpha Curve
+  (internal)`) that's never connected to any real shader -- purely a data
+  container for the curve. The curve is sampled into a plain list of
+  floats and crosses into `custom_params` as `"yt_idv_alpha_curve"`,
+  replacing the `ramp_power` shape entirely (still scaled by the mode's own
+  Alpha Max field).
+- **Color Source: Image** -- picks any Blender `Image` (by name -- see
+  below) instead of a named yt/matplotlib colormap. Read back and treated
+  as "functionally 1D": averaged across all its rows (collapsing whatever
+  vertical variation exists), then resampled horizontally to however many
+  bins the LUT needs -- so any image works as a colormap regardless of its
+  own resolution/aspect, not just a literal 1-pixel-tall gradient strip.
+  Crosses into `custom_params` as `"yt_idv_color_image_rgba"` (a nested
+  list of RGBA rows); the image's own alpha channel, if any, is ignored --
+  alpha always comes from the ramp-power/curve mechanism above, never the
+  color source, so exactly one thing answers "how transparent here".
+
+Both are picked by a NAME (`color_image_name`, a plain `StringProperty`
+paired with `layout.prop_search` for a normal datablock-picker UI), not a
+`PointerProperty(type=bpy.types.Image)` -- confirmed directly that
+`AddonPreferences`, and anything nested inside one (even a plain
+PropertyGroup that merely *contains* an ID pointer somewhere in its own
+tree), categorically can't hold ID/datablock `PointerProperty` fields at
+all (`ValueError: ... PointerProperty could not register because this type
+doesn't support data-block properties`) -- the standard Blender workaround
+for exactly this situation. A stale name (the image got renamed/deleted)
+falls back to the named-colormap mechanism silently rather than raising
+mid-render.
+
+One shared curve/image setting drives BOTH continuous-ramp modes (not four
+independent copies) -- deliberately kept this simple for a first,
+exploratory cut. See `yt_idv_renderer.py`'s module docstring, "Curve-driven
+alpha / image-driven color" section, for the full mechanism including the
+`_resample_1d`/`_resample_rgb` decoupling from whatever sample count the
+curve/image happened to use. **Caveat:** there's no interactive display
+available in the environment this was built in to confirm the curve widget
+actually renders/responds inside a real Preferences panel, as opposed to
+merely being a valid, non-crashing API call -- the underlying data path
+(node creation, curve evaluation, image readback, resampling, LUT
+construction, custom_params round-trip) WAS verified directly against a
+real Blender. Worth a quick look in your own interactive session before
+relying on it.
 
 ## Dataset / change tracking
 

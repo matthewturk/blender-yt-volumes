@@ -105,6 +105,242 @@ class _NullStepTimer:
     def __exit__(self, exc_type, exc, tb):
         return False
 
+class YtIdvRenderSettings(bpy.types.PropertyGroup):
+    """Live, UI-editable overrides for `yt_idv_renderer.py`'s own hardcoded
+    module constants -- one field per constant, defaults matching those
+    constants exactly, so leaving everything at its default reproduces the
+    old hardcoded behavior precisely. Deliberately does NOT expose dataset
+    selection (`SAMPLE_DATASET_NAME`/`SAMPLE_FIELD` stay hardcoded) --
+    dataset loading/creation is a separate, not-yet-designed problem.
+
+    Reaches the renderer via `VolumeObjectParams.custom_params` (see
+    `_yt_idv_custom_params`/`build_volume_params` below), NOT by
+    `yt_idv_renderer.py` importing `bpy`/reading this directly -- keeps that
+    module's own "no bpy dependency, testable via a hand-built RenderRequest
+    alone" property intact. Values here only ever apply to `YT_IDV_*`
+    `renderer_mode`s (see `VolumeOverridePreferences.draw`'s conditional
+    section); harmless if set while a different renderer_mode is active,
+    since `custom_params` is a passthrough dict every renderer is free to
+    ignore.
+    """
+
+    backend: bpy.props.EnumProperty(
+        name="Backend",
+        description="Offscreen OpenGL backend -- see yt_idv_renderer.py module docstring, 'yt_idv bug 2': OSMesa corrupts non-square renders, kept here for completeness/experimentation only",
+        items=[
+            ("egl", "EGL", "Needs a working GPU + driver stack; the only backend confirmed clean at non-square resolutions"),
+            ("osmesa", "OSMesa (buggy)", "Software rendering, no GPU needed -- but corrupts non-square renders (yt_idv bug 2, root cause not identified)"),
+        ],
+        default="egl",
+    )
+
+    # --- Isocontour transfer function (YT_IDV_TRANSFER_FUNCTION) --------
+    tf_value_min: bpy.props.FloatProperty(
+        name="Isocontour Value Min",
+        description="Lower bound of the isocontour layers' density range, in yt_idv's own [0, 1]-normalized value space (NOT raw physical units) -- see yt_idv_renderer.py TF_VALUE_MIN",
+        default=1e-6, precision=8, min=0.0,
+    )
+    tf_value_max: bpy.props.FloatProperty(
+        name="Isocontour Value Max",
+        description="Upper bound of the isocontour layers' density range, same normalized space as Value Min -- see yt_idv_renderer.py TF_VALUE_MAX",
+        default=2e-3, precision=6, min=0.0,
+    )
+    tf_n_layers: bpy.props.IntProperty(
+        name="Isocontour Layers",
+        description="How many isocontour layers yt.ColorTransferFunction.add_layers() spaces evenly (in log space) between Value Min/Max -- see yt_idv_renderer.py TF_N_LAYERS",
+        default=5, min=1, max=64,
+    )
+    tf_colormap: bpy.props.StringProperty(
+        name="Isocontour Colormap",
+        description="Any yt/matplotlib colormap name (e.g. viridis, dusk, arbre, inferno) -- see yt_idv_renderer.py TF_COLORMAP",
+        default="viridis",
+    )
+
+    # --- Threshold fog transfer function (YT_IDV_THRESHOLD_FOG) ---------
+    fog_value_min: bpy.props.FloatProperty(
+        name="Fog Threshold (Value Min)",
+        description="Fully transparent below this density (yt_idv's own [0, 1]-normalized value space, NOT raw physical units) -- see yt_idv_renderer.py TF_FOG_VALUE_MIN",
+        default=1e-9, precision=10, min=0.0,
+    )
+    fog_value_max: bpy.props.FloatProperty(
+        name="Fog Value Max",
+        description="Alpha reaches Fog Alpha Max at this density, same normalized space as Fog Threshold -- see yt_idv_renderer.py TF_FOG_VALUE_MAX",
+        default=1e-2, precision=6, min=0.0,
+    )
+    fog_colormap: bpy.props.StringProperty(
+        name="Fog Colormap",
+        description="Any yt/matplotlib colormap name -- see yt_idv_renderer.py TF_FOG_COLORMAP",
+        default="dusk",
+    )
+    fog_alpha_max: bpy.props.FloatProperty(
+        name="Fog Alpha Max",
+        description="Alpha at Fog Value Max -- below 1.0 keeps even the densest gas looking soft/foggy rather than a hard solid wall -- see yt_idv_renderer.py TF_FOG_ALPHA_MAX",
+        default=0.85, min=0.0, max=1.0,
+    )
+    fog_ramp_power: bpy.props.FloatProperty(
+        name="Fog Ramp Power",
+        description="Shape of the alpha ramp between the threshold and Value Max -- 1.0 is linear (in log-density space); below 1.0 ramps up fast just past the threshold, thickening more gradually toward Value Max (looks hazier); above 1.0 stays thin longer before thickening quickly -- see yt_idv_renderer.py TF_FOG_RAMP_POWER",
+        default=0.15, min=0.01, max=10.0,
+    )
+
+    # --- Maximum Intensity, value-driven alpha (YT_IDV_MAX_INTENSITY_ALPHA)
+    mip_alpha_colormap: bpy.props.StringProperty(
+        name="MIP Alpha Colormap",
+        description="Any yt/matplotlib colormap name -- see yt_idv_renderer.py MIP_ALPHA_COLORMAP",
+        default="dusk",
+    )
+    mip_alpha_max: bpy.props.FloatProperty(
+        name="MIP Alpha Max",
+        description="Alpha at the high end of whatever's currently visible (MIP's own per-view auto-scaled range) -- below 1.0 keeps something visible behind even the brightest material via Alpha-Over, which otherwise can fully hide objects embedded in dense gas -- see yt_idv_renderer.py MIP_ALPHA_MAX",
+        default=0.7, min=0.0, max=1.0,
+    )
+    mip_alpha_ramp_power: bpy.props.FloatProperty(
+        name="MIP Alpha Ramp Power",
+        description="Shape of the alpha ramp across the visible value range -- same meaning as Fog Ramp Power -- see yt_idv_renderer.py MIP_ALPHA_RAMP_POWER",
+        default=0.15, min=0.01, max=10.0,
+    )
+
+    # --- Curve-driven alpha / image-driven color (Threshold Fog + MIP
+    # Alpha only -- see yt_idv_renderer.py module docstring's "Curve-driven
+    # alpha / image-driven color" section). Shared across both modes
+    # deliberately -- one curve/image setting, not four independent ones --
+    # see `_yt_idv_custom_params`'s own comment for why.
+    alpha_source: bpy.props.EnumProperty(
+        name="Alpha Source",
+        description="How the alpha-vs-position ramp for Threshold Fog / MIP Alpha is shaped",
+        items=[
+            ("RAMP_POWER", "Ramp Power", "The Fog/MIP Ramp Power field above -- a single-exponent curve"),
+            ("CURVE", "Custom Curve", "A hand-drawn curve, edited below via Blender's own curve widget"),
+        ],
+        default="RAMP_POWER",
+    )
+    color_source: bpy.props.EnumProperty(
+        name="Color Source",
+        description="Where the RGB color for Threshold Fog / MIP Alpha comes from",
+        items=[
+            ("NAMED", "Named Colormap", "The Fog/MIP Alpha Colormap field above -- any yt/matplotlib colormap name"),
+            ("IMAGE", "Image", "A Blender Image, read back and treated as a 1D horizontal gradient (averaged across rows) -- selected below"),
+        ],
+        default="NAMED",
+    )
+    # A NAME, not `PointerProperty(type=bpy.types.Image)` -- confirmed
+    # directly that AddonPreferences (and anything nested inside one, even
+    # a plain PropertyGroup that merely CONTAINS an ID pointer somewhere in
+    # its tree) categorically rejects ID/data-block PointerProperty fields:
+    # `ValueError: ... PointerProperty could not register because this
+    # type doesn't support data-block properties`. Same restriction that
+    # ruled out `PointerProperty(type=bpy.types.CurveMapping)` above, for a
+    # different underlying reason (CurveMapping isn't an ID type at all;
+    # Image IS, but AddonPreferences still can't hold one). Standard
+    # Blender workaround: store the name, look it up in `bpy.data.images`
+    # when needed (`_yt_idv_custom_params`), and use `layout.prop_search`
+    # (not `layout.prop`) for a proper picker UI -- see `draw()`.
+    color_image_name: bpy.props.StringProperty(
+        name="Color Image",
+        description="Any Blender Image -- averaged across its rows then resampled horizontally into the colormap, so any image works regardless of its native size/aspect (see _sample_image_as_1d_rgba)",
+        default="",
+    )
+
+
+_ALPHA_CURVE_NODE_GROUP_NAME = "VolumeOverride yt_idv Alpha Curve (internal)"
+_ALPHA_CURVE_NODE_NAME = "AlphaCurve"
+
+
+def _get_or_create_alpha_curve_node():
+    """A `ShaderNodeFloatCurve`, tucked away in its own node group purely as
+    a data container for its `.mapping` (a real `bpy.types.CurveMapping`)
+    -- NEVER connected to any real shader output or used for actual
+    shading, never added to any Material. This is the standard workaround
+    for "I want a native curve-editing widget somewhere that isn't a node
+    editor": `CurveMapping` can't be a `PointerProperty` on a plain
+    PropertyGroup (confirmed directly: `TypeError: PointerProperty(...)
+    expected an RNA type derived from ID or ID Property Group`) -- it can
+    only exist as a field Blender's OWN C-defined structs already carry
+    (nodes, brushes, color management settings, ...). A node's own
+    `.mapping` is the most convenient of those to piggyback on:
+    `UILayout.template_curve_mapping(node, "mapping")` draws the SAME
+    widget a Shader Editor's N-panel would show, directly inside this
+    add-on's own Preferences panel -- see `VolumeOverridePreferences.draw`.
+
+    The node group lives in `bpy.data.node_groups` (persisted with the
+    .blend file, same as any other node group) and is created lazily, once,
+    the first time it's needed -- `get`-or-`new` on both the group and the
+    node itself, so calling this repeatedly (once per `draw()` call, once
+    per render) is cheap and always returns the SAME node/mapping, not a
+    fresh one each time.
+    """
+    tree = bpy.data.node_groups.get(_ALPHA_CURVE_NODE_GROUP_NAME)
+    if tree is None:
+        tree = bpy.data.node_groups.new(_ALPHA_CURVE_NODE_GROUP_NAME, "ShaderNodeTree")
+    node = tree.nodes.get(_ALPHA_CURVE_NODE_NAME)
+    if node is None:
+        node = tree.nodes.new("ShaderNodeFloatCurve")
+        node.name = _ALPHA_CURVE_NODE_NAME
+        node.mapping.initialize()
+    return node
+
+
+def _evaluate_alpha_curve(nbins=256):
+    """The hidden alpha curve (see `_get_or_create_alpha_curve_node`),
+    sampled at `nbins` evenly-spaced positions across its own `[0, 1]`
+    domain -- the plain list of floats that actually crosses `custom_
+    params` as `"yt_idv_alpha_curve"` (see `_yt_idv_custom_params`),
+    resampled again on the `yt_idv_renderer.py` side to whatever bin count
+    the LUT actually needs (`_resample_1d`) -- so `nbins` here doesn't need
+    to match that exactly, it's just "how finely to sample the curve
+    itself", 256 being a reasonable default resolution for a hand-drawn
+    curve either way.
+
+    `mapping.initialize()` is called every time (confirmed safe/idempotent
+    on an already-initialized, already-edited mapping -- doesn't reset
+    existing points) rather than assumed to have already happened, since
+    `CurveMapping.evaluate()` needs it to have run at least once since the
+    curve's own points were last changed.
+    """
+    node = _get_or_create_alpha_curve_node()
+    mapping = node.mapping
+    mapping.initialize()
+    curve = mapping.curves[0]
+    return [mapping.evaluate(curve, i / (nbins - 1)) for i in range(nbins)]
+
+
+def _sample_image_as_1d_rgba(image, nbins=256):
+    """Read `image` (a `bpy.types.Image`) back as an `(nbins, 4)` RGBA list
+    of lists, "functionally 1D" per the user's own framing: averaged across
+    ALL rows (collapsing whatever vertical variation exists) then resampled
+    horizontally to `nbins` evenly-spaced positions -- so any image works
+    as a colormap source regardless of its own native resolution/aspect
+    ratio, not just a literal 1-pixel-tall gradient strip. Missing channels
+    (RGB-only or grayscale images) are padded with alpha=1.0 (unused
+    anyway -- alpha always comes from the alpha curve/ramp, never this).
+
+    Raises `ValueError` for a 0x0 image (e.g. one whose source file isn't
+    packed/available) rather than silently producing a degenerate
+    colormap -- a clear, immediate error beats a mysteriously blank/wrong
+    render.
+    """
+    w, h = image.size[0], image.size[1]
+    if w == 0 or h == 0:
+        raise ValueError(
+            f"image {image.name!r} has no pixel data (size {w}x{h}) -- "
+            "pack or reload it before using it as a yt_idv color source"
+        )
+    import numpy as np
+
+    pixels = np.array(image.pixels[:], dtype=np.float64).reshape(h, w, image.channels)
+    if image.channels < 4:
+        padded = np.ones((h, w, 4))
+        padded[..., : image.channels] = pixels
+        pixels = padded
+    row_avg = pixels.mean(axis=0)  # (w, 4) -- collapse vertical variation, "functionally 1D"
+    src_x = np.linspace(0.0, 1.0, w)
+    dst_x = np.linspace(0.0, 1.0, nbins)
+    out = np.empty((nbins, 4))
+    for c in range(4):
+        out[:, c] = np.interp(dst_x, src_x, row_avg[:, c])
+    return out.tolist()
+
+
 # Keyed by VolumeOverridePreferences.renderer_mode -- see that enum's items
 # for what each option is for.
 RENDERER_MODES = {
@@ -112,8 +348,10 @@ RENDERER_MODES = {
     "DEBUG_FLAT": external_render.debug_fake_render_volume,
     "SAMPLE_CONSTANT": sample_renderers.constant_density_renderer,
     "YT_IDV_MAX_INTENSITY": yt_idv_renderer.yt_idv_max_intensity_renderer,
+    "YT_IDV_MAX_INTENSITY_ALPHA": yt_idv_renderer.yt_idv_max_intensity_alpha_renderer,
     "YT_IDV_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_transfer_function_renderer,
     "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
+    "YT_IDV_THRESHOLD_FOG": yt_idv_renderer.yt_idv_threshold_fog_renderer,
 }
 
 # Renderer modes that create their own offscreen EGL context (yt_idv) --
@@ -135,8 +373,10 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
             ("DEBUG_FLAT", "Debug: flat placeholder", "A flat semi-transparent color filling the whole frame, ignoring geometry -- see external_render.debug_fake_render_volume()"),
             ("SAMPLE_CONSTANT", "Sample: depth x constant", "A real (if non-physical) demo: ray/volume-box intersection, depth-clipped, output = path length x a constant -- see sample_renderers.constant_density_renderer()"),
             ("YT_IDV_MAX_INTENSITY", "yt_idv: Maximum Intensity Projection (exploratory)", "Real yt_idv offscreen volume renderer -- hardcoded IsolatedGalaxy sample dataset, depth-clipped against Cycles' own Z pass via the flagged object's bounding box as registration. Needs yt_idv installed in Blender's own Python -- see README 'yt_idv integration'. See yt_idv_renderer.py module docstring for exactly what is/isn't real here."),
+            ("YT_IDV_MAX_INTENSITY_ALPHA", "yt_idv: Maximum Intensity, value-driven alpha (exploratory)", "Same Maximum Intensity Projection as above, but alpha is driven by the selected value itself (transparent at the low end of what's visible, opaque at the high end) instead of a binary presence flag. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
             ("YT_IDV_TRANSFER_FUNCTION", "yt_idv: Transfer Function (exploratory)", "Real yt_idv offscreen volume renderer with an actual transfer function -- isocontour layers at fixed densities in log space, yt.ColorTransferFunction.add_layers(). Same hardcoded dataset/depth-clip/camera registration as Maximum Intensity Projection -- see yt_idv_renderer.py module docstring."),
             ("YT_IDV_PROJECTION", "yt_idv: Projective Integration (exploratory)", "Real yt_idv offscreen volume renderer using unweighted line-of-sight integration (additive, not max) -- tends to look smoother/less speckled than Maximum Intensity Projection. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
+            ("YT_IDV_THRESHOLD_FOG", "yt_idv: Threshold Fog (exploratory)", "Real yt_idv offscreen volume renderer with a continuous transfer function -- fully transparent below a density threshold, alpha ramps up above it for a hazy/foggy look, instead of isocontour lines. Same hardcoded dataset/depth-clip/camera registration as the other yt_idv modes -- see yt_idv_renderer.py module docstring."),
         ],
         default="STUB",
     )
@@ -157,10 +397,57 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
         ),
         default=True,
     )
+    yt_idv: bpy.props.PointerProperty(type=YtIdvRenderSettings)
 
     def draw(self, context):
         self.layout.prop(self, "renderer_mode")
         self.layout.prop(self, "work_dir")
+        if self.renderer_mode.startswith("YT_IDV_"):
+            # Only shown for yt_idv renderer_modes -- see YtIdvRenderSettings'
+            # own docstring for why these live in a separate PropertyGroup
+            # rather than flat fields here (keeps this panel uncluttered for
+            # every other renderer_mode, current or future).
+            box = self.layout.box()
+            box.label(text="yt_idv Renderer Parameters (exploratory)", icon="EXPERIMENTAL")
+            box.prop(self.yt_idv, "backend")
+            if self.renderer_mode == "YT_IDV_TRANSFER_FUNCTION":
+                col = box.column(align=True)
+                col.label(text="Isocontour Transfer Function")
+                col.prop(self.yt_idv, "tf_value_min")
+                col.prop(self.yt_idv, "tf_value_max")
+                col.prop(self.yt_idv, "tf_n_layers")
+                col.prop(self.yt_idv, "tf_colormap")
+            elif self.renderer_mode == "YT_IDV_THRESHOLD_FOG":
+                col = box.column(align=True)
+                col.label(text="Threshold Fog Transfer Function")
+                col.prop(self.yt_idv, "fog_value_min")
+                col.prop(self.yt_idv, "fog_value_max")
+                col.prop(self.yt_idv, "fog_colormap")
+                col.prop(self.yt_idv, "fog_alpha_max")
+                col.prop(self.yt_idv, "fog_ramp_power")
+            elif self.renderer_mode == "YT_IDV_MAX_INTENSITY_ALPHA":
+                col = box.column(align=True)
+                col.label(text="Maximum Intensity, Value-Driven Alpha")
+                col.prop(self.yt_idv, "mip_alpha_colormap")
+                col.prop(self.yt_idv, "mip_alpha_max")
+                col.prop(self.yt_idv, "mip_alpha_ramp_power")
+            if self.renderer_mode in ("YT_IDV_THRESHOLD_FOG", "YT_IDV_MAX_INTENSITY_ALPHA"):
+                # Curve-driven alpha / image-driven color -- shared by both
+                # continuous-ramp modes (one setting, not two independent
+                # copies); NOT offered for YT_IDV_TRANSFER_FUNCTION, whose
+                # isocontour-layers shape doesn't reduce to a single
+                # alpha-vs-position curve the same way -- see
+                # yt_idv_renderer.py module docstring's "Curve-driven alpha
+                # / image-driven color" section.
+                curve_box = box.box()
+                curve_box.label(text="Alpha Source")
+                curve_box.prop(self.yt_idv, "alpha_source", expand=True)
+                if self.yt_idv.alpha_source == "CURVE":
+                    curve_box.template_curve_mapping(_get_or_create_alpha_curve_node(), "mapping")
+                curve_box.label(text="Color Source")
+                curve_box.prop(self.yt_idv, "color_source", expand=True)
+                if self.yt_idv.color_source == "IMAGE":
+                    curve_box.prop_search(self.yt_idv, "color_image_name", bpy.data, "images")
         self.layout.prop(self, "verbose_logging")
         self.layout.operator("volume_override.reset_change_tracking")
 
@@ -280,8 +567,67 @@ def build_dof_params(camera_obj, cam):
     )
 
 
+def _yt_idv_custom_params():
+    """yt_idv-specific rendering knobs from the add-on's own Preferences
+    panel (`VolumeOverridePreferences.yt_idv`, a `YtIdvRenderSettings`),
+    merged into EVERY `VolumeObjectParams.custom_params` dict regardless of
+    which `renderer_mode` is actually active -- harmless for non-yt_idv
+    renderers, which simply never look at `yt_idv_*`-prefixed keys, same as
+    any other `custom_params` entry they don't recognize (see
+    external_render.py's own docstring on why `custom_params` is the
+    correct place to add renderer-specific knobs without touching the
+    frozen dataclass contract). See `yt_idv_renderer.py`'s `_configure_*`
+    functions for what each key controls and its own hardcoded fallback
+    default -- the DEFAULTS on `YtIdvRenderSettings`' fields just need to
+    stay in agreement with those, they're not the single source of truth.
+
+    Falls back to `{}` (not an exception) when the add-on's own preferences
+    aren't registered/reachable -- true in this repo's own lightweight unit
+    tests, which register `properties` but not `operators`/`preferences`
+    (see tests/test_operators.py's `clean_scene_with_props` fixture) --
+    so `build_volume_params(obj)` keeps working unchanged there.
+    """
+    try:
+        prefs = bpy.context.preferences.addons[__package__].preferences
+    except KeyError:
+        return {}
+    s = prefs.yt_idv
+    params = {
+        "yt_idv_backend": s.backend,
+        "yt_idv_tf_value_min": s.tf_value_min,
+        "yt_idv_tf_value_max": s.tf_value_max,
+        "yt_idv_tf_n_layers": s.tf_n_layers,
+        "yt_idv_tf_colormap": s.tf_colormap,
+        "yt_idv_fog_value_min": s.fog_value_min,
+        "yt_idv_fog_value_max": s.fog_value_max,
+        "yt_idv_fog_colormap": s.fog_colormap,
+        "yt_idv_fog_alpha_max": s.fog_alpha_max,
+        "yt_idv_fog_ramp_power": s.fog_ramp_power,
+        "yt_idv_mip_alpha_colormap": s.mip_alpha_colormap,
+        "yt_idv_mip_alpha_max": s.mip_alpha_max,
+        "yt_idv_mip_alpha_ramp_power": s.mip_alpha_ramp_power,
+    }
+    # Curve-driven alpha / image-driven color -- only computed (and only
+    # added to custom_params) when actually selected, so the RAMP_POWER/
+    # NAMED-colormap defaults above are completely unaffected by this
+    # feature existing at all -- yt_idv_renderer.py's `_configure_threshold_
+    # fog`/`_configure_max_intensity_alpha` just don't find these keys and
+    # fall back to ramp_power/named-colormap exactly as before. One shared
+    # curve/image, not four independent copies -- see YtIdvRenderSettings'
+    # own `alpha_source`/`color_source` fields' docstrings for why sharing
+    # across Fog/MIP-alpha is the right amount of complexity here.
+    if s.alpha_source == "CURVE":
+        params["yt_idv_alpha_curve"] = _evaluate_alpha_curve()
+    if s.color_source == "IMAGE" and s.color_image_name:
+        image = bpy.data.images.get(s.color_image_name)
+        if image is not None:  # stale name (image renamed/deleted) -- fall back to NAMED silently rather than raise mid-render
+            params["yt_idv_color_image_rgba"] = _sample_image_as_1d_rgba(image)
+    return params
+
+
 def build_volume_params(obj):
     custom_params = obj.volume_override.to_custom_params()
+    custom_params.update(_yt_idv_custom_params())
     cache_key = properties.ensure_dataset_uuid(obj)
     return external_render.VolumeObjectParams(
         matrix_world=_matrix_to_list(obj.matrix_world),
@@ -531,6 +877,42 @@ def _sorted_far_to_near(scene, flagged):
     return sorted(flagged, key=distance, reverse=True)
 
 
+def _apply_opacity(result, opacity):
+    """`VolumeOverrideProperties.opacity` (a real, keyframable Object-level
+    property -- see that field's own docstring for why it lives there
+    rather than alongside the yt_idv-specific alpha controls in
+    AddonPreferences, which can't be keyframed at all: confirmed directly,
+    `AddonPreferences` instances have no `animation_data`/`id_data`,
+    `keyframe_insert` raises outright) applied uniformly to EVERY
+    renderer's output, here, once -- rather than each `RENDERER_MODES`
+    entry needing to remember to read a `custom_params['opacity']` key
+    itself (which future/third-party renderers could easily forget).
+
+    Multiplying the WHOLE `(H, W, 4)` premultiplied-alpha RGBA array by a
+    single scalar is exact, not an approximation: for premultiplied alpha,
+    `rgb = color * alpha`, so scaling alpha by `f` while keeping the same
+    underlying `color` means the new premultiplied rgb is `color * (alpha *
+    f) = (color * alpha) * f = rgb * f` -- i.e. exactly the same scalar `f`
+    applies to the alpha channel and the premultiplied color channels
+    alike. Relies on `result.alpha_mode == "PREMULTIPLIED"`, already
+    asserted on every `RenderResult` right before this is called.
+
+    `opacity == 1.0` (the default) is a no-op that skips the array copy
+    entirely -- zero cost for every object that never touches this field.
+    """
+    if opacity == 1.0:
+        return result
+    return external_render.RenderResult(
+        # .astype(...) rather than a bare `*` -- keeps float32 regardless of
+        # numpy's scalar-promotion rules for `float32_array * python_float`
+        # (no module-level numpy import needed here either way; `result.rgba`
+        # is already an ndarray).
+        rgba=(result.rgba * opacity).astype(result.rgba.dtype),
+        alpha_mode=result.alpha_mode,
+        color_space=result.color_space,
+    )
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     object visibility even if any step raises.
@@ -610,6 +992,7 @@ def render_current_frame(context):
                 result = render_fn(request)
             assert result.alpha_mode == "PREMULTIPLIED"
             assert result.color_space == "LINEAR"
+            result = _apply_opacity(result, obj.volume_override.opacity)
             result_path = os.path.join(
                 work_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
             )
@@ -766,6 +1149,7 @@ class VOLUMEOVERRIDE_OT_reset_change_tracking(bpy.types.Operator):
 
 
 CLASSES = (
+    YtIdvRenderSettings,  # must precede VolumeOverridePreferences -- its PointerProperty target
     VolumeOverridePreferences,
     VOLUMEOVERRIDE_OT_render,
     VOLUMEOVERRIDE_OT_reset_change_tracking,

@@ -176,7 +176,7 @@ ytidv = [
     { name = "h5py", specifier = ">=3.10" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pooch", specifier = ">=1.8" },
-    { name = "yt-idv", directory = "/home/mturk/yt/cycles-override/yt_idv" },
+    { name = "yt-idv", directory = "yt_idv" },
 ]
 
 [[package]]
@@ -690,7 +690,7 @@ wheels = [
 
 [[package]]
 name = "yt-idv"
-source = { directory = "/home/mturk/yt/cycles-override/yt_idv" }
+source = { directory = "yt_idv" }
 dependencies = [
     { name = "click" },
     { name = "cmyt" },

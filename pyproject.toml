@@ -51,21 +51,33 @@ dev = [
 #    one) -- the clip measurably does NOTHING, in EVERY renderer mode, not
 #    just MIP, until this PR's changes are present.
 #
-# #247 predates the imgui-optional fix and doesn't merge cleanly onto
-# current `main` anymore (a real conflict, not just staleness -- `main`
-# added `rendered_image_plane`/`RenderedImagePlane` after #247 branched).
-# Until #247 is rebased and merged upstream, point this at a LOCAL checkout
-# with both merged by hand:
+# #247's own branch (`external-usage`, on yt-project/yt_idv directly --
+# this repo's author is a yt_idv maintainer, so it's not a fork PR) is kept
+# rebased onto current `main` by hand, since #247 predates both `main`'s
+# `rendered_image_plane`/`RenderedImagePlane` and its EGL alpha-bits fix,
+# so a straight merge no longer applies cleanly. As of the last rebase,
+# `external-usage` IS current `main` plus #247 plus this add-on's own new
+# render-mode shaders (apply_colormap_alpha, passthrough_alpha) -- so a
+# first-time install is just:
 #
 #     git clone https://github.com/yt-project/yt_idv.git ../yt_idv   # from repo root: ./yt_idv
-#     cd ../yt_idv && git fetch origin pull/247/head:pr-247 && git checkout pr-247
-#     git merge main   # resolve the 2 conflicts (egl_context.py, blocks.py -- both additive, trivial)
+#     cd ../yt_idv && git checkout external-usage
 #
 # (`/yt_idv/` is gitignored here -- it's a real separate upstream checkout,
-# not vendored code.) Once #247 merges (or is rebased and re-opened), this
-# can go back to a plain git/PyPI dependency.
+# not vendored code, resolved via `[tool.uv.sources]` below.) `scripts/
+# yt_idv_exploration/yt_idv_external_depth_clip.patch` is this branch's
+# diff against `main` (`git diff main external-usage`), regenerated after
+# each rebase -- kept for reference, not needed for the install above.
+#
+# MAINTAINING this once `main` moves further: `git fetch origin main &&
+# git rebase origin/main` from inside `../yt_idv`, resolve whatever
+# conflicts come up (small and mechanical so far -- import lists, lines
+# `main` has since also touched independently), regenerate the patch file
+# above, and force-push `external-usage`. Once #247 actually merges (or is
+# reopened against current `main`), this whole group can go back to a
+# plain git/PyPI dependency.
 ytidv = [
-    "yt_idv @ file:///home/mturk/yt/cycles-override/yt_idv",
+    "yt_idv",
     # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
     # of yt_idv's own declared dependencies.
     "pooch>=1.8",
@@ -75,6 +87,9 @@ ytidv = [
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+yt_idv = { path = "yt_idv" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

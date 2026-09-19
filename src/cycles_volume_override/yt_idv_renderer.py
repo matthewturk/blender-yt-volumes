@@ -301,6 +301,60 @@ synthetic sphere position even means relative to the dataset, so it's no
 longer a reliable repro; the REAL, user-facing case -- `render_real_demo.py`
 -- is the one that was actually confirmed fixed).
 
+**Threshold fog transfer function, plus a THIRD real yt_idv bug found and
+fixed while building it.** User request, verbatim: "a new colormap that is
+fully transparent except at some threshold value... ramp up the alpha to
+make it look foggy" -- for "partly-occluded stuff" like the demo above, but
+with a real, continuous, tunable density-vs-opacity relationship instead of
+either narrow isocontour lines or an uncontrolled colormap opacity floor.
+See `_build_threshold_fog_transfer_function_data`'s own docstring for the
+shape and why it needed no new shader/uniform work at all
+(`transfer_function.frag.glsl` already discards anything below `tf_min`
+entirely -- setting `tf_min` to the threshold IS the whole "fully
+transparent below this" mechanism, for free) and `TF_FOG_RAMP_POWER`'s own
+comment for how the actual density-vs-alpha curve was tuned against a real
+scene (not guessed).
+
+While verifying the FIRST real-Cycles-driven render with this new mode, the
+background composited as solid black instead of transparent -- confirmed
+via direct pixel inspection to be a real yt_idv bug, NOT a repeat of bug 5
+above (already fixed): `passthrough.frag.glsl` -- used as `block_rendering.
+transfer_function`'s own SECOND pass, per `shaders/shaderlist.yaml` --
+unconditionally sets `color.a = 1.0`, discarding the FIRST pass's real,
+per-pixel accumulated alpha (`transfer_function.frag.glsl`'s own physically
+-based front-to-back opacity integral) entirely. This has presumably always
+been true of the pre-existing isocontour transfer function mode too --
+never specifically alpha-checked before now, since `render_real_demo.py`'s
+own background-alpha verification has only ever been run against
+`max_intensity`/`projection` (whose `apply_colormap` second pass correctly
+preserves the first pass's real alpha), not `transfer_function`. NOT fixed
+by editing `passthrough.frag.glsl` in place -- that shader is shared by
+several genuinely-opaque-by-design usages (outlines, text, line plots,
+curves; see `shaderlist.yaml`'s other `second_fragment: passthrough`
+entries), so changing it globally risked regressing those. Fixed instead by
+adding a new, minimal sibling shader, `passthrough_alpha.frag.glsl`
+(identical except it omits the `color.a = 1.0` line), and pointing ONLY
+`block_rendering.transfer_function`'s `second_fragment` (both the cartesian
+and octree geometry variants) at it -- see `scripts/yt_idv_exploration/
+yt_idv_external_depth_clip.patch` for the exact diff. This same fix also
+benefits the pre-existing isocontour `YT_IDV_TRANSFER_FUNCTION` mode's
+background-alpha correctness, not just the new fog mode.
+
+**A separate, real re-tuning need, NOT a new bug, surfaced by this same
+investigation:** this module's own earlier camera-matrix bug fix (see
+"Two real bugs in THIS ADD-ON's own code" above) changed the actual
+geometry every yt_idv render uses -- correctly -- but that also shifts
+which density values a given camera/scene combination samples along its
+rays. `transfer_function.frag.glsl`'s accumulation is sensitive to that in
+a way `max_intensity`/`projection` aren't (see `TF_FOG_RAMP_POWER`'s own
+comment for the full mechanism) -- confirmed the PRE-EXISTING isocontour
+transfer function's `TF_VALUE_MIN`/`MAX` (tuned against the OLD, buggy
+camera) now produce essentially no visible signal at all against the
+corrected camera. Re-tuned `TF_FOG_VALUE_MIN`/`MAX`/`RAMP_POWER` for the new
+fog mode against a real scene; `TF_VALUE_MIN`/`MAX` (the older isocontour
+mode) were NOT re-tuned here -- flagged as a follow-up, see README
+"What's next".
+
 Exposed at this module's level as `set_external_depth_clip(scene,
 depth_or_none)`. **Now wired into both renderer functions against Blender's
 real Cycles Z-buffer**, via the object-bounding-box registration described
@@ -363,25 +417,93 @@ Known rough edges, beyond the scope points above:
     `operators.unregister()` for this yet, so disabling/reloading the
     add-on leaks the GL context until Blender itself exits. Fine for
     exploring; worth a real fix before this is anything more than that.
-  - `DEFAULT_BACKEND` is a hardcoded module constant, not an add-on
-    preference. Edit it directly for now if EGL isn't viable on your
-    machine (no GPU / no working driver stack) -- but see bug 2 above
-    before reaching for `"osmesa"` as the fallback; it doesn't currently
-    work for any resolution that isn't square.
-  - `TF_VALUE_MIN`/`TF_VALUE_MAX`/`TF_N_LAYERS`/`TF_COLORMAP` are hardcoded
-    constants tuned by trial and error for IsolatedGalaxy's density field
-    (see "Transfer function" above) -- not derived from the field's own
-    statistics, so they won't transfer to a different dataset/field without
-    re-tuning.
+  - Every module constant below that shapes a render (backend, both
+    transfer functions' value ranges/colormaps/ramp shapes, MIP-alpha's
+    colormap/max/ramp) is now ALSO a real, live Preferences-panel field --
+    see "Preferences panel / experimentation" below for the override
+    mechanism and exactly which constant each field maps to. The module
+    constants themselves remain the fallback DEFAULTS (used whenever a
+    caller doesn't set the corresponding `custom_params` key -- every
+    exploration script in `scripts/yt_idv_exploration/` that builds its own
+    `RenderRequest` by hand still gets these, unaffected) -- and they're
+    still tuned by trial and error for IsolatedGalaxy's density field (see
+    "Transfer function" above), so they won't transfer to a different
+    dataset/field without re-tuning, same caveat as before, just no longer
+    requiring a source edit to act on.
 
-Idea floated for later, not yet started: designing the transfer function
-visually via a Blender Material node graph (e.g. a ColorRamp) instead of
-`yt.ColorTransferFunction.add_layers()` parameters -- bake the material's
-output to a small (256x1 or 2D) image, read it back, and feed it in as
-`TransferFunctionTexture.data` (which is exactly `(nbins, 1, 4)` uint8 RGBA
-already -- see `_build_isocontour_transfer_function_data`). Plausible
-mechanically (Cycles bake -> `bpy.data.images` -> `.pixels` is a normal
-Blender workflow), not attempted here.
+**Preferences panel / experimentation.** Every yt_idv-specific rendering
+knob above (backend + both transfer functions' value ranges/colormaps/ramp
+shapes + MIP-alpha's colormap/max/ramp -- deliberately NOT dataset
+selection, which is still hardcoded to `SAMPLE_DATASET_NAME`/`SAMPLE_FIELD`,
+out of scope until dataset loading itself is designed) is exposed as a real
+field in `VolumeOverridePreferences.yt_idv` (a `YtIdvRenderSettings`
+`PointerProperty`, see `operators.py`), drawn in the add-on's own
+Preferences panel ONLY when `renderer_mode` is one of the `YT_IDV_*`
+options -- selecting `STUB`/`DEBUG_FLAT`/`SAMPLE_CONSTANT` hides the whole
+section, so the panel stays uncluttered for non-yt_idv renderers. These
+settings reach this module the SAME way any renderer-specific knob is
+supposed to cross the `external_render.py` boundary: `operators.
+build_volume_params` merges them into `VolumeObjectParams.custom_params`
+(see `operators._yt_idv_custom_params`) under `yt_idv_*`-prefixed keys,
+and each `_configure_*` function here reads `custom_params.get(key,
+MODULE_CONSTANT)` -- so this module still never imports `bpy` or knows
+Preferences exist, and a non-Blender caller building its own `RenderRequest`
+(every exploration script) is completely unaffected, getting the module
+constants exactly as before.
+
+**Curve-driven alpha / image-driven color (threshold fog + MIP-alpha only).**
+The idea floated in this docstring's previous revision -- design the
+transfer function visually instead of via `ramp_power`/a colormap name --
+is now real, for the two CONTINUOUS-ramp modes (`YT_IDV_THRESHOLD_FOG`/
+`YT_IDV_MAX_INTENSITY_ALPHA`; NOT the isocontour `YT_IDV_TRANSFER_FUNCTION`,
+whose `add_layers()`-based shape doesn't reduce to "one alpha-vs-position
+curve" the same way). Two independent, optional overrides, either or both
+active at once:
+
+  - Alpha: instead of `alpha_max * frac**ramp_power` (`_threshold_fog_
+    alpha_ramp`), an arbitrary user-drawn curve -- `operators.py` hosts a
+    real `bpy.types.CurveMapping` (not a Material bake; a `CurveMapping`
+    can't be a `PointerProperty` on a plain PropertyGroup at all --
+    confirmed: `TypeError: PointerProperty(...) expected an RNA type
+    derived from ID or ID Property Group` -- so it's piggybacked on a
+    hidden `ShaderNodeFloatCurve` node's own native `.mapping` instead,
+    drawn directly in this add-on's Preferences panel via `UILayout.
+    template_curve_mapping(node, "mapping")`, the same widget a Shader
+    Editor's N-panel would show) evaluated at N sample points and passed
+    through as a plain list of floats, `custom_params["yt_idv_alpha_curve"]`
+    -- see `operators._evaluate_alpha_curve`/`_get_or_create_alpha_curve_
+    node`.
+  - Color: instead of a named yt/matplotlib colormap, an arbitrary Blender
+    `Image` datablock, read back and treated as "functionally 1D" per the
+    user's own framing -- averaged across all rows (collapsing whatever
+    vertical variation exists) then resampled horizontally, so ANY image
+    works regardless of its native resolution/aspect, not just a literal
+    1-pixel-tall gradient strip -- passed through as a nested list,
+    `custom_params["yt_idv_color_image_rgba"]`. See `operators.
+    _sample_image_as_1d_rgba`.
+
+Both are resampled to whatever `nbins` the LUT actually needs
+(`_resample_1d`/`_resample_rgb`, plain `np.interp`) rather than assumed to
+already be the right length -- decouples this module from whatever sample
+count the curve was evaluated at or the image's own native width. Alpha and
+color are deliberately INDEPENDENT switches (`_build_threshold_fog_
+transfer_function_data`/`_build_mip_alpha_colormap_data` take `alpha_curve`
+and `color_rgba` as two separate optional parameters) -- you can mix a
+hand-drawn alpha curve with a named colormap's color, or a `ramp_power`
+alpha with an image-driven color, or any other combination; whichever one
+is `None` falls back to the pre-existing mechanism for just that channel.
+Alpha itself NEVER comes from the image (even if it has real alpha data) --
+one mechanism answers "how transparent here", not two competing ones; see
+these functions' own docstrings.
+
+Not independently visually verified end-to-end in this sandbox: there is no
+interactive display available here to confirm `template_curve_mapping`
+actually renders/responds as an editable widget inside a real Preferences
+panel (as opposed to merely being a valid, non-crashing RNA call) -- the
+underlying data path (CurveMapping creation/evaluation, Image pixel
+readback, resampling, LUT construction, cache-key correctness) WAS verified
+directly by running real Blender code and checking the numbers. Re-verify
+the widget itself interactively before relying on it for real work.
 """
 
 import math
@@ -426,9 +548,80 @@ TF_N_LAYERS = 5  # how many isocontour layers add_layers() spaces evenly (in log
 TF_COLORMAP = "viridis"
 TF_NBINS = 256  # matches TransferFunctionTexture's expected (256, 1, 4) shape
 
+# --- Threshold fog transfer function (fully transparent below a threshold,
+# alpha ramps up above it) -- see `_build_threshold_fog_transfer_function_
+# data`'s docstring for the shape and why it needed no new shader/uniform
+# work at all: `transfer_function.frag.glsl` ALREADY discards any sample
+# outside `[tf_min, tf_max]` entirely (`if(tex_sample < tm) return false;`),
+# so setting `tf_min` to the desired threshold gives a clean, free cutoff --
+# the "isocontour" and "threshold fog" transfer functions differ only in
+# what LUT data they hand to the exact same `render_method="transfer_
+# function"` shader path. Same [0, 1]-normalized value space as
+# TF_VALUE_MIN/MAX above (see that section's docstring for why) -- reusing
+# those same bounds here since they're already known-good for this
+# dataset/field's useful density range.
+TF_FOG_VALUE_MIN = 1e-9  # the threshold -- fully invisible below this
+TF_FOG_VALUE_MAX = 1e-2  # alpha reaches TF_FOG_ALPHA_MAX at this value
+TF_FOG_COLORMAP = "dusk"  # a real yt/matplotlib colormap for the fog's own color
+TF_FOG_ALPHA_MAX = 0.85  # deliberately NOT 1.0 -- stays "foggy"/soft even at the densest point, not a hard solid wall
+TF_FOG_RAMP_POWER = 0.15  # < 1 = alpha ramps up FAST just past the threshold, then flattens out toward TF_FOG_ALPHA_MAX -- see this constant's own re-tuning note below for why this (not TF_VALUE_MIN/MAX's old 2.0-ish intuition) is what actually works here
+# `TF_FOG_VALUE_MIN`/`MAX`/`RAMP_POWER` above were re-tuned AFTER a real
+# regression, worth recording: this module's own real-Cycles-driven camera
+# bug fixes (`_render_with_yt_idv`'s missing `scene.camera._update_matrices()`
+# call, `_near_far_planes`) changed the ACTUAL geometry every yt_idv render
+# uses -- correct now, but it also shifts which density values a given
+# camera/scene combination actually samples along its rays. `transfer_
+# function.frag.glsl`'s accumulation is a REAL, physically-based front-to-
+# back opacity integral (`dt * tf_sample.a` per ray-march step, not a
+# presence/absence test) -- unlike `max_intensity`/`projection`'s own
+# accumulation, which (via `apply_colormap`'s auto-computed per-view
+# cmap_min/cmap_max) effectively just asks "was ANY nonzero density found
+# along this ray", the transfer function mode is sensitive to the ACTUAL
+# accumulated `sum(dt * alpha)` over the real path length -- so it's the one
+# mode where a camera-geometry change can silently starve the total
+# achievable opacity even though "the same density values are still there
+# somewhere". Empirically found (see `scripts/yt_idv_exploration/
+# render_partial_occlusion_demo.py`'s own investigation, sweeping value_min/
+# max/ramp_power against a real cached Cycles+depth-clip request rather than
+# guessing): with the corrected camera, the isocontour transfer function's
+# OLD TF_VALUE_MIN/MAX (1e-6/2e-3, tuned against the OLD, buggy camera)
+# produces essentially NO visible signal any more (max accumulated alpha
+# under 0.004) -- not a new bug, the same "won't transfer to a different
+# camera configuration without re-tuning" caveat already documented for
+# TF_VALUE_MIN/MAX below, now actually triggered by this module's own later
+# camera fix. A front-loaded ramp (`ramp_power < 1`, alpha rises fast just
+# past threshold rather than climbing all the way to TF_FOG_VALUE_MAX
+# gradually) recovers a strong, clearly visible result because it spreads
+# high per-step alpha over a WIDER slice of the density values actually
+# encountered, rather than concentrating it in a narrow band near the very
+# top of the range -- confirmed empirically (0.15 vs 1.0 raised peak
+# accumulated alpha from ~0.16 to ~0.60 on the same real scene). This same
+# investigation strongly suggests TF_VALUE_MIN/MAX (the pre-existing
+# isocontour mode, used by `YT_IDV_TRANSFER_FUNCTION`) is NOW similarly
+# stale post-camera-fix and needs its own re-tuning pass -- not done here,
+# flagged as a follow-up (see README "What's next").
+
+# --- Maximum Intensity with a value-driven alpha (transparent at the low
+# end of the per-view auto-scaled range, opaque at the high end) -- see
+# `apply_colormap_alpha.frag.glsl`'s own docstring for why plain
+# `max_intensity` can't do this at all (its own alpha is a binary "was
+# anything found" flag, completely decoupled from the selected value).
+# Unlike TF_FOG_VALUE_MIN/MAX above, this rides on `max_intensity`'s
+# EXISTING per-view auto cmap_min/cmap_max (`BaseComponent.
+# _reset_cmap_bounds`) rather than fixed dataset-tuned bounds -- the ramp
+# below is defined purely as a FRACTION of whatever that auto-computed
+# range turns out to be for the current camera, so it needs no dataset-
+# specific recalibration the way TF_FOG_VALUE_MIN/MAX did.
+MIP_ALPHA_COLORMAP = "dusk"
+MIP_ALPHA_MAX = 0.7  # NOT 1.0 -- see render_zoomed_core_demo.py's own docstring: at 1.0, the volume's own near-camera material builds up to full opacity before the ray even reaches an embedded marker object, hiding it completely via Alpha-Over regardless of the object's own real depth-clip visibility. Capped below 1.0 so SOMETHING behind the densest visible material always shows through.
+MIP_ALPHA_RAMP_POWER = 0.15  # < 1 = ramps up quickly past the low end, same reasoning as TF_FOG_RAMP_POWER -- 0.15 chosen empirically against a real zoomed-in-on-the-core scene (see scripts/yt_idv_exploration/blender_scene/render_zoomed_core_demo.py), sweeping 0.15/0.3/0.6/1.0: lower values keep more of the diffuse halo visibly (if faintly) present instead of vanishing to fully transparent, without ever losing the transparent-low/opaque-high shape itself
+MIP_ALPHA_NBINS = 256
+
 _dataset_cache = {}  # dataset name -> (ds, data_source)
 _context_cache = {}  # (backend, width, height) -> (render_context, scene)
 _transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
+_fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
+_mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
 def _load_sample_source():
@@ -588,17 +781,229 @@ def _build_isocontour_transfer_function_data(value_min, value_max, n_layers, col
     return np.clip(rgba * 255.0, 0, 255).astype("u1").reshape(nbins, 1, 4)
 
 
-def _get_isocontour_transfer_function_data():
+def _get_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap):
     """Cached -- building the transfer function itself is cheap (milliseconds),
     but there's no reason to redo it every single frame when the settings
-    (`TF_VALUE_MIN`/`MAX`/`TF_N_LAYERS`/`TF_COLORMAP`) haven't changed.
+    haven't changed. Takes explicit values (rather than reading `TF_VALUE_
+    MIN`/`MAX`/`TF_N_LAYERS`/`TF_COLORMAP` directly) so callers can override
+    them -- see `_configure_transfer_function`'s own docstring for where
+    those overrides actually come from (the add-on's Preferences panel, via
+    `VolumeObjectParams.custom_params`).
     """
-    key = (TF_N_LAYERS, TF_COLORMAP, TF_VALUE_MIN, TF_VALUE_MAX)
+    key = (n_layers, colormap, value_min, value_max)
     cached = _transfer_function_cache.get(key)
     if cached is not None:
         return cached
-    data = _build_isocontour_transfer_function_data(TF_VALUE_MIN, TF_VALUE_MAX, TF_N_LAYERS, TF_COLORMAP)
+    data = _build_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap)
     _transfer_function_cache[key] = data
+    return data
+
+
+def _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power):
+    """The actual "fully transparent below a threshold, alpha ramps up
+    above it" shape, as a plain `(nbins,)` array in `[0, alpha_max]` --
+    split out from `_build_threshold_fog_transfer_function_data` so this
+    part is unit-testable with plain numpy, no `yt`/matplotlib needed (same
+    reasoning as `_apply_transfer_function_settings` vs `_configure_
+    transfer_function`).
+
+    `frac = linspace(0, 1, nbins)` is the ramp's position along the LUT,
+    bin 0 -> `TF_FOG_VALUE_MIN` (the threshold) and bin `nbins-1` ->
+    `TF_FOG_VALUE_MAX` -- `_apply_transfer_function_settings` always sets
+    `tf_log = True`, so `transfer_function.frag.glsl` itself takes the log
+    of the sampled density AND of `tf_min`/`tf_max` before mapping into
+    this same `[0, 1]` bin-position space (`tex_sample_norm.x`), meaning
+    `frac` is uniform in LOG-density space, not raw linear density -- this
+    function doesn't need its own `math.log` anywhere, it just builds "the
+    array indexed by bin position" and the shader's existing log transform
+    handles the rest, exactly as `_build_isocontour_transfer_function_data`
+    already relies on for its own bin placement. So `frac ** power`
+    IS the whole ramp shape: `power == 1.0` is a plain linear ramp (in log
+    space);
+    `power > 1.0` stays near-zero for longer before climbing (fog builds up
+    slowly, then thickens quickly near the top -- the requested "ramp up
+    the alpha to make it look foggy" effect); `power < 1.0` front-loads the
+    climb instead (thick almost immediately past the threshold, flattening
+    out toward `alpha_max`). Bin 0 itself is still driven to exactly 0.0
+    regardless of `power` (`0.0 ** anything == 0.0`), matching the "fully
+    transparent below threshold" requirement -- though note `transfer_
+    function.frag.glsl` already discards anything BELOW `tf_min` entirely
+    via its own `tex_sample < tm` check, so this array's own bin-0 value is
+    belt-and-suspenders, not load-bearing for that specific guarantee.
+    """
+    frac = np.linspace(0.0, 1.0, nbins)
+    return alpha_max * frac**ramp_power
+
+
+def _resample_1d(values, nbins):
+    """Linearly resample an arbitrary-length 1D sequence onto `nbins`
+    evenly-spaced positions (plain `np.interp`) -- decouples the LUT's own
+    bin count from whatever resolution the source happened to use (a
+    Blender CurveMapping evaluated at its own sample count, an Image's own
+    native width, ...). A no-op reshape (still returns an array) when
+    `values` already has exactly `nbins` entries. Doesn't rescale the
+    VALUES themselves, only resamples their positions -- callers apply
+    their own scaling (e.g. `* alpha_max`) afterward.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if values.shape[0] == nbins:
+        return values
+    src_x = np.linspace(0.0, 1.0, values.shape[0])
+    dst_x = np.linspace(0.0, 1.0, nbins)
+    return np.interp(dst_x, src_x, values)
+
+
+def _resample_rgb(rgb, nbins):
+    """Same resampling as `_resample_1d`, applied per-channel to an
+    `(n, 3)` or `(n, 4)` RGB(A) array. Callers here only ever use the first
+    3 (RGB) channels -- alpha always comes from the alpha curve/ramp
+    instead, never the color source (see module docstring's "Curve-driven
+    alpha / image-driven color" section for why: exactly one mechanism
+    answers "how transparent here", not two that could disagree).
+    """
+    rgb = np.asarray(rgb, dtype=np.float64)
+    if rgb.shape[0] == nbins:
+        return rgb
+    src_x = np.linspace(0.0, 1.0, rgb.shape[0])
+    dst_x = np.linspace(0.0, 1.0, nbins)
+    out = np.empty((nbins, rgb.shape[1]))
+    for c in range(rgb.shape[1]):
+        out[:, c] = np.interp(dst_x, src_x, rgb[:, c])
+    return out
+
+
+def _build_threshold_fog_transfer_function_data(
+    value_min, value_max, colormap, alpha_max, ramp_power, nbins=TF_NBINS,
+    alpha_curve=None, color_rgba=None,
+):
+    """A CONTINUOUS ramp, not `_build_isocontour_transfer_function_data`'s
+    discrete layers -- "fully transparent below a threshold, alpha ramps up
+    above it" (the user's request, verbatim), enabling a genuinely foggy/
+    hazy volume look rather than isocontour lines. `value_min` doubles as
+    that threshold: `transfer_function.frag.glsl` already discards any
+    sample outside `[tf_min, tf_max]` entirely (see its own `tex_sample < tm`
+    / `> tp` checks) -- no new shader/uniform work needed, this function
+    just builds a different-shaped LUT for the exact same `render_method
+    ="transfer_function"` path the isocontour transfer function already
+    uses. Color comes from a real yt/matplotlib colormap (`colormap`,
+    sampled evenly across the bins -- registering yt's own custom colormaps
+    like `"dusk"` into matplotlib is a side effect of `import yt`, done
+    here rather than assumed already done); alpha is `_threshold_fog_
+    alpha_ramp` (the part that's actually unit-tested). Returns the
+    `(nbins, 1, 4)` uint8 RGBA array `yt_idv.opengl_support.
+    TransferFunctionTexture.data` expects -- same contract as the
+    isocontour builder.
+
+    `alpha_curve`/`color_rgba`, if given, override the ramp-power/named-
+    colormap mechanism for just that one channel, independently -- see
+    module docstring's "Curve-driven alpha / image-driven color" section
+    for where these actually come from. `alpha_curve`: any sequence of
+    floats in `[0, 1]` (e.g. a Blender CurveMapping evaluated at N sample
+    points), resampled to `nbins` via `_resample_1d` and then scaled by
+    `alpha_max` exactly like the ramp-power shape is (`alpha_max` still
+    means "the ceiling", regardless of which shape supplies the curve).
+    `color_rgba`: any `(n, 3)` or `(n, 4)` sequence of RGB(A) in `[0, 1]`
+    (e.g. a Blender Image treated as a 1D horizontal gradient), resampled
+    the same way -- a 4th (alpha) column, if present, is IGNORED.
+    """
+    if color_rgba is not None:
+        rgb = _resample_rgb(color_rgba, nbins)[:, :3]
+    else:
+        import matplotlib
+        import yt  # noqa: F401 -- import side effect: registers yt's own colormaps (e.g. "dusk") into matplotlib
+
+        cmap = matplotlib.colormaps[colormap]
+        frac = np.linspace(0.0, 1.0, nbins)
+        rgb = cmap(frac)[:, :3]  # (nbins, 3), [0, 1] -- drop the colormap's own alpha, we supply our own
+
+    if alpha_curve is not None:
+        alpha = _resample_1d(alpha_curve, nbins) * alpha_max
+    else:
+        alpha = _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power)
+
+    rgba = np.concatenate([rgb, alpha[:, None]], axis=1)
+    return np.clip(rgba * 255.0, 0, 255).astype("u1").reshape(nbins, 1, 4)
+
+
+def _get_threshold_fog_transfer_function_data(
+    value_min, value_max, colormap, alpha_max, ramp_power, alpha_curve=None, color_rgba=None,
+):
+    """Cached -- same reasoning as `_get_isocontour_transfer_function_data`,
+    same "explicit values, not module constants" override mechanism.
+    `alpha_curve`/`color_rgba` cross `custom_params` as plain lists (not
+    numpy arrays -- see `operators._evaluate_alpha_curve`/`_sample_image_
+    as_1d_rgba`), converted to tuples here for the cache key since a plain
+    list isn't hashable.
+    """
+    alpha_key = tuple(alpha_curve) if alpha_curve is not None else None
+    color_key = tuple(tuple(row) for row in color_rgba) if color_rgba is not None else None
+    key = (colormap, value_min, value_max, alpha_max, ramp_power, alpha_key, color_key)
+    cached = _fog_transfer_function_cache.get(key)
+    if cached is not None:
+        return cached
+    data = _build_threshold_fog_transfer_function_data(
+        value_min, value_max, colormap, alpha_max, ramp_power,
+        alpha_curve=alpha_curve, color_rgba=color_rgba,
+    )
+    _fog_transfer_function_cache[key] = data
+    return data
+
+
+def _build_mip_alpha_colormap_data(
+    colormap, alpha_max, ramp_power, nbins=MIP_ALPHA_NBINS, alpha_curve=None, color_rgba=None,
+):
+    """A `ColormapTexture.data`-shaped `(nbins, 4)` float32 RGBA array (NOT
+    the `(nbins, 1, 4)` uint8 shape `TransferFunctionTexture.data` expects
+    -- `ColormapTexture` is a 1D texture, matches `yt_idv.opengl_support.
+    ColormapTexture._observe_colormap_name`'s own `cmap(linspace(0, 1,
+    256))` output format directly) with alpha ramping from 0 at position 0
+    to `alpha_max` at position `nbins - 1`, `ramp_power` shaping the curve
+    exactly like `_threshold_fog_alpha_ramp` (reused directly -- same
+    shape, same reasoning, different caller). Position along this array
+    corresponds to where `apply_colormap_alpha.frag.glsl` samples `cm_tex`,
+    i.e. the max-intensity-selected value's own position between the
+    component's per-view auto-computed `cmap_min`/`cmap_max` -- so "low end"
+    here means "low relative to whatever's currently visible", not a fixed
+    physical density, unlike `_build_threshold_fog_transfer_function_data`.
+
+    `alpha_curve`/`color_rgba` override the ramp-power/named-colormap
+    mechanism, independently -- identical contract to
+    `_build_threshold_fog_transfer_function_data`'s own parameters of the
+    same name; see that function's docstring.
+    """
+    if color_rgba is not None:
+        rgb = _resample_rgb(color_rgba, nbins)[:, :3]
+    else:
+        import matplotlib
+        import yt  # noqa: F401 -- import side effect: registers yt's own colormaps (e.g. "dusk") into matplotlib
+
+        cmap = matplotlib.colormaps[colormap]
+        frac = np.linspace(0.0, 1.0, nbins)
+        rgb = cmap(frac)[:, :3]
+
+    if alpha_curve is not None:
+        alpha = _resample_1d(alpha_curve, nbins) * alpha_max
+    else:
+        alpha = _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power)
+
+    return np.concatenate([rgb, alpha[:, None]], axis=1).astype("f4")
+
+
+def _get_mip_alpha_colormap_data(colormap, alpha_max, ramp_power, alpha_curve=None, color_rgba=None):
+    """Cached -- same reasoning as `_get_isocontour_transfer_function_data`,
+    same "explicit values, not module constants" override mechanism, same
+    tuple-conversion-for-hashability treatment of `alpha_curve`/`color_rgba`
+    as `_get_threshold_fog_transfer_function_data`."""
+    alpha_key = tuple(alpha_curve) if alpha_curve is not None else None
+    color_key = tuple(tuple(row) for row in color_rgba) if color_rgba is not None else None
+    key = (colormap, alpha_max, ramp_power, alpha_key, color_key)
+    cached = _mip_alpha_colormap_cache.get(key)
+    if cached is not None:
+        return cached
+    data = _build_mip_alpha_colormap_data(
+        colormap, alpha_max, ramp_power, alpha_curve=alpha_curve, color_rgba=color_rgba,
+    )
+    _mip_alpha_colormap_cache[key] = data
     return data
 
 
@@ -959,7 +1364,11 @@ def _center_crop(image, expected_height, expected_width):
 def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderResult:
     """Shared by both renderer modes below -- everything except how the
     `block_rendering` component itself gets configured (`configure_component`,
-    called with that component right before `camera.update()`/`rc.run()`).
+    called with `(component, custom_params)` right before `camera.update()`/
+    `rc.run()` -- `custom_params` is `request.volume.custom_params`, the
+    SAME dict `operators.build_volume_params` already merges the add-on
+    Preferences' yt_idv settings into (see `_configure_transfer_function`'s
+    own docstring for the full override mechanism).
 
     Renders SQUARE (`max(height, width)` on both sides) and center-crops
     down to the actually-requested shape, rather than rendering directly at
@@ -991,10 +1400,12 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     """
     height, width = request.depth.data.shape
     render_size = max(height, width)
-    rc, scene, ds = _get_context(DEFAULT_BACKEND, render_size, render_size)
+    custom_params = request.volume.custom_params or {}
+    backend = custom_params.get("yt_idv_backend", DEFAULT_BACKEND)
+    rc, scene, ds = _get_context(backend, render_size, render_size)
 
     for component in scene.components:
-        configure_component(component)
+        configure_component(component, custom_params)
     scene.camera.update(
         **_registered_camera_kwargs(request.camera, request.volume, ds, render_size, render_size)
     )
@@ -1035,7 +1446,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     )
 
 
-def _configure_max_intensity(component):
+def _configure_max_intensity(component, custom_params):
     component.render_method = "max_intensity"
 
 
@@ -1052,10 +1463,28 @@ def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
     component.transfer_function.data = tf_data
 
 
-def _configure_transfer_function(component):
+def _configure_transfer_function(component, custom_params):
+    """`custom_params` (from `VolumeObjectParams.custom_params`, see
+    `_render_with_yt_idv`) can override any of `TF_VALUE_MIN`/`MAX`/
+    `TF_N_LAYERS`/`TF_COLORMAP` via the keys `yt_idv_tf_value_min`/
+    `yt_idv_tf_value_max`/`yt_idv_tf_n_layers`/`yt_idv_tf_colormap` --
+    `operators.build_volume_params` populates these from the add-on
+    Preferences' `yt_idv` settings (see `operators.VolumeOverridePreferences`
+    /`operators._yt_idv_custom_params`), which is how the Properties panel
+    UI actually reaches this module without growing `external_render.py`'s
+    frozen dataclass contract or making this module `bpy`-dependent -- a
+    non-Blender caller building its own `RenderRequest` by hand (e.g. the
+    exploration scripts) just doesn't set these keys and gets the module
+    constants below as before.
+    """
     component.render_method = "transfer_function"
+    value_min = custom_params.get("yt_idv_tf_value_min", TF_VALUE_MIN)
+    value_max = custom_params.get("yt_idv_tf_value_max", TF_VALUE_MAX)
+    n_layers = int(custom_params.get("yt_idv_tf_n_layers", TF_N_LAYERS))
+    colormap = custom_params.get("yt_idv_tf_colormap", TF_COLORMAP)
     _apply_transfer_function_settings(
-        component, TF_VALUE_MIN, TF_VALUE_MAX, _get_isocontour_transfer_function_data(),
+        component, value_min, value_max,
+        _get_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap),
     )
 
 
@@ -1064,6 +1493,44 @@ def yt_idv_max_intensity_renderer(request: RenderRequest) -> RenderResult:
     exactly what is and isn't real here yet.
     """
     return _render_with_yt_idv(request, _configure_max_intensity)
+
+
+def _configure_max_intensity_alpha(component, custom_params):
+    """`custom_params` can override `MIP_ALPHA_COLORMAP`/`MAX`/`RAMP_POWER`
+    via `yt_idv_mip_alpha_colormap`/`yt_idv_mip_alpha_max`/`yt_idv_mip_
+    alpha_ramp_power` -- see `_configure_transfer_function`'s docstring for
+    the full override mechanism (same pattern, different keys). Also reads
+    `yt_idv_alpha_curve`/`yt_idv_color_image_rgba` (shared with
+    `_configure_threshold_fog` -- one curve/image setting drives both
+    continuous-ramp modes) -- see `_build_mip_alpha_colormap_data`'s
+    docstring for what these override and module docstring's "Curve-driven
+    alpha / image-driven color" section for where they come from.
+    """
+    component.render_method = "max_intensity_alpha"
+    colormap = custom_params.get("yt_idv_mip_alpha_colormap", MIP_ALPHA_COLORMAP)
+    alpha_max = custom_params.get("yt_idv_mip_alpha_max", MIP_ALPHA_MAX)
+    ramp_power = custom_params.get("yt_idv_mip_alpha_ramp_power", MIP_ALPHA_RAMP_POWER)
+    alpha_curve = custom_params.get("yt_idv_alpha_curve")
+    color_rgba = custom_params.get("yt_idv_color_image_rgba")
+    component.colormap.data = _get_mip_alpha_colormap_data(
+        colormap, alpha_max, ramp_power, alpha_curve=alpha_curve, color_rgba=color_rgba,
+    )
+
+
+def yt_idv_max_intensity_alpha_renderer(request: RenderRequest) -> RenderResult:
+    """`RENDERER_MODES["YT_IDV_MAX_INTENSITY_ALPHA"]` -- plain
+    `max_intensity` (single brightest sample per ray -- the same underlying
+    `first_fragment` shader, unmodified), but with alpha genuinely driven by
+    the SELECTED VALUE itself (transparent toward the low end of whatever's
+    currently visible, opaque toward the high end) instead of `max_
+    intensity`'s own binary "was anything found" alpha. See `apply_colormap_
+    alpha.frag.glsl`'s docstring for the shader-level story and `MIP_ALPHA_
+    COLORMAP`/`MAX`/`RAMP_POWER`'s own comment for how the ramp is defined.
+    Everything else (camera mapping, depth-clip against Cycles' Z-buffer,
+    square-render-and-crop) is exactly as in `yt_idv_max_intensity_renderer`
+    -- see its and the module's docstrings.
+    """
+    return _render_with_yt_idv(request, _configure_max_intensity_alpha)
 
 
 def yt_idv_transfer_function_renderer(request: RenderRequest) -> RenderResult:
@@ -1078,7 +1545,60 @@ def yt_idv_transfer_function_renderer(request: RenderRequest) -> RenderResult:
     return _render_with_yt_idv(request, _configure_transfer_function)
 
 
-def _configure_projection(component):
+def _configure_threshold_fog(component, custom_params):
+    """`custom_params` can override `TF_FOG_VALUE_MIN`/`MAX`/`COLORMAP`/
+    `ALPHA_MAX`/`RAMP_POWER` via `yt_idv_fog_value_min`/`yt_idv_fog_value_
+    max`/`yt_idv_fog_colormap`/`yt_idv_fog_alpha_max`/`yt_idv_fog_ramp_
+    power` -- see `_configure_transfer_function`'s docstring for the full
+    override mechanism (same pattern, different keys). Also reads
+    `yt_idv_alpha_curve`/`yt_idv_color_image_rgba` (shared with
+    `_configure_max_intensity_alpha` -- one curve/image setting drives both
+    continuous-ramp modes) -- see `_build_threshold_fog_transfer_function_
+    data`'s docstring for what these override and module docstring's
+    "Curve-driven alpha / image-driven color" section for where they come
+    from.
+    """
+    component.render_method = "transfer_function"
+    value_min = custom_params.get("yt_idv_fog_value_min", TF_FOG_VALUE_MIN)
+    value_max = custom_params.get("yt_idv_fog_value_max", TF_FOG_VALUE_MAX)
+    colormap = custom_params.get("yt_idv_fog_colormap", TF_FOG_COLORMAP)
+    alpha_max = custom_params.get("yt_idv_fog_alpha_max", TF_FOG_ALPHA_MAX)
+    ramp_power = custom_params.get("yt_idv_fog_ramp_power", TF_FOG_RAMP_POWER)
+    alpha_curve = custom_params.get("yt_idv_alpha_curve")
+    color_rgba = custom_params.get("yt_idv_color_image_rgba")
+    _apply_transfer_function_settings(
+        component, value_min, value_max,
+        _get_threshold_fog_transfer_function_data(
+            value_min, value_max, colormap, alpha_max, ramp_power,
+            alpha_curve=alpha_curve, color_rgba=color_rgba,
+        ),
+    )
+
+
+def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
+    """`RENDERER_MODES["YT_IDV_THRESHOLD_FOG"]` -- a THIRD transfer function
+    shape (alongside isocontour layers above): fully transparent below
+    `TF_FOG_VALUE_MIN`, alpha ramping continuously up to `TF_FOG_ALPHA_MAX`
+    as density climbs toward `TF_FOG_VALUE_MAX` -- a genuinely foggy/hazy
+    volume look, and (per the request this was built for) a much better
+    substrate for "sphere partially occluded by the volume"-style demos
+    than the isocontour or MIP/projection modes: a real, continuous,
+    tunable density-vs-opacity relationship instead of either narrow
+    isocontour lines or (per this module's own documented finding) an
+    uncontrolled colormap opacity "floor" that makes the whole domain read
+    as nearly-solid past a shallow depth. Same `render_method=
+    "transfer_function"` shader path as the isocontour transfer function
+    (no new shader/uniform work -- see `_build_threshold_fog_transfer_
+    function_data`'s docstring for why setting `tf_min` to the threshold is
+    itself the whole "fully transparent below this" mechanism, for free).
+    Everything else (camera mapping, depth-clip against Cycles' Z-buffer,
+    square-render-and-crop) is exactly as in `yt_idv_max_intensity_renderer`
+    -- see its and the module's docstrings.
+    """
+    return _render_with_yt_idv(request, _configure_threshold_fog)
+
+
+def _configure_projection(component, custom_params):
     component.render_method = "projection"
 
 

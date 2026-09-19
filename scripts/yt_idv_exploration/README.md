@@ -73,8 +73,23 @@ python explore_cycles_zbuffer_depth_clip.py
    radius = half the box, composited against real yt_idv volume content via
    the add-on's actual `operators.render_current_frame()` two-pass
    pipeline -- not a hand-built `RenderRequest`, not a numpy composite. This
-   run is what caught yt_idv bug 5 (below). See "The real end-to-end demo"
-   below -- this is the one worth reading if you only read one section.
+   run is what caught yt_idv bug 5 AND the two camera bugs (below). See
+   "The real end-to-end demo" below.
+9. **`blender_scene/render_partial_occlusion_demo.py`** -- the OPPOSITE
+   compositing direction: a real sphere PARTIALLY occluded by real yt_idv
+   volume content (rather than the reverse, occluding the volume, as in
+   script 8). Needed a scene-geometry insight, not a code change -- see
+   "Sphere partially occluded by the volume" below. Also runs with
+   `VOLUME_OVERRIDE_MODE=threshold_fog` to exercise the new fog transfer
+   function (see "Threshold fog transfer function" below) on the same
+   geometry.
+10. **`blender_scene/render_zoomed_core_demo.py`** -- a NEW real render mode,
+    `YT_IDV_MAX_INTENSITY_ALPHA` (Maximum Intensity with a value-driven, not
+    presence-driven, alpha -- transparent at the low end of what's visible,
+    opaque at the high end), zoomed in on a real physical scale (a 10 kpc
+    marker sphere at the galaxy's own core). See "Maximum Intensity with a
+    value-driven alpha" below -- this is the one worth reading if you only
+    read one section.
 
 Camera motion + reference AMR grid-box wireframes + a marker sphere, all
 driven from a real Blender scene, lives in `blender_scene/` (separate
@@ -258,6 +273,166 @@ result over a checkerboard -- the checker pattern shows through everywhere
 neither the sphere nor the volume is present, with no black rectangle
 anywhere, which a genuinely-opaque background could not produce.
 
+**Sphere partially occluded by the volume -- the OPPOSITE compositing
+direction, requested next.** Every demo above shows a solid sphere occluding
+the volume (via the external depth clip). The reverse direction -- the
+volume drawing OVER part of a solid sphere -- needed NO code change at all:
+`compositor_build.build_or_update_graph`'s Alpha-Over chain already draws
+the volume layer over the Cycles beauty pass unconditionally, using the
+volume's own per-pixel alpha; the depth clip's only job is preventing the
+volume from ALSO drawing content that's actually behind the sphere. So this
+was purely a scene-geometry problem: get a sphere partly behind real,
+opaque-looking volume content, from the camera's point of view.
+
+First attempt got this wrong in an instructive way: center the sphere near
+the dataset's own density peak (`IsolatedGalaxy`'s peak sits at unitary
+(0.504, 0.500, 0.500) -- essentially the domain's own center, confirmed via
+`ds.all_data().quantities.max_location("density")`, not a guess), reasoning
+that the bright peak alone would occlude just the nearby part of the
+sphere. Result: the volume hid the ENTIRE sphere, everywhere it was tested.
+This connects back to an already-documented finding just below (the current
+colormap gives even very LOW densities a nonzero opacity "floor", not true
+transparency) -- it means the WHOLE box interior reads as close to fully
+opaque once a ray has traveled even a modest distance into the domain, not
+just near the peak, so any sphere placed meaningfully inside the box's
+volume gets hidden completely regardless of where the peak is.
+
+The actual fix: since Cycles never renders the box at all (it's hidden,
+flagged for override), the ONLY thing determining whether the volume covers
+a given sphere pixel is whether that same 2D screen pixel has meaningful
+alpha in the volume's own render -- nothing to do with real 3D "inside the
+box." `blender_scene/render_partial_occlusion_demo.py` positions the sphere
+BEHIND the box relative to the camera (past its far boundary along the
+view direction) and OFFSET SIDEWAYS, so its silhouette partially overlaps
+the box's screen footprint (hidden under real volume color) while the rest
+sticks out past the box's silhouette on one side (fully visible, genuinely
+zero volume alpha there) -- tuned using `bpy_extras.object_utils.
+world_to_camera_view` to check the sphere's projected screen columns
+against the box's (box: ~111-407 px at 512x512 for this camera; sphere
+tuned to ~356-473 px, a real ~51px overlap and ~66px clear peek-out).
+Verified directly against real pixel data, not just eyeballing the image:
+the script samples one point on the sphere expected to be occluded and one
+expected to be visible, and prints both the real Cycles-only color and the
+final composited color at each. Confirmed: the "behind the box" sample's
+final color differs substantially from its own beauty-only color (the
+volume genuinely drew over it); the "peeking out" sample's final color
+matches its beauty-only color EXACTLY (`|final - beauty| == 0.0000`) --
+that part of the sphere is untouched. Result:
+`images/32_partial_occlusion_sphere_and_volume.png` -- the sphere's real,
+lit reddish-brown material is clearly visible on one side and clearly
+replaced by the volume's own bright/hazy color on the other, a genuine
+partial occlusion, not a subtle tint. Background transparency re-verified
+the same two ways as the other demo (`images/33_partial_occlusion_over_
+checkerboard.png`).
+
+**Threshold fog transfer function -- a fourth render mode, requested
+directly: "a colormap that is fully transparent except at some threshold
+value... ramp up the alpha to make it look foggy."** No new shader/uniform
+work needed: `transfer_function.frag.glsl` already discards any sample
+below `tf_min` entirely, so setting `tf_min` to the threshold gives "fully
+transparent below this" for free -- `_build_threshold_fog_transfer_
+function_data` just builds a CONTINUOUS alpha ramp (rising from 0 at the
+threshold to `TF_FOG_ALPHA_MAX`) instead of the isocontour mode's discrete
+layers, reusing the exact same `render_method="transfer_function"` shader
+path. Two real things surfaced while building this on the partial-occlusion
+demo's real Cycles+depth-clip scene, rather than a synthetic test:
+
+1. **Another real yt_idv bug**: the first real render's background
+   composited as opaque black instead of transparent -- NOT a repeat of
+   bug 5 (already fixed), traced to `passthrough.frag.glsl` (used as
+   `block_rendering.transfer_function`'s own SECOND pass) unconditionally
+   setting `color.a = 1.0`, discarding the first pass's real per-pixel
+   accumulated alpha entirely. This shader is shared by several
+   genuinely-always-opaque usages (outlines, text, line plots -- see
+   `shaderlist.yaml`'s other `second_fragment: passthrough` entries), so it
+   couldn't just be edited in place; fixed with a new sibling shader,
+   `passthrough_alpha.frag.glsl` (identical, minus that one line), used
+   ONLY for `block_rendering.transfer_function`'s `second_fragment` (both
+   geometry variants). This also fixes the PRE-EXISTING isocontour
+   `YT_IDV_TRANSFER_FUNCTION` mode's background-alpha correctness, never
+   specifically checked before (`render_real_demo.py`'s own background
+   verification had only ever run against `max_intensity`/`projection`).
+2. **A real re-tuning need, not a bug**: even after that fix, the fog was
+   invisible -- the pre-existing isocontour `TF_VALUE_MIN`/`MAX` (1e-6 to
+   2e-3) produced essentially zero accumulated opacity against this
+   REGISTERED camera. Root cause: the earlier camera-matrix bug fix (see
+   "Two real bugs in THIS ADD-ON's own code" below) correctly changed the
+   actual geometry every yt_idv render uses, which also shifts which
+   density values a given camera/scene combination samples along its rays
+   -- `transfer_function.frag.glsl`'s accumulation is a REAL, physically-
+   based front-to-back opacity integral (sensitive to that), unlike
+   `max_intensity`/`projection`'s effectively-binary "was anything found"
+   check via their own auto-computed per-view colormap bounds. Confirmed by
+   sweeping `value_min`/`value_max`/`ramp_power` against a real cached
+   Cycles+depth-clip request (not guessing): a front-loaded ramp
+   (`TF_FOG_RAMP_POWER < 1.0`, alpha rises fast just past the threshold
+   rather than climbing gradually to `TF_FOG_VALUE_MAX`) raised the peak
+   accumulated alpha from ~0.16 to ~0.60 on the same exact scene, because it
+   spreads high per-step alpha over a WIDER slice of the density values
+   actually encountered instead of concentrating it near the very top of
+   the range. The pre-existing isocontour constants are NOT re-tuned here
+   (see main README "What's next") -- this fog mode's own constants are.
+
+Result: `images/34_partial_occlusion_fog_sphere_and_volume.png` -- a soft,
+glowing haze with a brighter core, genuinely translucent (confirmed against
+a checkerboard, `images/35_partial_occlusion_fog_over_checkerboard.png`)
+rather than MIP/projection's harder, near-uniform floor fill -- run via the
+SAME `render_partial_occlusion_demo.py` script, `VOLUME_OVERRIDE_MODE=
+threshold_fog`.
+
+**Maximum Intensity with a value-driven alpha -- a fifth render mode,
+`YT_IDV_MAX_INTENSITY_ALPHA`, requested directly: zoom in on a real 10 kpc
+scale and see MIP with transparency at the low end, opacity at the high
+end.** Plain `max_intensity`'s own alpha turns out to be a binary "was
+anything found along this ray" flag, completely decoupled from the selected
+value (`apply_colormap.frag.glsl` always overwrites `color.a` with that
+flag) -- so it CAN'T show a transparent-low/opaque-high gradient no matter
+how the colormap is built. Fixed with a new sibling shader,
+`apply_colormap_alpha.frag.glsl` (identical, but keeps the colormap
+texture's own alpha channel instead of overriding it), used by a new
+`max_intensity_alpha` `block_rendering` combo -- `_build_mip_alpha_
+colormap_data` in `yt_idv_renderer.py` builds a real colormap with a
+value-driven alpha ramp (reusing the same `_threshold_fog_alpha_ramp` shape
+as the fog transfer function above), assigned directly to `component.
+colormap.data`. Rides on MIP's EXISTING per-view auto `cmap_min`/`cmap_max`
+rather than needing its own fixed dataset-tuned bounds, so (unlike the fog
+mode) it didn't need dataset-specific recalibration.
+
+Zoom distance took real, empirical work, and the story is worth reading in
+full in `render_zoomed_core_demo.py`'s own module docstring: the naive
+instinct (camera a few multiples of the marker sphere's own 10 kpc away)
+produces a bizarre, sharp TRIANGULAR silhouette instead of organic gas
+structure -- at that distance the camera is pressed up against (or inside)
+a SINGLE AMR block's own triangulated bounding cube, so what's on screen is
+that block's flat geometric face, not resolved density. Backing off to
+300-500 kpc (30-50x farther than that instinct) lets the frame span many
+nested blocks and the structure resolves cleanly -- confirmed by comparing
+renders across 15/30/50/300/400/500/650 kpc. The marker sphere is still
+there at 500 kpc, genuinely tiny (confirmed directly against the real
+Cycles beauty pass) -- itself an honest answer to "zoom in on a 10 kpc
+sphere" at this dataset's actual resolution: the length scale where the
+surrounding structure resolves and the length scale of a 10 kpc marker
+don't cooperate. `MIP_ALPHA_RAMP_POWER`/`COLORMAP` were swept (5 colormaps
+x 4 ramp powers) against this same real scene's cached depth data, no
+Cycles re-render per candidate. Result:
+`images/36_zoomed_core_sphere_and_volume.png` -- a soft, glowing core (dusk
+colormap: blue outer, orange/white core) with the tiny marker sphere
+visible right at the peak, genuinely transparent at the edges (confirmed
+against a checkerboard, `images/37_*`).
+
+**Follow-up -- "I can't quite see it."** The first version's 10 kpc yellow
+sphere was genuinely hard to spot, for three distinct, real reasons, all
+fixed in `render_zoomed_core_demo.py`'s `build_scene()`: (1) yellow sat too
+close to "dusk"'s own warm orange/white core color, so the sphere blended
+in rather than contrasted -- switched to a saturated green; (2)
+`MIP_ALPHA_MAX` (1.0) let the volume's own near-camera material build up to
+FULL opacity in front of the sphere, hiding it completely via Alpha-Over
+regardless of its own real depth-clip visibility -- lowered to 0.7, a real,
+general fix to `yt_idv_renderer.py`'s own default, not a one-off for this
+demo; (3) the sphere itself was also enlarged, 10 -> 35 kpc. Re-rendered
+`images/36_*`/`37_*` (same paths, overwritten) show the green marker
+reading clearly against the core.
+
 **Visual character of the render itself (not a bug, just what MIP with the
 current default colormap looks like):** the domain box's silhouette,
 mostly filled with a dim, near-uniform dark-red tone, plus a bright
@@ -282,3 +457,16 @@ and still uses the OLD flat alpha-over composite technique --
 single still frame with a fixed sphere/camera, not the full multi-frame
 orbit `render_frames_in_blender.py` covers; re-doing THAT one with the real
 depth clip across an animated camera path is still open.
+
+The add-on's real yt_idv Preferences-panel settings (`operators.
+YtIdvRenderSettings` -- see main README "Custom properties ->
+VolumeObjectParams.custom_params" -> "yt_idv-specific parameters") also
+aren't exercised by any script here: `_bridge_render`/`ytidv_worker.py`'s
+`_build_request`/`_build_request_full` always hand-build a `VolumeObjectParams`
+with `custom_params={}`, since these scripts construct their own
+`RenderRequest` directly rather than going through `operators.
+build_volume_params`. Real add-on usage (a real Blender with yt_idv
+installed, no bridge, `render_fn(request)` called directly) is unaffected
+-- this is a limitation of this sandbox's own dev-only bridge scripts, not
+of the feature itself, which was verified directly against real Blender
+(see SUMMARY.md).

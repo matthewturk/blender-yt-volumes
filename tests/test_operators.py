@@ -173,6 +173,168 @@ def test_build_volume_params_dataset_and_params_version_are_independent(clean_sc
     assert second.dataset.version.changed is False
 
 
+def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_scene_with_props):
+    # `clean_scene_with_props` registers `properties` only, not the whole
+    # add-on -- `bpy.context.preferences.addons[__package__]` genuinely
+    # doesn't exist in that state (confirmed: raises KeyError), which is
+    # exactly the case `_yt_idv_custom_params`'s own try/except is for. Pins
+    # the fallback down explicitly, not just "the other test still passes".
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+
+    params = operators.build_volume_params(obj)
+
+    assert not any(k.startswith("yt_idv_") for k in params.custom_params)
+
+
+@pytest.fixture
+def addon_enabled():
+    # Real add-on-enable flow (not just bpy.utils.register_class) -- that
+    # alone does NOT populate bpy.context.preferences.addons[__package__]
+    # (confirmed: raises KeyError), which _yt_idv_custom_params reads.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.preferences.addon_enable(module="cycles_volume_override")
+    change_tracking.reset()
+    yield bpy.context.scene
+    bpy.ops.preferences.addon_disable(module="cycles_volume_override")
+
+
+def test_build_volume_params_includes_yt_idv_settings_when_addon_enabled(addon_enabled):
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.yt_idv.fog_colormap = "inferno"
+    prefs.yt_idv.fog_ramp_power = 0.42
+
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+
+    params = operators.build_volume_params(obj)
+
+    assert params.custom_params["yt_idv_fog_colormap"] == "inferno"
+    assert params.custom_params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
+    # A field left at its default should match yt_idv_renderer.py's own
+    # module constant of the same name -- the whole point of the defaults
+    # being "the old hardcoded behavior, unchanged, until you touch a slider".
+    from cycles_volume_override import yt_idv_renderer as yir
+    assert params.custom_params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
+
+
+def test_yt_idv_custom_params_omits_curve_and_image_keys_by_default(addon_enabled):
+    # alpha_source/color_source default to RAMP_POWER/NAMED -- the new
+    # curve/image mechanism (see yt_idv_renderer.py module docstring's
+    # "Curve-driven alpha / image-driven color" section) must be a
+    # completely inert no-op until explicitly opted into.
+    params = operators._yt_idv_custom_params()
+    assert "yt_idv_alpha_curve" not in params
+    assert "yt_idv_color_image_rgba" not in params
+
+
+def test_get_or_create_alpha_curve_node_is_stable_across_calls(addon_enabled):
+    node1 = operators._get_or_create_alpha_curve_node()
+    node1.mapping.initialize()
+    node1.mapping.curves[0].points.new(0.5, 0.75)
+    node1.mapping.update()
+
+    node2 = operators._get_or_create_alpha_curve_node()
+
+    # NOT `is` -- repeated bpy_struct attribute access doesn't reliably
+    # return the identical Python wrapper object even for the same
+    # underlying RNA data; compare by name/identity-of-data instead.
+    assert node2.name == node1.name
+    assert node2.as_pointer() == node1.as_pointer()
+    assert len(node2.mapping.curves[0].points) == 3
+
+
+def test_evaluate_alpha_curve_default_is_linear(addon_enabled):
+    # Untouched CurveMapping default is the identity ramp (points at (0,0)
+    # and (1,1)) -- see module investigation confirming this via a direct
+    # ShaderNodeFloatCurve test.
+    values = operators._evaluate_alpha_curve(nbins=5)
+    assert values == pytest.approx([0.0, 0.25, 0.5, 0.75, 1.0], abs=1e-3)
+
+
+def test_yt_idv_custom_params_includes_alpha_curve_when_selected(addon_enabled):
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.yt_idv.alpha_source = "CURVE"
+
+    params = operators._yt_idv_custom_params()
+
+    assert "yt_idv_alpha_curve" in params
+    assert len(params["yt_idv_alpha_curve"]) == 256
+    assert params["yt_idv_alpha_curve"][0] == pytest.approx(0.0, abs=1e-3)
+    assert params["yt_idv_alpha_curve"][-1] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_sample_image_as_1d_rgba_averages_rows_and_resamples_width(addon_enabled):
+    import numpy as np
+
+    img = bpy.data.images.new("vo_test_gradient", width=4, height=2, alpha=True, float_buffer=True)
+    data = np.zeros((2, 4, 4), dtype=np.float32)
+    data[..., 0] = np.linspace(0.0, 1.0, 4)[None, :]  # identical red gradient in both rows
+    data[..., 1] = 0.5
+    data[..., 3] = 1.0
+    img.pixels.foreach_set(data.ravel())
+
+    try:
+        rgba = operators._sample_image_as_1d_rgba(img, nbins=4)
+        assert len(rgba) == 4
+        assert rgba[0][0] == pytest.approx(0.0, abs=1e-4)
+        assert rgba[-1][0] == pytest.approx(1.0, abs=1e-4)
+        assert all(row[1] == pytest.approx(0.5, abs=1e-4) for row in rgba)
+    finally:
+        bpy.data.images.remove(img)
+
+
+def test_sample_image_as_1d_rgba_raises_on_zero_sized_image():
+    # A genuinely 0x0 image can't be produced via bpy.data.images.new()
+    # itself (confirmed: Blender clamps width/height to a 1x1 minimum) --
+    # this is the same "broken/unavailable source file" failure mode
+    # documented in operators.read_depth_buffer's own comment, reproduced
+    # here with a minimal stand-in rather than a real (unbreakable) Image.
+    class _FakeZeroSizedImage:
+        name = "broken"
+        size = (0, 0)
+
+    with pytest.raises(ValueError):
+        operators._sample_image_as_1d_rgba(_FakeZeroSizedImage())
+
+
+def test_yt_idv_custom_params_includes_color_image_rgba_when_selected(addon_enabled):
+    import numpy as np
+
+    img = bpy.data.images.new("vo_test_gradient2", width=4, height=1, alpha=True, float_buffer=True)
+    data = np.zeros((1, 4, 4), dtype=np.float32)
+    data[..., 2] = np.linspace(0.0, 1.0, 4)[None, :]
+    data[..., 3] = 1.0
+    img.pixels.foreach_set(data.ravel())
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.yt_idv.color_source = "IMAGE"
+    prefs.yt_idv.color_image_name = img.name
+
+    try:
+        params = operators._yt_idv_custom_params()
+        assert "yt_idv_color_image_rgba" in params
+        assert len(params["yt_idv_color_image_rgba"]) == 256
+        assert params["yt_idv_color_image_rgba"][0][2] == pytest.approx(0.0, abs=1e-3)
+        assert params["yt_idv_color_image_rgba"][-1][2] == pytest.approx(1.0, abs=1e-3)
+    finally:
+        bpy.data.images.remove(img)
+
+
+def test_yt_idv_custom_params_ignores_stale_color_image_name(addon_enabled):
+    # Image renamed/deleted after being selected -- see
+    # `_yt_idv_custom_params`'s own comment on why this falls back silently
+    # (to the NAMED-colormap mechanism) rather than raising mid-render.
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.yt_idv.color_source = "IMAGE"
+    prefs.yt_idv.color_image_name = "does_not_exist_anywhere"
+
+    params = operators._yt_idv_custom_params()
+
+    assert "yt_idv_color_image_rgba" not in params
+
+
 @pytest.mark.parametrize(
     "sequence_mode,scene_frame,expected",
     [
@@ -301,3 +463,63 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
 
     assert result == {"FINISHED"}
     assert called == [True]
+
+
+# --- opacity field / _apply_opacity -------------------------------------------
+
+def test_apply_opacity_is_a_noop_at_default_1_0():
+    import numpy as np
+    from cycles_volume_override import external_render
+
+    result = external_render.RenderResult(
+        rgba=np.ones((2, 2, 4), dtype="float32") * 0.8,
+        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+    )
+
+    out = operators._apply_opacity(result, 1.0)
+
+    assert out is result  # exact no-op, not just numerically equal -- see _apply_opacity's own docstring
+
+
+def test_apply_opacity_scales_premultiplied_rgba_uniformly():
+    import numpy as np
+    from cycles_volume_override import external_render
+
+    result = external_render.RenderResult(
+        rgba=np.ones((2, 2, 4), dtype="float32") * 0.8,
+        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+    )
+
+    out = operators._apply_opacity(result, 0.5)
+
+    assert np.allclose(out.rgba, 0.4)
+    assert out.rgba.dtype == np.dtype("float32")
+    assert out.alpha_mode == "PREMULTIPLIED"
+    assert out.color_space == "LINEAR"
+
+
+def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_scene_with_props):
+    # The whole point of putting `opacity` on obj.volume_override (a real
+    # Object-level PropertyGroup) rather than alongside the yt_idv alpha
+    # controls in AddonPreferences: Object supports animation_data, so
+    # standard keyframe_insert/frame_set actually animates it -- confirmed
+    # directly (AddonPreferences instances have no animation_data at all,
+    # id_data is None, keyframe_insert raises outright).
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+    assert obj.volume_override.opacity == pytest.approx(1.0)
+
+    obj.volume_override.opacity = 0.0
+    obj.volume_override.keyframe_insert(data_path="opacity", frame=1)
+    obj.volume_override.opacity = 1.0
+    obj.volume_override.keyframe_insert(data_path="opacity", frame=21)
+
+    assert obj.animation_data is not None and obj.animation_data.action is not None
+
+    clean_scene_with_props.frame_set(1)
+    assert obj.volume_override.opacity == pytest.approx(0.0)
+    clean_scene_with_props.frame_set(21)
+    assert obj.volume_override.opacity == pytest.approx(1.0)
+    clean_scene_with_props.frame_set(11)  # midpoint, linear interpolation
+    assert obj.volume_override.opacity == pytest.approx(0.5, abs=1e-3)

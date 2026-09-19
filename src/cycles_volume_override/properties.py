@@ -84,6 +84,30 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
     )
+    opacity: bpy.props.FloatProperty(
+        name="Opacity",
+        description=(
+            "Overall opacity multiplier applied to this object's rendered "
+            "result AFTER the external renderer runs, regardless of which "
+            "renderer_mode is active -- NOT passed through custom_params "
+            "for a renderer to interpret itself (unlike density_scale/"
+            "absorption/scattering/color above); see "
+            "operators.render_current_frame's own comment for why applying "
+            "it uniformly here, once, covers every renderer (including "
+            "future ones) rather than needing each renderer to remember to "
+            "read a custom_params key. Lives on the OBJECT (a real "
+            "keyframable ID), unlike the yt_idv Preferences-panel alpha "
+            "controls (Fog/MIP Alpha Max, Ramp Power, the curve widget) -- "
+            "those live on AddonPreferences, which has no animation_data "
+            "at all and categorically can't be keyframed (confirmed: "
+            "`id_data` is None there). This is the one you keyframe for a "
+            "fade in/out"
+        ),
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        subtype="FACTOR",
+    )
     dataset_path: bpy.props.StringProperty(
         name="Dataset Path",
         description=(
@@ -255,6 +279,7 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.prop(props, "absorption")
         col.prop(props, "scattering")
         col.prop(props, "color")
+        col.prop(props, "opacity")
         col.separator()
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")
