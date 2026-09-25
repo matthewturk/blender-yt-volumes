@@ -9,10 +9,16 @@ everything except how the `block_rendering` component itself is configured.
 
 Deliberately scoped down, per the brief this was written against:
 
-  - Always renders one hardcoded sample dataset (`yt.load_sample(
-    "IsolatedGalaxy")`), NEVER `request.volume.dataset.dataset_path`/
-    `dataset_kind`. Wiring up real dataset selection/loading is future work,
-    explicitly out of scope here.
+  - Renders one hardcoded sample dataset (`yt.load_sample("IsolatedGalaxy")`)
+    by default, NEVER `request.volume.dataset.dataset_path`/`dataset_kind`
+    directly -- those two generic fields still aren't wired up here (a bare
+    path/kind string can't express field selection, units, derived fields,
+    cut regions, or any of the other real yt setup a dataset actually needs).
+    Instead, `custom_params["yt_idv_volume_provider"]` -- a
+    `"module.submodule:function_name"` string pointing at a Python function
+    YOU write -- lets you replace the hardcoded sample with arbitrary real
+    yt/yt_idv setup, called once per object per frame, kept stateful across
+    calls. See "Custom volume setup" below for the full harness.
   - **Now DOES depth-clip against `request.depth` -- the flagged object's
     own `bounding_box_local`/`matrix_world` (already part of
     `VolumeObjectParams`, no new field needed) is the registration between
@@ -412,11 +418,15 @@ this repo's dev venv either way, but no longer blocked by the same
 imgui/Python-version conflict).
 
 Known rough edges, beyond the scope points above:
-  - The dataset + offscreen GL context are cached at module level
-    (`_get_context`) and never explicitly torn down -- there's no hook into
-    `operators.unregister()` for this yet, so disabling/reloading the
-    add-on leaks the GL context until Blender itself exits. Fine for
-    exploring; worth a real fix before this is anything more than that.
+  - The offscreen GL context (`_get_render_context`), the hardcoded sample
+    dataset (`_load_sample_source`), and every per-object volume-provider
+    cache (`_volume_scene_cache`/`_render_result_cache`, see "Custom volume
+    setup" below) are all cached at module level and never explicitly torn
+    down -- there's no hook into `operators.unregister()` for any of this
+    yet, so disabling/reloading the add-on leaks the GL context (and holds
+    onto whatever a custom provider itself cached) until Blender itself
+    exits. Fine for exploring; worth a real fix before this is anything
+    more than that.
   - Every module constant below that shapes a render (backend, both
     transfer functions' value ranges/colormaps/ramp shapes, MIP-alpha's
     colormap/max/ramp) is now ALSO a real, live Preferences-panel field --
@@ -504,12 +514,150 @@ underlying data path (CurveMapping creation/evaluation, Image pixel
 readback, resampling, LUT construction, cache-key correctness) WAS verified
 directly by running real Blender code and checking the numbers. Re-verify
 the widget itself interactively before relying on it for real work.
+
+**Custom volume setup (the `yt_idv_volume_provider` harness).** Requested
+directly: a well-defined way to hand this module arbitrary real yt setup
+(load a real dataset, pick a field, build a cut region/derived field,
+anything yt can do) instead of the hardcoded `IsolatedGalaxy` sample, without
+this module needing to know anything about YOUR specific dataset. The shape
+of the problem: loading a real dataset is often the single most expensive
+thing that happens (disk I/O, hierarchy parsing, sometimes gigabytes), so
+whatever hook exists has to let the caller be as stateful/lazy as
+`_load_sample_source`'s own "cache once per Blender session" already is --
+a plain "load this path every render call" function would make the add-on
+unusable on anything but a toy dataset.
+
+The mechanism: `custom_params["yt_idv_volume_provider"]`, a
+`"module.submodule:function_name"` string (see `properties.
+VolumeOverrideProperties.yt_idv_volume_provider` for the per-object UI field
+that sets it) resolved via `importlib` (`_resolve_volume_provider`) to a
+plain Python callable, called as `provider(ctx) -> VolumeSetupResult`, once
+per flagged object per frame, from `_get_volume_scene` (itself called by
+`_render_with_yt_idv`, so every yt_idv renderer mode gets this uniformly,
+not just one). `ctx` (`VolumeSetupContext`) is everything the provider
+needs to either build something new or confirm the old one is still good:
+
+  - `ctx.render_context`: the LIVE, already-created-and-sized `yt_idv`
+    render context (`rc`) for this object's current (backend, render size)
+    -- call `ctx.render_context.add_scene(data_source, field, ...)`
+    yourself to build a scene; this module never calls `add_scene` on your
+    behalf, so you have full control over the field name, `no_ghost`, or
+    anything else `add_scene` accepts.
+  - `ctx.previous_scene`/`ctx.previous_ds`: EXACTLY what your own last call
+    returned as `scene`/`ds` (see `VolumeSetupResult` below) -- `None` on
+    the very first call for this object, or after this module itself
+    detects the cached scene is stale (the render context it belonged to
+    no longer matches, e.g. the backend or render resolution changed, in
+    which case a rebuild is unavoidable regardless of your own dataset
+    state, so `previous_scene` comes back `None` even if your dataset is
+    still perfectly valid). This is how "stateful, don't redo work you
+    don't have to" actually works: the common case is `if ctx.previous_
+    scene is not None: return VolumeSetupResult(ctx.previous_scene, ctx.
+    previous_ds, changed=False)` -- most calls, most frames, should hit
+    this and do nothing else.
+  - `ctx.dataset`: this object's `DatasetParams` -- `dataset_path`/
+    `dataset_kind` (whatever you typed on the object, still yours to
+    interpret however you like), `requested_time` (see that field's own
+    docstring for the frame->time mapping), and `version.hash`/`.changed`
+    (Blender's own convenience signal for "did dataset_path/dataset_kind/
+    the object's identity change since last render" -- see VersionInfo's
+    own docstring for why `.changed` is a hint, not authoritative, and
+    `.hash` is the one safe to actually cache against).
+  - `ctx.custom_params`: the full `custom_params` dict (same one
+    `configure_component` receives) -- your own extra settings, if you
+    added any via `custom_params_extra`, are right there under whatever key
+    you gave them.
+  - `ctx.frame`: `FrameParams` (`frame_number`/`scene_time_seconds`), for
+    providers that want to key off Blender's frame directly rather than
+    `dataset.requested_time`'s mapped value.
+
+`VolumeSetupResult(scene, ds, changed)`: `scene` is what `_render_with_yt_idv`
+actually renders (its own `.components` get configured, its own `.camera`
+gets positioned) -- normally `ctx.render_context.add_scene(...)`'s own
+return value, or `ctx.previous_scene` unchanged. `ds` needs only
+`.domain_center` (a real yt `Dataset`, or any object/array with that
+attribute -- see `_registered_camera_kwargs`/`_domain_array_unitary`) --
+used purely as a reference point for a sensible look-at distance, not for
+positioning itself. `changed`: **True** means the underlying volume DATA
+itself changed since your last call (new dataset, new timestep, a rebuilt
+cut region, anything that would make a stale render visibly wrong) --
+`_render_with_yt_idv` treats this as "you must re-render this frame,
+period," regardless of whether the camera moved. **False** means nothing on
+your end changed -- `_render_with_yt_idv` then checks its OWN independent
+signal (has the camera, the Cycles depth buffer, or any shading knob in
+`custom_params` changed since the last frame THIS object was actually
+rendered -- a content hash via `change_tracking.version_for`, same
+authoritative-hash-not-just-a-flag discipline as `VersionInfo` elsewhere in
+this add-on) and skips the entire `rc.run()`/depth-clip/compositing dance,
+returning the previous frame's own `RenderResult` verbatim, ONLY if that
+signal also says nothing changed. Get `changed` wrong in the "should have
+been True" direction and a real data change silently doesn't show up on
+screen; get it wrong the other way (always `True`) and you simply lose the
+skip-render optimization -- still correct, just slower. When genuinely
+unsure, returning `True` is the safe default.
+
+Not wired to anything if `custom_params` doesn't set `"yt_idv_volume_
+provider"` at all -- `_default_volume_provider` (the pre-existing hardcoded-
+IsolatedGalaxy behavior, reimplemented against this exact same protocol so
+it isn't a special case) is what every flagged object gets, unchanged,
+until you opt in per-object. Multiple flagged objects sharing one provider
+function, or each pointing at a different one, both work today, dispatched
+per-object via `RenderRequest.volume.dataset.dataset_id` (the same stable
+cache key `change_tracking.py` already uses elsewhere) -- INCLUDING when
+several such objects share one render_context (same backend/render size,
+the common case, since resolution is scene-wide): `_render_with_yt_idv`
+re-asserts `rc.scene = scene` on every call before `rc.run()`, a real,
+necessary fix rather than an assumption -- `yt_idv.rendering_contexts.
+base_context.BaseContext.add_scene` only ever mutates `self.scene`, and
+`OffscreenRenderingContext.run()` renders THAT, not any particular Python
+`scene` reference this module might be holding -- so without re-asserting
+it, whichever object's `add_scene()` ran most recently (possibly a
+DIFFERENT object, from this same frame or an earlier one) would silently
+own every subsequent `rc.run()` on a shared context, even for an object
+whose own cached scene never needed rebuilding at all. Each object still
+renders and Alpha-Over composites fully independently, exactly like today
+-- genuinely compositing MULTIPLE volumes into one COMBINED yt_idv scene,
+sampled together in a single ray march, is a separate, harder problem, not
+attempted here.
+
+Verified directly, not just designed on paper: `scripts/yt_idv_exploration/
+blender_scene/custom_volume_provider_demo.py` defines a real provider
+function (in its own module, `_custom_volume_provider_example.py` -- loads
+the same `IsolatedGalaxy` sample explicitly, through this exact mechanism
+instead of the hardcoded default) and confirms, against real renders,
+sharing one real render_context with the default provider throughout: (1)
+the custom provider's output matches the default provider's own, pixel for
+pixel; (2) the provider is NOT called with `previous_scene=None` on its
+second call at the same render size (it was actually reused, not silently
+rebuilt); (3) an IDENTICAL second call (same camera, same depth, same
+params, `changed=False`) returns the exact same `RenderResult` object back
+(the skip-cache actually skips `rc.run()`, not just "happens to produce the
+same pixels"), while a camera-only change with `changed=False` from the
+provider still triggers a real, different re-render (the skip-cache doesn't
+over-cache); and (4) re-rendering the DEFAULT object again, after the
+CUSTOM object (sharing the same render_context) called `add_scene()` in
+between, still ends up with `rc.scene` correctly pointing at the default
+object's own scene, not the custom object's leftover one -- confirmed
+failing without the `rc.scene = scene` re-assertion above (both this real
+script AND `test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_
+a_context` were run with that line disabled to confirm they actually catch
+its absence, not just happening to pass either way).
+
+Still explicitly future work, unattempted here: aspect ratio (yt_idv's own
+square-render/crop approximation, see `_render_with_yt_idv`'s docstring, is
+unrelated to and unaffected by any of the above -- a provider cannot itself
+fix the non-square FOV mismatch) and genuinely compositing multiple
+providers'/objects' volumes into a single combined yt_idv scene.
 """
 
+import dataclasses
+import hashlib
+import importlib
 import math
 
 import numpy as np
 
+from . import change_tracking
 from .external_render import RenderRequest, RenderResult
 from .sample_renderers import _persp_ortho_rays
 
@@ -617,8 +765,10 @@ MIP_ALPHA_MAX = 0.7  # NOT 1.0 -- see render_zoomed_core_demo.py's own docstring
 MIP_ALPHA_RAMP_POWER = 0.15  # < 1 = ramps up quickly past the low end, same reasoning as TF_FOG_RAMP_POWER -- 0.15 chosen empirically against a real zoomed-in-on-the-core scene (see scripts/yt_idv_exploration/blender_scene/render_zoomed_core_demo.py), sweeping 0.15/0.3/0.6/1.0: lower values keep more of the diffuse halo visibly (if faintly) present instead of vanishing to fully transparent, without ever losing the transparent-low/opaque-high shape itself
 MIP_ALPHA_NBINS = 256
 
-_dataset_cache = {}  # dataset name -> (ds, data_source)
-_context_cache = {}  # (backend, width, height) -> (render_context, scene)
+_dataset_cache = {}  # dataset name -> (ds, data_source) -- _default_volume_provider's own cache, same role as before
+_render_context_cache = {}  # (backend, width, height) -> rc -- renamed from _context_cache now that scene/dataset setup is a per-object concern (see _volume_scene_cache) rather than tied 1:1 to the GL context
+_volume_scene_cache = {}  # dataset_id -> (scene, ds, render_context_key) -- one flagged object's own last-built (or reused) yt_idv Scene; render_context_key lets _get_volume_scene tell a stale-context scene apart from a genuinely-unchanged one
+_render_result_cache = {}  # dataset_id -> RenderResult -- the last successful render for this object, returned as-is when _render_signature_changed says nothing that would affect the image has changed
 _transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
@@ -630,7 +780,10 @@ def _load_sample_source():
     This is the expensive part (disk I/O + hierarchy parsing) -- the
     two-pass pipeline calls the render function once per flagged object per
     frame, so caching here isn't a nice-to-have, it's required for this to
-    be usable at all across more than a single call.
+    be usable at all across more than a single call. Used only by
+    `_default_volume_provider` now -- a custom `yt_idv_volume_provider` is
+    free to load however/whatever it wants instead (see "Custom volume
+    setup" above).
     """
     cached = _dataset_cache.get(SAMPLE_DATASET_NAME)
     if cached is not None:
@@ -649,21 +802,23 @@ def _load_sample_source():
     return ds, data_source
 
 
-def _get_context(backend, width, height):
-    """Lazily create ONE offscreen render context + scene per (backend,
-    width, height), reused across calls. yt_idv's offscreen contexts fix
-    their framebuffer size at creation, so a resolution change (e.g. the
-    user resizes the render) transparently gets its own cached context
-    rather than reusing a wrongly-sized one.
+def _get_render_context(backend, width, height):
+    """Lazily create ONE offscreen render context per (backend, width,
+    height), reused across calls AND across every flagged object that
+    shares those three values -- yt_idv's offscreen contexts fix their
+    framebuffer size at creation, so a resolution change (e.g. the user
+    resizes the render) transparently gets its own cached context rather
+    than reusing a wrongly-sized one.
 
-    Does NOT set `component.render_method` -- since the SAME cached context
-    can be reused by either renderer mode below (if the user switches the
-    `renderer_mode` preference mid-session), each render call configures the
-    component itself, every time, rather than relying on whatever was set
-    when the context was first created.
+    Narrower than the old (pre-`yt_idv_volume_provider`) `_get_context`,
+    which also built the ONE hardcoded scene right here -- scene/dataset
+    setup is now a per-object concern (`_get_volume_scene`, dispatched
+    through whatever provider `custom_params["yt_idv_volume_provider"]`
+    names), since different flagged objects sharing this same render
+    context may legitimately want different volumes.
     """
     key = (backend, width, height)
-    cached = _context_cache.get(key)
+    cached = _render_context_cache.get(key)
     if cached is not None:
         return cached
     try:
@@ -674,11 +829,170 @@ def _get_context(backend, width, height):
             "Python -- see README 'yt_idv integration' for how to install "
             "it there."
         ) from exc
-    ds, data_source = _load_sample_source()
     rc = yt_idv.render_context(backend, width=width, height=height)
-    scene = rc.add_scene(data_source, SAMPLE_FIELD, no_ghost=True)
-    _context_cache[key] = (rc, scene, ds)
-    return rc, scene, ds
+    _render_context_cache[key] = rc
+    return rc
+
+
+@dataclasses.dataclass
+class VolumeSetupContext:
+    """Passed to a `custom_params["yt_idv_volume_provider"]` callable, once
+    per flagged object per frame -- see module docstring "Custom volume
+    setup" for the full contract and rationale.
+    """
+
+    render_context: "object"  # the live yt_idv render context (`rc`) -- call .add_scene(...) on this yourself
+    dataset: "object"  # external_render.DatasetParams for this object -- dataset_path/dataset_kind/requested_time/version, whatever you put there
+    custom_params: dict  # same dict configure_component() receives -- your own custom_params_extra entries included
+    frame: "object"  # external_render.FrameParams
+    previous_scene: "object | None"  # exactly what YOUR last call returned as `scene`, or None (first call, or the render context changed underneath it)
+    previous_ds: "object | None"  # exactly what YOUR last call returned as `ds`, or None alongside previous_scene
+
+
+@dataclasses.dataclass
+class VolumeSetupResult:
+    """Returned by a `yt_idv_volume_provider` callable -- see
+    `VolumeSetupContext`/module docstring "Custom volume setup".
+    """
+
+    scene: "object"  # what _render_with_yt_idv actually renders (.components get configured, .camera gets positioned)
+    ds: "object"  # needs only `.domain_center` -- see _registered_camera_kwargs/_domain_array_unitary
+    changed: bool  # True: the volume DATA itself changed, force a re-render regardless of camera. False: nothing on your end changed -- a re-render still happens if the camera/depth/shading knobs did, but can be skipped entirely if nothing did.
+
+
+def _resolve_volume_provider(spec):
+    """`spec` is `"module.submodule:function_name"` -- the exact string a
+    user puts in `custom_params["yt_idv_volume_provider"]` (see
+    `properties.VolumeOverrideProperties.yt_idv_volume_provider`). Raises
+    loudly (ValueError/ImportError/AttributeError) on anything malformed
+    rather than silently falling back to the default provider -- a
+    misconfigured provider should fail obviously at render time, not
+    quietly render the wrong (or hardcoded-sample) volume.
+    """
+    if not isinstance(spec, str) or ":" not in spec:
+        raise ValueError(
+            "custom_params['yt_idv_volume_provider'] must be a "
+            f"'module.submodule:function_name' string, got {spec!r}"
+        )
+    module_path, _, func_name = spec.rpartition(":")
+    module = importlib.import_module(module_path)
+    try:
+        return getattr(module, func_name)
+    except AttributeError as exc:
+        raise AttributeError(
+            f"module {module_path!r} has no attribute {func_name!r} "
+            f"(from custom_params['yt_idv_volume_provider']={spec!r})"
+        ) from exc
+
+
+def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
+    """What every flagged object gets when `custom_params` doesn't set
+    `"yt_idv_volume_provider"` -- the pre-existing hardcoded-IsolatedGalaxy
+    behavior, reimplemented against the exact same protocol a real custom
+    provider uses, rather than as a special case `_get_volume_scene` has to
+    know about separately. Loads (`_load_sample_source`, module-level
+    `_dataset_cache`) at most ONCE per Blender session and never reports
+    `changed=True` again after that -- there is nothing about this fixed
+    sample that ever changes.
+    """
+    if ctx.previous_scene is not None:
+        return VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=False)
+    ds, data_source = _load_sample_source()
+    scene = ctx.render_context.add_scene(data_source, SAMPLE_FIELD, no_ghost=True)
+    return VolumeSetupResult(scene=scene, ds=ds, changed=True)
+
+
+def _get_volume_scene(request: RenderRequest, render_size: int):
+    """Resolve (via `custom_params["yt_idv_volume_provider"]`, falling back
+    to `_default_volume_provider`) and cache the yt_idv Scene + yt Dataset
+    for ONE flagged object, calling the provider at most once per frame.
+    See module docstring "Custom volume setup" for the full harness this
+    implements.
+
+    Returns `(rc, scene, ds, changed)` -- `rc` and `scene` are what
+    `_render_with_yt_idv` renders with; `changed` is the provider's own
+    signal (or True/False for `_default_volume_provider`'s first/later
+    calls), which `_render_with_yt_idv` combines with its own
+    camera/depth/params change signal to decide whether `rc.run()` is
+    actually needed this frame.
+    """
+    custom_params = request.volume.custom_params or {}
+    backend = custom_params.get("yt_idv_backend", DEFAULT_BACKEND)
+    context_key = (backend, render_size, render_size)
+    rc = _get_render_context(*context_key)
+
+    provider_spec = custom_params.get("yt_idv_volume_provider")
+    provider = _resolve_volume_provider(provider_spec) if provider_spec else _default_volume_provider
+
+    dataset_id = request.volume.dataset.dataset_id
+    cached = _volume_scene_cache.get(dataset_id)
+    if cached is not None and cached[2] == context_key:
+        previous_scene, previous_ds = cached[0], cached[1]
+    else:
+        # No cached scene at all, OR it belongs to a different (backend,
+        # render_size) render context -- e.g. the output resolution or
+        # backend changed -- and can't be reused regardless of whether the
+        # provider's OWN dataset state is still fine. The provider still
+        # gets called (not bypassed) so it can decide for itself how much
+        # of its own state (a loaded dataset vs. the yt_idv Scene wrapping
+        # it) actually needs rebuilding.
+        previous_scene, previous_ds = None, None
+
+    ctx = VolumeSetupContext(
+        render_context=rc,
+        dataset=request.volume.dataset,
+        custom_params=custom_params,
+        frame=request.frame,
+        previous_scene=previous_scene,
+        previous_ds=previous_ds,
+    )
+    result = provider(ctx)
+    _volume_scene_cache[dataset_id] = (result.scene, result.ds, context_key)
+    return rc, result.scene, result.ds, result.changed
+
+
+def _render_signature(request: RenderRequest, render_size: int) -> dict:
+    """Everything besides the volume DATA itself that affects the rendered
+    image: camera, the real Cycles depth buffer, and every shading knob in
+    `custom_params` (via `params_version.hash`, which ALREADY covers both
+    the per-object fields like density_scale and the yt_idv-Preferences-
+    derived `yt_idv_*` keys -- see `operators.build_volume_params`, which
+    hashes `custom_params` only after merging both in). JSON-serializable
+    by construction (`dataclasses.asdict` on a plain-data CameraParams,
+    everything else already a plain str/int) -- see
+    `change_tracking._stable_hash`'s own requirement.
+
+    The depth buffer is hashed by content (`.tobytes()`), not compared by
+    identity or shape alone -- a real Cycles occluder moving elsewhere in
+    the scene changes this same buffer without necessarily changing the
+    camera at all, and that genuinely needs a fresh render too (the whole
+    point of the depth-clip feature is that a solid object depth-clips the
+    volume; if the occluder is what moved, the volume's own rendered
+    silhouette needs to move with it, even from an unmoving camera).
+    """
+    return {
+        "camera": dataclasses.asdict(request.camera),
+        "depth_shape": list(request.depth.data.shape),
+        "depth_hash": hashlib.sha256(np.ascontiguousarray(request.depth.data).tobytes()).hexdigest(),
+        "render_size": render_size,
+        "params_hash": request.volume.params_version.hash,
+    }
+
+
+def _render_signature_changed(dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool) -> bool:
+    """True if `_render_with_yt_idv` actually needs to call `rc.run()` this
+    frame -- either the volume provider itself reported `changed=True`
+    (checked first, short-circuiting: no need to even compute the
+    signature), or `_render_signature`'s own content hash differs from the
+    last frame THIS object was actually rendered (see `change_tracking.
+    version_for` -- same authoritative-hash, not-just-a-flag discipline as
+    `VersionInfo` elsewhere in this add-on). A signature is recorded on
+    every call, including `volume_changed=True` ones, so the NEXT
+    nothing-changed frame has an accurate baseline to compare against.
+    """
+    signature = _render_signature(request, render_size)
+    version = change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature)
+    return volume_changed or version.changed
 
 
 def _to_texture2d_axis_convention(depth):
@@ -1397,13 +1711,46 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     `set_external_depth_clip`, padded onto the square canvas via
     `_pad_to_square` -- same centering as the eventual crop, so the two
     align).
+
+    First calls `_get_volume_scene` (dispatches to `custom_params["yt_idv_
+    volume_provider"]`, or `_default_volume_provider` -- see module
+    docstring "Custom volume setup"), then `_render_signature_changed` to
+    decide whether anything that would affect the image actually changed
+    since the last frame THIS object was rendered -- if not, everything
+    below this point (component config, camera update, depth clip, and
+    critically `rc.run()` itself) is skipped entirely and the previous
+    `RenderResult` is returned as-is.
     """
     height, width = request.depth.data.shape
     render_size = max(height, width)
-    custom_params = request.volume.custom_params or {}
-    backend = custom_params.get("yt_idv_backend", DEFAULT_BACKEND)
-    rc, scene, ds = _get_context(backend, render_size, render_size)
+    dataset_id = request.volume.dataset.dataset_id
 
+    rc, scene, ds, volume_changed = _get_volume_scene(request, render_size)
+    needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed)
+    if not needs_render:
+        cached_result = _render_result_cache.get(dataset_id)
+        if cached_result is not None:
+            return cached_result
+        # No cached result despite an "unchanged" signature (e.g. this is
+        # somehow the first-ever call for this dataset_id, or a previous
+        # call raised before reaching the cache write below) -- fall
+        # through and render for real rather than returning nothing.
+
+    # Real yt_idv detail, load-bearing now that one render_context can be
+    # shared by several flagged objects with DIFFERENT scenes (see
+    # `_get_volume_scene`): `BaseContext.add_scene` does nothing beyond
+    # `self.scene = SceneGraph.from_ds(...)`, and `OffscreenRenderingContext.
+    # run()` renders `self.scene` -- NOT whatever `scene` object this
+    # function happens to be holding a reference to. Whenever `_get_volume_
+    # scene` reused a cached scene (no fresh `add_scene()` call this frame),
+    # `rc.scene` may still point at whatever a DIFFERENT object's (or an
+    # earlier frame's) `add_scene()` call last set it to. Re-asserting it
+    # here, every call, costs nothing and is exactly what `add_scene` itself
+    # would have set it to -- this is what makes per-object scene caching
+    # correct even when several objects share one render_context.
+    rc.scene = scene
+
+    custom_params = request.volume.custom_params or {}
     for component in scene.components:
         configure_component(component, custom_params)
     scene.camera.update(
@@ -1439,11 +1786,13 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     image = _to_row_order(image, request.depth.row_order)
     image = _center_crop(image, height, width)
 
-    return RenderResult(
+    result = RenderResult(
         rgba=np.ascontiguousarray(image),
         alpha_mode="PREMULTIPLIED",  # approximation -- see module docstring
         color_space="LINEAR",
     )
+    _render_result_cache[dataset_id] = result
+    return result
 
 
 def _configure_max_intensity(component, custom_params):

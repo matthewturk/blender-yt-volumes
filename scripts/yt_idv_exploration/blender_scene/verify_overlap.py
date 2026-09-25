@@ -104,7 +104,7 @@ def _render_once(renderer_mode, disable_depth_clip):
             # unclipped baseline. Forcing it here, rather than skipping the
             # call outright, also correctly clears any clip state left over
             # from a PREVIOUS call against this same cached yt_idv context
-            # (see yt_idv_renderer._get_context's own module-level caching).
+            # (see yt_idv_renderer._get_volume_scene's own module-level caching).
             return real_set_external_depth_clip(scene, None)
         yt_idv_renderer.set_external_depth_clip = _forced_off
     try:

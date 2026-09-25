@@ -15,10 +15,18 @@ output), not just Blender-native volumetric formats. `dataset_kind` is a
 free-form label (`"yt"`, `"vdb"`, `"hdf5"`, whatever your renderer's loaders
 recognize) -- Blender doesn't interpret it, it's just carried through to
 `DatasetParams.dataset_kind` for the renderer to dispatch on. Anything a
-specific loader needs beyond a path (a yt field name, a unit system
-override, an HDF5 dataset key) goes in `custom_params_extra` below, the same
-free-form table as any other renderer parameter -- there's nothing dataset-
-loader-specific that needs its own typed UI field here.
+specific loader needs beyond a path (a unit system override, an HDF5
+dataset key) goes in `custom_params_extra` below, the same free-form table
+as any other renderer parameter.
+
+`yt_idv_volume_provider` is the one exception that DOES get its own typed
+field despite that "use custom_params_extra" rule -- see its own docstring
+and `yt_idv_renderer.py`'s "Custom volume setup": a plain path/kind string
+can't express real yt dataset setup (field selection, derived fields, cut
+regions), so this points at a Python function you write instead. Still
+just another `custom_params` entry once built (`to_custom_params()` below),
+same as every other field here -- the typed field is purely for UI
+discoverability given how central it is for real yt_idv use.
 """
 
 import bpy
@@ -129,6 +137,24 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         ),
         default="",
     )
+    yt_idv_volume_provider: bpy.props.StringProperty(
+        name="yt_idv Volume Provider",
+        description=(
+            "Optional, yt_idv renderer_modes only: 'module.submodule:"
+            "function_name' pointing at a Python function YOU write, called "
+            "once per frame, that sets up (or confirms/reuses) the yt_idv "
+            "Scene for THIS object -- lets you load a real dataset, pick a "
+            "field, build derived fields/cut regions, anything yt can do, "
+            "instead of the hardcoded IsolatedGalaxy sample every yt_idv "
+            "render otherwise uses. See yt_idv_renderer.py's module "
+            "docstring ('Custom volume setup') and its VolumeSetupContext/"
+            "VolumeSetupResult for the exact contract. Passed through as "
+            "custom_params['yt_idv_volume_provider']; ignored by every "
+            "non-yt_idv renderer_mode, and by yt_idv modes too if left "
+            "empty (falls back to the hardcoded sample)"
+        ),
+        default="",
+    )
     dataset_uuid: bpy.props.StringProperty(
         name="Dataset ID",
         description=(
@@ -210,6 +236,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "scattering": tuple(self.scattering),
             "color": tuple(self.color),
         }
+        if self.yt_idv_volume_provider:
+            params["yt_idv_volume_provider"] = self.yt_idv_volume_provider
         for item in self.custom_params_extra:
             if item.key:
                 params[item.key] = item.value
@@ -283,6 +311,7 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.separator()
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")
+        col.prop(props, "yt_idv_volume_provider")
         if props.dataset_uuid:
             row = col.row()
             row.enabled = False

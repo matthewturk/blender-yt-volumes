@@ -90,6 +90,15 @@ python explore_cycles_zbuffer_depth_clip.py
     marker sphere at the galaxy's own core). See "Maximum Intensity with a
     value-driven alpha" below -- this is the one worth reading if you only
     read one section.
+11. **`blender_scene/custom_volume_provider_demo.py`** (+ its sibling
+    `_custom_volume_provider_example.py`) -- verifies the NEW
+    `yt_idv_volume_provider` harness (replace the hardcoded IsolatedGalaxy
+    sample with your own real yt setup, called once per object per frame,
+    stateful) against a real render_context: identical output to the
+    default provider, correct stateful reuse across calls, the skip-render
+    cache actually skipping `rc.run()` when nothing changed (and NOT
+    skipping it on a real camera change), and correct behavior when two
+    objects share one render_context. See "Custom volume setup" below.
 
 Camera motion + reference AMR grid-box wireframes + a marker sphere, all
 driven from a real Blender scene, lives in `blender_scene/` (separate

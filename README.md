@@ -85,17 +85,22 @@ through the real two-pass pipeline, or call it directly on a hand-built
 
 `yt_idv_renderer.py` calls the REAL [yt_idv](
 https://github.com/yt-project/yt_idv) volume renderer -- real offscreen
-OpenGL, not a toy stand-in -- in three modes, all selectable via the
+OpenGL, not a toy stand-in -- in five modes, all selectable via the
 **Renderer** preference: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
 Projection), `YT_IDV_TRANSFER_FUNCTION` (a real transfer function --
 isocontour layers at fixed densities in log space,
-`yt.ColorTransferFunction.add_layers`, not a placeholder colormap), and
+`yt.ColorTransferFunction.add_layers`, not a placeholder colormap),
 `YT_IDV_PROJECTION` (unweighted line-of-sight integration -- tends to look
-smoother/less speckled than MIP for the same data). Deliberately scoped
-down, per the brief this was written against: all three always render one
-hardcoded sample dataset (`yt.load_sample("IsolatedGalaxy")`), never
-`request.volume.dataset.dataset_path` -- real dataset selection is future
-work. See `yt_idv_renderer.py`'s own module docstring for the full, current
+smoother/less speckled than MIP for the same data), `YT_IDV_THRESHOLD_FOG`
+(a continuous, hazy alpha ramp above a density threshold), and
+`YT_IDV_MAX_INTENSITY_ALPHA` (MIP with a value-driven, not presence-driven,
+alpha). By default all five render one hardcoded sample dataset
+(`yt.load_sample("IsolatedGalaxy")`) -- but `custom_params["yt_idv_
+volume_provider"]` (set via `obj.volume_override.yt_idv_volume_provider`,
+a `"module.submodule:function_name"` string) replaces that with a Python
+function YOU write, called once per object per frame, stateful across
+calls -- see `yt_idv_renderer.py`'s "Custom volume setup" for the full
+harness. See that module's own docstring generally for the full, current
 account of what is and isn't real -- this section just orients you and
 covers installation.
 

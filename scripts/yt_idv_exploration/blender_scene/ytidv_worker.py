@@ -168,7 +168,7 @@ def cmd_render_many(args):
     `render` once per frame (a fresh subprocess each time, which would pay
     yt_idv_renderer's dataset-load + GL-context-creation cost on every
     single frame), this actually exercises `_load_sample_source`/
-    `_get_context`'s module-level caching the way a real, long-running
+    `_get_render_context`'s module-level caching the way a real, long-running
     Blender session would: first frame pays the setup cost, every frame
     after reuses it. See render_frames_in_blender.py for the driver that
     builds `requests.json` from a real, moving Blender camera.

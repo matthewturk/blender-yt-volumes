@@ -1,6 +1,6 @@
 """Unit tests for yt_idv_renderer.py's pure-Python helpers ONLY -- the parts
 that don't need `yt`/`yt_idv` importable at all. The actual yt_idv-dependent
-render path (`_load_sample_source`, `_get_context`,
+render path (`_load_sample_source`, `_get_render_context`,
 `yt_idv_max_intensity_renderer` end to end) is instead verified by actually
 running the real scripts in `scripts/yt_idv_exploration/blender_scene/`
 (`render_real_demo.py`, `verify_overlap.py`) -- see yt_idv_renderer.py's
@@ -20,12 +20,13 @@ path failing (`import yt`/`import matplotlib`) force that failure via
 
 import math
 import sys
+import types
 
 import bpy
 import numpy as np
 import pytest
 
-from cycles_volume_override import operators
+from cycles_volume_override import change_tracking, operators
 from cycles_volume_override import yt_idv_renderer as yir
 from cycles_volume_override.external_render import (
     CameraParams,
@@ -240,6 +241,344 @@ def test_domain_array_unitary_converts_real_ytarray_like_objects():
 def test_domain_array_unitary_passes_through_plain_arrays():
     got = yir._domain_array_unitary((1.0, 2.0, 3.0))
     np.testing.assert_allclose(got, [1.0, 2.0, 3.0])
+
+
+# --- Custom volume setup harness (yt_idv_volume_provider) -------------------
+#
+# `_resolve_volume_provider`/`_default_volume_provider`/`_get_volume_scene`/
+# `_render_signature*` are all pure Python (or take fakes standing in for a
+# real yt_idv render_context/scene) -- no real yt/yt_idv/GL context needed,
+# same testability discipline as everything else in this file. The actual
+# `_render_with_yt_idv` skip-render behavior IS covered here too (with a
+# fully faked render_context/scene/camera) since it's pure orchestration
+# logic, not a real GL render -- only `rc.run()`/`set_external_depth_clip`'s
+# OWN internals stay verified manually against real yt_idv (see module
+# docstring "Custom volume setup").
+
+@pytest.fixture
+def _clean_yir_state():
+    """Every test below shares yt_idv_renderer.py's module-level caches AND
+    change_tracking's global `_last_hashes` (the same store operators.py's
+    own params/dataset version tracking uses, just a different category) --
+    without resetting both before AND after, an earlier test's leftover
+    state (e.g. a `dataset_id="obj"` entry) would make a later test's
+    "first call" no longer actually be first.
+    """
+    def _clear():
+        yir._volume_scene_cache.clear()
+        yir._render_result_cache.clear()
+        yir._render_context_cache.clear()
+        yir._dataset_cache.clear()
+        change_tracking.reset()
+    _clear()
+    yield
+    _clear()
+
+
+class _FakeRenderContext:
+    """Stand-in for a real yt_idv render context -- just enough surface for
+    `_default_volume_provider`/a custom provider to call `.add_scene(...)`
+    and for tests to confirm how many times/with what arguments it was.
+    """
+
+    def __init__(self):
+        self.add_scene_calls = []
+
+    def add_scene(self, data_source, field, **kwargs):
+        self.add_scene_calls.append((data_source, field, kwargs))
+        return f"scene[{field}]#{len(self.add_scene_calls)}"
+
+
+def _request_with(custom_params=None, dataset_id="obj", camera_overrides=None, render_size=4):
+    """A full, real `RenderRequest` -- real (small) numpy depth data, a real
+    `CameraParams`/`VolumeObjectParams` -- for exercising `_render_signature`/
+    `_render_signature_changed`/`_render_with_yt_idv` end to end without any
+    real yt/yt_idv/bpy involved.
+    """
+    volume = _identity_volume()
+    volume.dataset.dataset_id = dataset_id
+    volume.custom_params = custom_params if custom_params is not None else {}
+    return RenderRequest(
+        camera=_persp_camera(**(camera_overrides or {})),
+        depth=DepthBuffer(
+            data=np.zeros((render_size, render_size), dtype=np.float32),
+            depth_convention="EUCLIDEAN", no_hit_value=1e10,
+            row_order="TOP_LEFT_ORIGIN", units="meters",
+        ),
+        volume=volume,
+        frame=FrameParams(frame_number=1, scene_time_seconds=0.0),
+    )
+
+
+def test_resolve_volume_provider_imports_module_and_returns_named_function(monkeypatch):
+    fake_module = types.ModuleType("_test_yir_provider_mod_1")
+
+    def setup_fn(ctx):
+        return "sentinel"
+
+    fake_module.setup_fn = setup_fn
+    monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_1", fake_module)
+
+    resolved = yir._resolve_volume_provider("_test_yir_provider_mod_1:setup_fn")
+
+    assert resolved is setup_fn
+
+
+def test_resolve_volume_provider_rejects_string_without_colon():
+    with pytest.raises(ValueError, match="module.submodule:function_name"):
+        yir._resolve_volume_provider("no_colon_here")
+
+
+def test_resolve_volume_provider_raises_attributeerror_for_missing_function(monkeypatch):
+    fake_module = types.ModuleType("_test_yir_provider_mod_2")
+    monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_2", fake_module)
+
+    with pytest.raises(AttributeError, match="missing_fn"):
+        yir._resolve_volume_provider("_test_yir_provider_mod_2:missing_fn")
+
+
+def test_default_volume_provider_builds_once_then_reuses_previous_scene(monkeypatch):
+    monkeypatch.setattr(yir, "_load_sample_source", lambda: ("fake-ds", "fake-data-source"))
+    rc = _FakeRenderContext()
+
+    first = yir._default_volume_provider(yir.VolumeSetupContext(
+        render_context=rc, dataset=None, custom_params={}, frame=None,
+        previous_scene=None, previous_ds=None,
+    ))
+    assert first.changed is True
+    assert first.ds == "fake-ds"
+    assert len(rc.add_scene_calls) == 1  # real work happened
+
+    second = yir._default_volume_provider(yir.VolumeSetupContext(
+        render_context=rc, dataset=None, custom_params={}, frame=None,
+        previous_scene=first.scene, previous_ds=first.ds,
+    ))
+    assert second.changed is False
+    assert second.scene == first.scene
+    assert len(rc.add_scene_calls) == 1  # NOT called again -- reused, not rebuilt
+
+
+def test_get_volume_scene_uses_default_provider_when_custom_params_unset(monkeypatch, _clean_yir_state):
+    fake_rc = _FakeRenderContext()
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: fake_rc)
+    monkeypatch.setattr(yir, "_load_sample_source", lambda: ("ds-obj", "data-source-obj"))
+
+    rc, scene, ds, changed = yir._get_volume_scene(_request_with(custom_params={}), render_size=64)
+
+    assert rc is fake_rc
+    assert ds == "ds-obj"
+    assert changed is True
+    assert len(fake_rc.add_scene_calls) == 1
+
+
+def test_get_volume_scene_dispatches_to_named_provider(monkeypatch, _clean_yir_state):
+    calls = []
+
+    def my_provider(ctx):
+        calls.append(ctx)
+        return yir.VolumeSetupResult(scene="my-scene", ds="my-ds", changed=True)
+
+    fake_module = types.ModuleType("_test_yir_provider_mod_3")
+    fake_module.my_provider = my_provider
+    monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_3", fake_module)
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+
+    request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_3:my_provider"})
+    rc, scene, ds, changed = yir._get_volume_scene(request, render_size=64)
+
+    assert (scene, ds, changed) == ("my-scene", "my-ds", True)
+    assert len(calls) == 1
+    assert calls[0].previous_scene is None  # first call for this dataset_id
+    assert calls[0].custom_params == request.volume.custom_params
+    assert calls[0].dataset is request.volume.dataset
+
+
+def test_get_volume_scene_passes_previous_scene_through_on_unchanged_context(monkeypatch, _clean_yir_state):
+    seen_previous_scenes = []
+
+    def my_provider(ctx):
+        seen_previous_scenes.append(ctx.previous_scene)
+        if ctx.previous_scene is not None:
+            return yir.VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=False)
+        return yir.VolumeSetupResult(scene="scene-1", ds="ds-1", changed=True)
+
+    fake_module = types.ModuleType("_test_yir_provider_mod_4")
+    fake_module.my_provider = my_provider
+    monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_4", fake_module)
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+
+    request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_4:my_provider"})
+    yir._get_volume_scene(request, render_size=64)
+    yir._get_volume_scene(request, render_size=64)  # same object, same render_size
+
+    assert seen_previous_scenes == [None, "scene-1"]
+
+
+def test_get_volume_scene_invalidates_previous_scene_when_render_size_changes(monkeypatch, _clean_yir_state):
+    # A resolution change means a DIFFERENT render context (yt_idv contexts
+    # are fixed-size at creation) -- any scene built against the old one is
+    # unusable regardless of whether the provider's own dataset state is
+    # still perfectly fine, so previous_scene must come back None even
+    # though this is still the same dataset_id as the first call.
+    seen_previous_scenes = []
+
+    def my_provider(ctx):
+        seen_previous_scenes.append(ctx.previous_scene)
+        return yir.VolumeSetupResult(scene="scene-x", ds="ds-x", changed=True)
+
+    fake_module = types.ModuleType("_test_yir_provider_mod_5")
+    fake_module.my_provider = my_provider
+    monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_5", fake_module)
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+
+    request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_5:my_provider"})
+    yir._get_volume_scene(request, render_size=64)
+    yir._get_volume_scene(request, render_size=128)
+
+    assert seen_previous_scenes == [None, None]
+
+
+def test_render_signature_changed_true_on_first_call(_clean_yir_state):
+    assert yir._render_signature_changed("obj", _request_with(), render_size=4, volume_changed=False) is True
+
+
+def test_render_signature_changed_false_when_nothing_changed(_clean_yir_state):
+    request = _request_with()
+    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)  # records the baseline
+    assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=False) is False
+
+
+def test_render_signature_changed_true_when_camera_moves(_clean_yir_state):
+    request = _request_with()
+    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    moved = _request_with(camera_overrides={
+        "matrix_world": [[1, 0, 0, 9], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    })
+    assert yir._render_signature_changed("obj", moved, render_size=4, volume_changed=False) is True
+
+
+def test_render_signature_changed_true_when_depth_buffer_content_differs(_clean_yir_state):
+    # Same camera, different depth CONTENT -- e.g. an unrelated occluder
+    # moved elsewhere in the Cycles scene -- must still count as "changed",
+    # not just camera motion (see _render_signature's own docstring).
+    request = _request_with()
+    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    request.depth.data[0, 0] = 1.0
+    assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=False) is True
+
+
+def test_render_signature_changed_forced_true_when_volume_provider_reports_changed(_clean_yir_state):
+    # Identical signature both times, but volume_changed=True on the second
+    # call must still force a re-render -- the provider's own data changing
+    # is independent of (and not visible in) camera/depth/params.
+    request = _request_with()
+    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=True) is True
+
+
+class _FakeYtIdvCamera:
+    def __init__(self):
+        self.update_calls = []
+        self.update_matrices_calls = 0
+
+    def update(self, **kwargs):
+        self.update_calls.append(kwargs)
+
+    def _update_matrices(self):
+        self.update_matrices_calls += 1
+
+
+class _FakeYtIdvScene:
+    def __init__(self):
+        self.components = []
+        self.camera = _FakeYtIdvCamera()
+
+
+def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_camera_move(monkeypatch, _clean_yir_state):
+    render_size = 4
+    fake_scene = _FakeYtIdvScene()
+    call_count = {"n": 0}
+
+    class _FakeRc:
+        def __init__(self):
+            self.run_calls = 0
+
+        def run(self):
+            self.run_calls += 1
+            # A distinct image each real render, so accidentally-identical
+            # pixel data can't hide a real vs. cached-result mixup.
+            return np.full((render_size, render_size, 4), fill_value=float(self.run_calls), dtype=np.float32)
+
+    fake_rc = _FakeRc()
+
+    def fake_get_volume_scene(request, rsize):
+        call_count["n"] += 1
+        # Only the very first call reports real data-side change; every
+        # later call says "nothing changed on the volume side" -- so any
+        # re-render that DOES happen after that must be because
+        # _render_signature_changed's own camera/depth signal fired, not
+        # because the (fake) provider asked for one.
+        return fake_rc, fake_scene, _FakeDataset(), call_count["n"] == 1
+
+    monkeypatch.setattr(yir, "_get_volume_scene", fake_get_volume_scene)
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
+
+    configure_calls = []
+    configure = lambda component, custom_params: configure_calls.append(component)
+
+    request = _request_with(render_size=render_size)
+    result1 = yir._render_with_yt_idv(request, configure)
+    assert fake_rc.run_calls == 1
+
+    result2 = yir._render_with_yt_idv(request, configure)  # identical request
+    assert fake_rc.run_calls == 1  # skipped -- no second GPU render
+    assert result2 is result1  # the exact cached RenderResult, not a re-derived equal one
+
+    moved = _request_with(render_size=render_size, camera_overrides={
+        "matrix_world": [[1, 0, 0, 9], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    })
+    result3 = yir._render_with_yt_idv(moved, configure)
+    assert fake_rc.run_calls == 2  # camera moved -- real re-render happened
+    assert result3 is not result1
+
+
+def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monkeypatch, _clean_yir_state):
+    # Real yt_idv detail this pins down (see module docstring "Custom volume
+    # setup"): a render_context only ever tracks ONE "current" scene
+    # (`rc.scene`, set by `add_scene`) -- `rc.run()` renders THAT, not
+    # whatever `scene` reference this module happens to be holding. Two
+    # objects sharing one `rc` (the common case -- resolution is scene-wide)
+    # must each force `rc.scene` back to their OWN scene before rendering,
+    # even when neither object's own cached scene needed rebuilding.
+    render_size = 4
+
+    class _FakeRcWithScene:
+        def __init__(self):
+            self.scene = None
+            self.rendered_scenes = []
+
+        def run(self):
+            self.rendered_scenes.append(self.scene)
+            return np.zeros((render_size, render_size, 4), dtype=np.float32)
+
+    shared_rc = _FakeRcWithScene()
+    scene_a, scene_b = _FakeYtIdvScene(), _FakeYtIdvScene()
+
+    def fake_get_volume_scene(request, rsize):
+        scene = scene_a if request.volume.dataset.dataset_id == "a" else scene_b
+        return shared_rc, scene, _FakeDataset(), True  # always "changed" -- force a real render every call
+
+    monkeypatch.setattr(yir, "_get_volume_scene", fake_get_volume_scene)
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
+    configure = lambda component, custom_params: None
+
+    yir._render_with_yt_idv(_request_with(dataset_id="a", render_size=render_size), configure)
+    yir._render_with_yt_idv(_request_with(dataset_id="b", render_size=render_size), configure)
+    yir._render_with_yt_idv(_request_with(dataset_id="a", render_size=render_size), configure)
+
+    assert shared_rc.rendered_scenes == [scene_a, scene_b, scene_a]
 
 
 def test_fix_yt_idv_axis_order_passes_through_already_correct_shape():
