@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import bpy
@@ -611,6 +612,104 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
     operators.render_current_frame(bpy.context)
 
     assert scene.view_settings.view_transform == "AgX"  # left alone
+
+
+# --- per-frame temp directory cleanup -----------------------------------------
+# Real bug found running a real HD animation: nothing ever deleted the
+# per-frame beauty/depth/volume-result EXRs, so a long run silently
+# accumulated gigabytes in work_dir and eventually crashed outright with
+# ENOSPC. Fixed by giving each frame its own directory (one shutil.rmtree in
+# `finally` cleans up everything, not a hand-tracked list of paths) plus a
+# startup sweep for whatever a hard crash (confirmed real: an X11 BadAccess
+# GLX error took the whole process down without ever unwinding through
+# Python, so `finally` never ran) leaves behind.
+
+def _render_one_frame(scene, work_dir):
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = work_dir
+    return prefs
+
+
+def _frame_dirs(work_dir):
+    return [
+        name for name in os.listdir(work_dir)
+        if name.startswith(operators._FRAME_DIR_PREFIX) and os.path.isdir(os.path.join(work_dir, name))
+    ]
+
+
+def test_render_current_frame_cleans_up_its_own_frame_dir_after_success(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    _render_one_frame(scene, str(tmp_path))
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    operators.render_current_frame(bpy.context)
+
+    assert _frame_dirs(str(tmp_path)) == [], (
+        f"expected the frame directory to be removed, work_dir has {os.listdir(tmp_path)}"
+    )
+
+
+def test_render_current_frame_cleans_up_frame_dir_even_when_pipeline_raises(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    _render_one_frame(scene, str(tmp_path))
+
+    def failing_renderer(request):
+        raise RuntimeError("simulated render_volume failure")
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", failing_renderer)
+
+    with pytest.raises(RuntimeError, match="simulated render_volume failure"):
+        operators.render_current_frame(bpy.context)
+
+    assert _frame_dirs(str(tmp_path)) == [], (
+        f"expected the frame directory to be removed even after an exception, "
+        f"work_dir has {os.listdir(tmp_path)}"
+    )
+
+
+def test_render_current_frame_sweeps_a_frame_dir_left_by_a_previous_hard_crash(addon_enabled, monkeypatch, tmp_path):
+    # Simulates exactly what an X11 BadAccess/segfault/kill -9 leaves behind:
+    # a frame_* directory with real files in it, but no Python exception
+    # ever ran to trigger the normal finally-block cleanup.
+    stale_dir = tmp_path / f"{operators._FRAME_DIR_PREFIX}stale123"
+    stale_dir.mkdir()
+    (stale_dir / "vo_beauty_0001.exr").write_bytes(b"leftover")
+    non_managed_dir = tmp_path / "not_ours"
+    non_managed_dir.mkdir()
+
+    scene = addon_enabled
+    _render_one_frame(scene, str(tmp_path))
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    operators.render_current_frame(bpy.context)
+
+    assert not stale_dir.exists(), "the stale frame_* directory from a 'previous crash' should have been swept"
+    assert non_managed_dir.exists(), "a directory that doesn't match our own frame_* prefix must be left alone"
+
+
+def test_sweep_stale_frame_dirs_only_removes_frame_prefixed_directories(tmp_path):
+    (tmp_path / f"{operators._FRAME_DIR_PREFIX}abc").mkdir()
+    (tmp_path / f"{operators._FRAME_DIR_PREFIX}def").mkdir()
+    (tmp_path / "unrelated_dir").mkdir()
+    (tmp_path / f"{operators._FRAME_DIR_PREFIX}looks_like_a_dir_but_is_a_file").write_bytes(b"")
+
+    operators._sweep_stale_frame_dirs(str(tmp_path))
+
+    remaining = set(os.listdir(tmp_path))
+    assert remaining == {"unrelated_dir", f"{operators._FRAME_DIR_PREFIX}looks_like_a_dir_but_is_a_file"}, (
+        f"expected only frame_*-prefixed DIRECTORIES removed, got {remaining}"
+    )
 
 
 # --- opacity field / _apply_opacity -------------------------------------------

@@ -39,6 +39,7 @@ overridden render operator" option) rather than handlers alone:
 
 import math
 import os
+import shutil
 import tempfile
 import time
 
@@ -461,6 +462,46 @@ def _work_dir(context):
     d = prefs.work_dir or os.path.join(tempfile.gettempdir(), "cycles_volume_override")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+_FRAME_DIR_PREFIX = "frame_"
+
+
+def _sweep_stale_frame_dirs(work_dir):
+    """Best-effort cleanup of per-frame temp directories left behind by a
+    run that didn't exit cleanly.
+
+    `render_current_frame`'s own `finally` block (below) reliably cleans up
+    its OWN frame directory for an ordinary Python exception -- but a hard
+    crash bypasses `finally` entirely: confirmed real during the GPU-leak
+    investigation, an X11 `BadAccess` GLX error took the whole process down
+    without ever unwinding through Python (Xlib's default error handler
+    calls `exit()` directly at the C level). `kill -9` and a plain segfault
+    have the same problem. Rather than trying to catch every possible hard-
+    crash mode (a losing battle), this instead makes the NEXT run clean up
+    after a previous one: called once at the start of every
+    `render_current_frame`, before that frame's own directory is created,
+    sweeping any leftover `frame_*` directory already in `work_dir`.
+
+    Safe to sweep unconditionally: this add-on's pipeline is always
+    strictly one-frame-at-a-time within a single process, so by the time a
+    NEW `render_current_frame` call starts, any `frame_*` directory already
+    present MUST be from an earlier frame that either already finished
+    (and would have removed its own directory in `finally`) or crashed
+    hard (and left it behind) -- never one still legitimately in use.
+    Matches only our own `frame_*` prefix, so a user's configured `work_dir`
+    (see `AddonPreferences.work_dir`) never loses anything else it holds.
+    """
+    try:
+        entries = os.listdir(work_dir)
+    except OSError:
+        return
+    for name in entries:
+        if not name.startswith(_FRAME_DIR_PREFIX):
+            continue
+        path = os.path.join(work_dir, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -930,8 +971,10 @@ def render_current_frame(context):
         f"resolution={scene.render.resolution_x}x{scene.render.resolution_y}")
 
     work_dir = _work_dir(context)
+    _sweep_stale_frame_dirs(work_dir)
+    frame_dir = tempfile.mkdtemp(prefix=_FRAME_DIR_PREFIX, dir=work_dir)
     flagged = properties.flagged_objects(scene)
-    log(f"flagged objects: {[o.name for o in flagged]}, work_dir={work_dir}")
+    log(f"flagged objects: {[o.name for o in flagged]}, frame_dir={frame_dir}")
     scene_sync.sync_scene_state(scene, flagged)
 
     view_layer = context.view_layer
@@ -987,23 +1030,22 @@ def render_current_frame(context):
         # reason to override this scene setting for them.
         scene.render.compositor_device = "CPU"
     # This frame's own full-float EXR intermediates (beauty/depth/per-object
-    # volume results) -- real bug found running a real animation at full HD:
-    # nothing ever deleted these, so a long run silently accumulates one
-    # full set per frame in `work_dir` forever. At HD resolution over a few
-    # hundred frames that's easily multiple GB, and it crashed a real render
-    # outright (ENOSPC mid-write corrupted a depth EXR, which then failed to
-    # load with a confusing "loaded as size=(0, 0)... file_format='TARGA'"
-    # error that has nothing to do with the actual cause). Collected as we
-    # go and swept in `finally` below so a mid-frame exception still cleans
-    # up whatever THIS frame created, not just the success path.
-    frame_temp_paths = []
+    # volume results) all live in `frame_dir`, a fresh per-frame directory
+    # (see `_sweep_stale_frame_dirs`'s own docstring for the real bug this
+    # replaced: nothing ever deleted these before, so a long run silently
+    # accumulated one full set per frame in `work_dir` forever -- at HD
+    # resolution over a few hundred frames that's easily multiple GB, and it
+    # crashed a real render outright with ENOSPC). One `shutil.rmtree` in
+    # `finally` below cleans up everything this frame created, success or
+    # exception alike -- simpler than tracking individual file paths, and
+    # automatically covers any future file this pipeline starts writing
+    # without needing a matching update here.
     try:
         # --- Pass 1: real Cycles beauty + Z, flagged objects hidden -----
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
-                scene, work_dir, scene.frame_current,
+                scene, frame_dir, scene.frame_current,
             )
-        frame_temp_paths += [beauty_path, depth_path]
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with scene_sync.hidden_from_main_render(flagged):
             with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
@@ -1032,12 +1074,11 @@ def render_current_frame(context):
             assert result.color_space == "LINEAR"
             result = _apply_opacity(result, obj.volume_override.opacity)
             result_path = os.path.join(
-                work_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
+                frame_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
             )
             with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
                 write_render_result(result, result_path)
             volume_layers.append((obj.name, result_path))
-            frame_temp_paths.append(result_path)
 
         # --- Pass 2: compositor-only (cheap engine), writes the real output
         with step("pass2 build/update compositor graph"):
@@ -1052,11 +1093,7 @@ def render_current_frame(context):
         view_layer.use_pass_z = prev_use_pass_z
         scene.render.compositor_device = prev_compositor_device
         scene.view_settings.view_transform = prev_view_transform
-        for path in frame_temp_paths:
-            try:
-                os.remove(path)
-            except OSError:
-                pass  # never created (early exception) or already gone -- either way, nothing to clean up
+        shutil.rmtree(frame_dir, ignore_errors=True)
 
 
 def _show_render_result(context):
