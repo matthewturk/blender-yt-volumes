@@ -940,7 +940,33 @@ def render_current_frame(context):
 
     prev_engine = scene.render.engine
     prev_compositor_device = scene.render.compositor_device
+    prev_view_transform = scene.view_settings.view_transform
     if prefs.renderer_mode in YT_IDV_RENDERER_MODES:
+        if prev_view_transform != "Standard":
+            # Real, reproducible finding, not a style preference: Blender's
+            # `AgX` view transform (the default on every new file/scene
+            # since 4.0 -- i.e. this is what a "pretty much exactly
+            # default" scene has, not an unusual choice) applies a filmic
+            # highlight rolloff meant for photographic renders. Applied to
+            # an already-colormapped scientific visualization, it crushes
+            # the real signal into a flat, low-contrast plateau instead of
+            # preserving it. Confirmed directly, same frame/data/camera,
+            # nothing else changed: AgX topped out at 197/255 with ~95% of
+            # pixels packed into ONE narrow brightness band; `Standard`
+            # reached 254/255 with real gradation across the volume's own
+            # visible range. Erring on the side of correct-looking output
+            # by default here -- restored to whatever it was afterward
+            # (below), and only for yt_idv modes (the other renderer modes
+            # don't go through this add-on's own colormapping at all, so
+            # whatever view transform you picked for them is left alone).
+            _log(f"WARNING: scene view_transform was {prev_view_transform!r} -- forcing "
+                 f"'Standard' for this yt_idv render (restored to {prev_view_transform!r} "
+                 f"afterward). {prev_view_transform!r} applies a filmic highlight rolloff "
+                 f"that crushes an already-colormapped scientific visualization into a flat, "
+                 f"low-contrast image -- see operators.render_current_frame's own comment for "
+                 f"the direct A/B measurement. Set your scene's View Transform to 'Standard' "
+                 f"(or 'Raw') yourself to silence this.")
+            scene.view_settings.view_transform = "Standard"
         # Real, reproducible finding: Blender's own realtime compositor
         # (the default `compositor_device == "GPU"`) grabs a GPU/EGL context
         # as soon as ANY render runs through a scene's compositor node tree
@@ -1012,6 +1038,7 @@ def render_current_frame(context):
         scene.render.engine = prev_engine
         view_layer.use_pass_z = prev_use_pass_z
         scene.render.compositor_device = prev_compositor_device
+        scene.view_settings.view_transform = prev_view_transform
 
 
 def _show_render_result(context):
@@ -1030,14 +1057,26 @@ def _show_render_result(context):
     `render.view_show()` only displays whatever's already there; it doesn't
     re-render, so calling it after the fact is safe regardless of how the
     pipeline above ran.
+
+    Skipped entirely in `--background`/headless runs (`bpy.app.background`)
+    -- there's no window capable of showing an image there, and calling it
+    anyway doesn't raise a catchable Python exception (confirmed directly):
+    `RENDER_OT_view_show`'s own poll failure is reported straight to
+    Blender's console/log as an `ERROR`, bypassing the `try/except
+    RuntimeError` below entirely, so that guard alone never actually
+    silenced it. The render itself already succeeded and wrote real output
+    files either way -- this is purely about not printing a scary-looking
+    (but harmless) ERROR line on every single headless frame.
     """
+    if bpy.app.background:
+        _log("background mode -- not attempting to show Render Result (output was still written to disk/Render Result)")
+        return
     try:
         bpy.ops.render.view_show("INVOKE_DEFAULT")
     except RuntimeError as exc:
         # Not fatal -- the render itself already succeeded and wrote real
         # output files; failing to pop the viewer (e.g. no valid window
-        # context, such as a background/headless call) shouldn't be reported
-        # as a render failure.
+        # context) shouldn't be reported as a render failure.
         _log(f"could not show Render Result ({exc}) -- output was still written to disk/Render Result")
 
 

@@ -465,6 +465,154 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
     assert called == [True]
 
 
+# --- view_transform forced to Standard for yt_idv modes (AgX washout fix) ---
+#
+# Real, measured finding (not a style preference): Blender's `AgX` view
+# transform -- the default on every new scene since 4.0, so "a pretty much
+# exactly default" file has it -- applies a filmic highlight rolloff meant
+# for photographic renders. Applied to an already-colormapped scientific
+# visualization, it crushes real signal into a flat, low-contrast plateau
+# (confirmed directly: same frame/data/camera, AgX topped out at 197/255
+# with ~95% of pixels in one narrow band; `Standard` reached 254/255 with
+# real gradation). `render_current_frame` now forces `Standard` for the
+# duration of any yt_idv-mode render and restores whatever was there
+# afterward -- these tests exercise the REAL function end to end (a real,
+# tiny Cycles pass1 render), with `RENDERER_MODES` monkeypatched so no real
+# yt_idv is needed to check what view_transform the "renderer" itself saw.
+
+def _fake_render_result(request):
+    import numpy as np
+
+    from cycles_volume_override import external_render
+
+    h, w = request.depth.data.shape
+    return external_render.RenderResult(
+        rgba=np.zeros((h, w, 4), dtype="float32"),
+        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+    )
+
+
+def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "AgX"
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+
+    seen_view_transform = []
+
+    def fake_renderer(request):
+        seen_view_transform.append(scene.view_settings.view_transform)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+
+    assert seen_view_transform == ["Standard"]  # forced during the render
+    assert scene.view_settings.view_transform == "AgX"  # restored afterward, untouched
+
+
+def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled, monkeypatch, tmp_path, capsys):
+    # No override, and no warning, when it was already what we'd set it to.
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "Standard"
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+    prefs.verbose_logging = False
+
+    seen_view_transform = []
+
+    def fake_renderer(request):
+        seen_view_transform.append(scene.view_settings.view_transform)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    capsys.readouterr()  # discard anything printed before this point
+
+    operators.render_current_frame(bpy.context)
+
+    assert seen_view_transform == ["Standard"]
+    assert scene.view_settings.view_transform == "Standard"
+    assert "view_transform" not in capsys.readouterr().out  # no warning needed -- nothing changed
+
+
+def test_render_current_frame_view_transform_warning_ignores_verbose_logging(addon_enabled, monkeypatch, tmp_path, capsys):
+    # The warning is a correctness heads-up, not a step-by-step trace line --
+    # it must print even with Verbose Logging off (unlike the [+N.NNs] step
+    # log, which `render_current_frame` gates behind that preference).
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "AgX"
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+    prefs.verbose_logging = False
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    capsys.readouterr()
+
+    operators.render_current_frame(bpy.context)
+
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "AgX" in out and "Standard" in out
+
+
+def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(addon_enabled, monkeypatch, tmp_path):
+    # Only yt_idv modes go through this add-on's own colormapping -- a
+    # non-yt_idv renderer_mode's output is unaffected by AgX the same way
+    # any ordinary Blender render is, so there's nothing to correct.
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "AgX"
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "SAMPLE_CONSTANT"
+    prefs.work_dir = str(tmp_path)
+
+    operators.render_current_frame(bpy.context)
+
+    assert scene.view_settings.view_transform == "AgX"  # left alone
+
+
 # --- opacity field / _apply_opacity -------------------------------------------
 
 def test_apply_opacity_is_a_noop_at_default_1_0():

@@ -99,6 +99,17 @@ python explore_cycles_zbuffer_depth_clip.py
     cache actually skipping `rc.run()` when nothing changed (and NOT
     skipping it on a real camera change), and correct behavior when two
     objects share one render_context. See "Custom volume setup" below.
+12. **`blender_scene/render_headless.py`** -- opens a real, externally-
+    authored `.blend` file (built in any Blender, yt_idv not required
+    there) and renders it through the real add-on operator and real
+    yt_idv, entirely via `uv run --group ytidv` -- no separate Blender
+    binary, no `--background` flag. Verified against a real 1920x1080,
+    250-frame, Blender-5.3-saved file with an animated camera orbiting a
+    cube. Two real findings from that run, documented in its own module
+    docstring: `addon_enable` needs nothing but `sys.path` (no stub-prefs
+    monkeypatch required just to go headless), and per-frame output
+    filenames must be set explicitly inside the loop -- they are NOT
+    auto-numbered the way a plain single-image render's are.
 
 Camera motion + reference AMR grid-box wireframes + a marker sphere, all
 driven from a real Blender scene, lives in `blender_scene/` (separate

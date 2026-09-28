@@ -9,6 +9,7 @@ scripts/yt_idv_exploration/blender_scene/images/
 scripts/yt_idv_exploration/blender_scene/_real_demo_work/
 scripts/yt_idv_exploration/blender_scene/_verify_overlap_work/
 scripts/yt_idv_exploration/blender_scene/_diag_work/
+scripts/yt_idv_exploration/blender_scene/_headless_render_out/
 # Local yt_idv checkout used by the `ytidv` dependency group -- a real,
 # separate upstream project, not vendored code (see README "yt_idv
 # integration" and pyproject.toml's `ytidv` group).
