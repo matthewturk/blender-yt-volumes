@@ -133,17 +133,148 @@ def test_pass1_depth_exr_round_trips_through_bpy_data_images_load(clean_scene, t
             bpy.data.images.remove(img)
 
 
-def test_set_linear_colorspace_accepts_this_blenders_ocio_config(clean_scene):
-    # Pins the actual bug found while porting to Blender 5.0+: the classic
-    # hardcoded name "Linear" no longer exists in the OCIO config pip
-    # bpy==5.2.0 ships (it's called "Linear Rec.709" there) -- assigning it
-    # directly raises TypeError. set_linear_colorspace() must resolve to
-    # whatever name this Blender's config actually accepts instead of
-    # blowing up on a fresh image datablock.
+def test_set_linear_colorspace_forces_a_genuine_passthrough_tag(clean_scene):
+    # See the comment block above LINEAR_COLORSPACE_CANDIDATES in
+    # compositor_build.py for the full story: `bpy.data.images.new()`'s own
+    # default ("Linear Rec.709") looks like a passthrough tag but actually
+    # bakes an sRGB-shaped encode into the file at `.save()` time -- fixed by
+    # actively forcing "Non-Color" instead, which set_linear_colorspace does
+    # unconditionally now (no longer a no-op).
     img = bpy.data.images.new("t", width=2, height=2, alpha=True, float_buffer=True)
+    assert img.colorspace_settings.name == "Linear Rec.709"  # the buggy default, confirmed unchanged
     cb.set_linear_colorspace(img)
-    assert img.colorspace_settings.name in cb.LINEAR_COLORSPACE_CANDIDATES
-    assert img.colorspace_settings.is_data is False
+    assert img.colorspace_settings.name == "Non-Color"
+
+
+def test_set_linear_colorspace_prevents_the_save_time_encode_bake(clean_scene, tmp_path):
+    # THE direct regression test for bug 1 (see the comment block above
+    # LINEAR_COLORSPACE_CANDIDATES): saving a `.new()` float image at its own
+    # default colorspace bakes an sRGB-shaped encode into the EXR on disk.
+    # Verified via direct OpenEXR inspection, bypassing Blender's own image
+    # loader entirely, so this doesn't depend on trusting bpy's colorspace
+    # auto-detection on read.
+    import OpenEXR
+    import Imath
+
+    def save_and_read_back(colorspace_fn):
+        img = bpy.data.images.new("t", width=2, height=2, alpha=True, float_buffer=True)
+        if colorspace_fn is not None:
+            colorspace_fn(img)
+        px = np.full((2, 2, 4), 0.283, dtype=np.float32)
+        px[..., 3] = 1.0
+        img.pixels.foreach_set(px.ravel())
+        path = str(tmp_path / f"probe_{colorspace_fn is not None}.exr")
+        img.filepath_raw = path
+        img.file_format = "OPEN_EXR"
+        img.save()
+        bpy.data.images.remove(img)
+        exr = OpenEXR.InputFile(path)
+        r = np.frombuffer(exr.channel("R", Imath.PixelType(Imath.PixelType.FLOAT)), dtype=np.float32)
+        return float(r[0])
+
+    buggy = save_and_read_back(None)
+    fixed = save_and_read_back(cb.set_linear_colorspace)
+    assert buggy == pytest.approx(0.568, abs=0.01), (
+        f"expected the OLD default to bake sRGB-encode(0.283)=0.568 on disk, got {buggy}"
+    )
+    assert fixed == pytest.approx(0.283, abs=1e-4), (
+        f"expected set_linear_colorspace to give a true passthrough (0.283 in, 0.283 on disk), got {fixed}"
+    )
+
+
+def test_compositor_image_node_round_trips_a_known_linear_value_correctly(clean_scene, tmp_path):
+    # Beauty-layer semantics: genuinely linear data, written via
+    # set_linear_colorspace (matching write_render_result -- though beauty
+    # itself is actually written natively by Blender's own File Output node,
+    # not this function, this test stands in for "some genuinely-linear EXR"
+    # generically) and read back the same way (the default `colorspace_fn`
+    # on `_make_image_node`, used for the beauty node in build_or_update_graph).
+    # Textbook reference value: linear 0.5 sRGB-encodes to 188/255 -- exactly
+    # ONE real gamma correction (Standard view transform's own, at final
+    # output), which is what genuinely-linear data actually needs to display
+    # correctly. See the comment block above LINEAR_COLORSPACE_CANDIDATES in
+    # compositor_build.py for the two-bugs-stacked story this test used to be
+    # entangled with.
+    scene = clean_scene
+    scene.render.resolution_x = 4
+    scene.render.resolution_y = 4
+    scene.view_settings.view_transform = "Standard"
+    scene.render.image_settings.file_format = "PNG"
+    out_path = str(tmp_path / "known_value_render")
+    scene.render.filepath = out_path
+
+    src = bpy.data.images.new("src", width=4, height=4, alpha=True, float_buffer=True)
+    cb.set_linear_colorspace(src)
+    px = np.full((4, 4, 4), 0.5, dtype=np.float32)
+    px[..., 3] = 1.0
+    src.pixels.foreach_set(px.ravel())
+    exr_path = str(tmp_path / "known_value.exr")
+    src.filepath_raw = exr_path
+    src.file_format = "OPEN_EXR"
+    src.save()
+    bpy.data.images.remove(src)
+
+    tree = cb.ensure_compositor_tree(scene)
+    img_node = cb._make_image_node(tree, "Test_KnownValue", exr_path)
+    socket = cb._color_output_socket(img_node)
+    cb._link_final_output(scene, tree, socket)
+
+    bpy.ops.render.render(write_still=True)
+
+    from PIL import Image as PILImage
+    out = np.array(PILImage.open(out_path + ".png"))
+    assert tuple(out[0, 0, :3]) == (188, 188, 188), (
+        f"expected linear 0.5 -> sRGB 188 (textbook value), got {tuple(out[0, 0, :3])}"
+    )
+
+
+def test_compositor_volume_layer_image_node_passes_through_display_ready_value_unchanged(clean_scene, tmp_path):
+    # Volume-layer semantics: already-display-ready colormap data (NOT
+    # scene-linear), written via set_linear_colorspace (matching
+    # write_render_result -- a true passthrough on disk) and read back via
+    # set_display_referred_colorspace (matching build_or_update_graph's
+    # per-object Image node). Standard view transform's one mandatory encode
+    # at final output must come out canceled by the compensating decode this
+    # read-side tag applies, netting to IDENTITY: a genuinely-linear-style
+    # single-gamma-correction test (the one above) would be WRONG here --
+    # colormap bytes must survive unchanged, not get gamma-corrected as if
+    # they were raw light data. See the comment block above
+    # LINEAR_COLORSPACE_CANDIDATES in compositor_build.py.
+    scene = clean_scene
+    scene.render.resolution_x = 4
+    scene.render.resolution_y = 4
+    scene.view_settings.view_transform = "Standard"
+    scene.render.image_settings.file_format = "PNG"
+    out_path = str(tmp_path / "volume_value_render")
+    scene.render.filepath = out_path
+
+    src = bpy.data.images.new("src", width=4, height=4, alpha=True, float_buffer=True)
+    cb.set_linear_colorspace(src)  # what write_render_result does
+    value = 0.283
+    px = np.full((4, 4, 4), value, dtype=np.float32)
+    px[..., 3] = 1.0
+    src.pixels.foreach_set(px.ravel())
+    exr_path = str(tmp_path / "volume_value.exr")
+    src.filepath_raw = exr_path
+    src.file_format = "OPEN_EXR"
+    src.save()
+    bpy.data.images.remove(src)
+
+    tree = cb.ensure_compositor_tree(scene)
+    img_node = cb._make_image_node(
+        tree, "Test_VolumeValue", exr_path, cb.set_display_referred_colorspace,
+    )
+    socket = cb._color_output_socket(img_node)
+    cb._link_final_output(scene, tree, socket)
+
+    bpy.ops.render.render(write_still=True)
+
+    from PIL import Image as PILImage
+    out = np.array(PILImage.open(out_path + ".png"))
+    expected = round(value * 255)
+    assert tuple(int(c) for c in out[0, 0, :3]) == (expected, expected, expected), (
+        f"expected display-ready {value} to survive as {expected} unchanged, got {tuple(out[0, 0, :3])}"
+    )
 
 
 def test_build_pass1_capture_graph_returns_paths_that_actually_get_written(clean_scene, tmp_path):

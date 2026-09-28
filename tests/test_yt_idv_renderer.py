@@ -581,6 +581,48 @@ def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monk
     assert shared_rc.rendered_scenes == [scene_a, scene_b, scene_a]
 
 
+def test_set_external_depth_clip_reuses_existing_texture_instead_of_leaking_gpu_memory(monkeypatch):
+    # Real GPU-memory leak found running a full HD animation: a fresh
+    # Texture2D(data=...) every frame (this function runs once per frame
+    # from _render_with_yt_idv) allocates a NEW OpenGL texture via
+    # glGenTextures every time (yt_idv.opengl_support.Texture has no
+    # __del__/glDeleteTextures), so the previous frame's GPU texture is
+    # never freed. Confirmed via an isolated repro (nothing but this
+    # function + rc.run() in a loop): a rock-solid ~20MB/iteration linear
+    # climb -- and this is exactly what crashed a real 250-frame HD render
+    # with "System is out of GPU memory" at frame 183. Fix: reuse the same
+    # Texture2D instance and reassign its `.data` trait instead of
+    # constructing a new one every call -- verified here via a fake
+    # Texture2D that just counts how many times it's actually constructed,
+    # no real GL context needed.
+    created = []
+
+    class FakeTexture2D:
+        def __init__(self, data):
+            self.data = data
+            created.append(self)
+
+    fake_module = types.ModuleType("yt_idv.opengl_support")
+    fake_module.Texture2D = FakeTexture2D
+    monkeypatch.setitem(sys.modules, "yt_idv.opengl_support", fake_module)
+
+    component = types.SimpleNamespace(use_external_depth_clip=False, external_depth_texture=None)
+    scene = types.SimpleNamespace(components=[component])
+
+    yir.set_external_depth_clip(scene, np.zeros((4, 4), dtype="f4"))
+    assert len(created) == 1
+    first_texture = component.external_depth_texture
+    assert isinstance(first_texture, FakeTexture2D)
+
+    yir.set_external_depth_clip(scene, np.full((4, 4), 5.0, dtype="f4"))
+    assert len(created) == 1, (
+        "second call constructed a NEW Texture2D instead of reusing the "
+        "existing one -- this leaks one GPU texture's worth of VRAM per "
+        "call (see this test's own comment for the real crash it caused)"
+    )
+    assert component.external_depth_texture is first_texture
+
+
 def test_fix_yt_idv_axis_order_passes_through_already_correct_shape():
     image = np.zeros((100, 200, 4), dtype=np.float32)
     fixed = yir._fix_yt_idv_axis_order(image, expected_height=100, expected_width=200)

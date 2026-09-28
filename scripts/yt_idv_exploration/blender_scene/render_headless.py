@@ -77,7 +77,20 @@ import bpy  # noqa: E402
 
 BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
-FRAMES = range(1, 251) #[1, 125, 250]  # or e.g. range(scene.frame_start, scene.frame_end + 1) for the real thing
+# RENDER_START_FRAME/RENDER_END_FRAME (env vars, both inclusive, default the
+# full 1-250 range): lets a shell loop invoke this script repeatedly across
+# successive frame ranges, each a FRESH process/GPU context -- needed
+# because Cycles/OptiX was found to leak GPU memory across ~180 consecutive
+# bpy.ops.render.render() calls in one long-lived process (real crash:
+# "System is out of GPU memory" at frame 183 of a real HD run). A single
+# process safely handles a few hundred frames at low-res but far fewer at
+# full HD -- keep chunks well under ~150 frames at HD to leave margin.
+# scene_setup.py's FIXED_CMAP_MIN/MAX (not this script) is what keeps the
+# color mapping consistent across chunk boundaries -- see its own comment.
+FRAMES = range(
+    int(os.environ.get("RENDER_START_FRAME", 1)),
+    int(os.environ.get("RENDER_END_FRAME", 250)) + 1,
+)
 SCENE_SETUP_MODULE = "scene_setup"  # edit THAT file for dataset/field/look changes, not this one
 
 scene_setup = __import__(SCENE_SETUP_MODULE)
@@ -101,19 +114,41 @@ cube.volume_override.density_scale = 3.0
 cube.volume_override.yt_idv_volume_provider = f"{SCENE_SETUP_MODULE}:setup_volume"
 
 scene.render.engine = "CYCLES"
-scene.cycles.samples = 32  # cut down for a fast demo run -- raise for real output
-scene.render.resolution_x = 480  # cut down for a fast demo run -- raise for real output
-#                                    (yt_idv renders SQUARE internally at
-#                                    max(x, y) then crops -- 1920x1080 means
-#                                    a 1920x1920 yt_idv render per frame)
-scene.render.resolution_y = 270
+scene.cycles.samples = 32
+scene.render.resolution_x = 1920  # full HD -- yt_idv renders SQUARE internally at
+scene.render.resolution_y = 1080  # max(x, y) then crops, so this is a 1920x1920 yt_idv render per frame
 scene.render.image_settings.file_format = "PNG"
+
+# GPU/OptiX -- real bug found while profiling the first HD run: the .blend
+# file itself already has scene.cycles.device == "GPU" (saved from whatever
+# desktop Blender authored it), but that alone does nothing -- Cycles also
+# needs a compute BACKEND selected at the Preferences level
+# (compute_device_type), which a fresh headless bpy session starts at "NONE"
+# regardless of what the .blend says. Confirmed empirically: without this
+# block, pass1's Cycles render silently fell back to the CPU (an old Xeon
+# X5650) and took ~32s/frame at 1920x1080/32 samples -- over 90% of total
+# per-frame time, dwarfing yt_idv's own ~1.6s and the EXR read/write's
+# ~0.5s combined. `get_devices()` must be called before `.devices` is
+# populated; enabling ONLY the OPTIX entry (not also CUDA/CPU) avoids
+# Cycles splitting work across a fast GPU and a much slower CPU device.
+cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
+cycles_prefs.compute_device_type = "OPTIX"
+cycles_prefs.get_devices()
+for device in cycles_prefs.devices:
+    device.use = device.type == "OPTIX"
+    print(f"[render_headless] cycles device {device.name!r} ({device.type}): use={device.use}")
+scene.cycles.device = "GPU"
+scene.cycles.denoiser = "OPTIX"  # AI/GPU denoiser, not the CPU-only OpenImageDenoise default
+if hasattr(scene.cycles, "denoising_use_gpu"):
+    scene.cycles.denoising_use_gpu = True
+
+FRAME_PREFIX = "frame2_"  # distinct from the earlier 480x270 "frame_" run -- doesn't overwrite it
 
 try:
     for frame in FRAMES:
         scene.frame_set(frame)
         # Per-frame, NOT hoisted above the loop -- see module docstring, finding 2.
-        scene.render.filepath = os.path.join(OUT_DIR, f"frame_{frame:04d}")
+        scene.render.filepath = os.path.join(OUT_DIR, f"{FRAME_PREFIX}{frame:04d}")
         result = bpy.ops.render.volume_override(animation=False)
         print(f"[render_headless] frame {frame}: {result} -> {scene.render.filepath}.png")
 except KeyboardInterrupt:

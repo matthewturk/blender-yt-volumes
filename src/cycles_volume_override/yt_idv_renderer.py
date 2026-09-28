@@ -1062,7 +1062,34 @@ def set_external_depth_clip(scene, depth=None):
             component.use_external_depth_clip = False
             continue
         texture_data = _to_texture2d_axis_convention(np.asarray(depth, dtype="f4"))
-        component.external_depth_texture = Texture2D(data=np.ascontiguousarray(texture_data))
+        texture_data = np.ascontiguousarray(texture_data)
+        # Real GPU-memory leak found running a full HD animation: a fresh
+        # Texture2D(data=...) here every frame (this function is called once
+        # per frame from _render_with_yt_idv) allocates a NEW OpenGL texture
+        # via glGenTextures every time (see yt_idv.opengl_support.Texture.
+        # _default_texture_name) -- and neither Texture nor Texture2D
+        # implements __del__/glDeleteTextures, so the previous frame's GPU
+        # texture is never freed when its Python object is garbage
+        # collected. Confirmed via an isolated repro (nothing but this
+        # function + rc.run() in a loop, no Cycles/compositor/Blender
+        # involved at all): a rock-solid ~20MB/iteration linear climb,
+        # nothing else running -- and this is exactly what crashed a real
+        # 250-frame HD render with "System is out of GPU memory" at frame
+        # 183. Reusing the SAME Texture2D instance and only reassigning its
+        # `.data` trait avoids this entirely: Texture2D._set_data only calls
+        # glTexStorage2D (new GPU allocation) the FIRST time data is set on
+        # a given object (`if not isinstance(change["old"], np.ndarray)`);
+        # every later assignment on the same object calls glTexSubImage2D
+        # instead, updating the EXISTING texture's contents in place with no
+        # new allocation. Confirmed fixed: the same isolated repro, changed
+        # to reuse one Texture2D per component instead of constructing a new
+        # one each call, holds perfectly flat GPU memory across 100+
+        # iterations.
+        existing = component.external_depth_texture
+        if isinstance(existing, Texture2D):
+            existing.data = texture_data
+        else:
+            component.external_depth_texture = Texture2D(data=texture_data)
         component.use_external_depth_clip = True
     if depth is not None and not any_component_supports_clip:
         raise RuntimeError(

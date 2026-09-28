@@ -61,13 +61,72 @@ FINAL_OUTPUT_SOCKET_NAME = "Image"
 # Blender < 5.0's default (Filmic-based) OCIO config names its scene-linear
 # working space "Linear". Blender 5.0 ships a different default OCIO config
 # where that exact name no longer exists at all (confirmed empirically
-# against pip bpy==5.2.0 -- assigning "Linear" raises `TypeError`; its
-# equivalent is named "Linear Rec.709" there instead). Every OCIO config
-# Blender ships also defines a portable `scene_linear` ROLE alias that
-# resolves to whichever space that config actually calls it, so it's tried
-# last and should keep working even against some future config neither of
-# these two literal names matches.
-LINEAR_COLORSPACE_CANDIDATES = ("Linear", "Linear Rec.709", "scene_linear")
+# against pip bpy==5.2.0 -- assigning "Linear" raises `TypeError`). "Non-Color"
+# is tried first: confirmed (see set_linear_colorspace's docstring) to be the
+# one tag that behaves as a genuine byte-for-byte passthrough in BOTH
+# directions (on `.save()` and on `.load()`/`.pixels`), unlike "Linear Rec.709"
+# which looks like it should mean the same thing but silently bakes an
+# sRGB-shaped encode into the file at `.save()` time. "Linear Rec.709" and the
+# portable `scene_linear` ROLE alias are kept as fallbacks for a future OCIO
+# config where "Non-Color" itself doesn't exist, not because they're
+# preferred.
+LINEAR_COLORSPACE_CANDIDATES = ("Non-Color", "Linear Rec.709", "scene_linear")
+
+# The real story, now fully understood (previous revisions of this comment
+# recorded this as a not-yet-understood, provisional workaround -- it no
+# longer is). Two INDEPENDENT bugs were stacked on top of each other, and a
+# single shared no-op function was accidentally compensating for both by
+# accident in one of the two call sites while silently breaking the other:
+#
+# Bug 1 (write side, THE actual root cause): `operators.write_render_result()`
+# builds its EXR with `bpy.data.images.new(..., float_buffer=True)`, whose own
+# default colorspace tag is "Linear Rec.709". Confirmed via direct,
+# Blender-bypassing OpenEXR inspection (`OpenEXR.InputFile`, not
+# `bpy.data.images.load()`) that saving a `.new()` float image tagged
+# "Linear Rec.709" BAKES AN sRGB-SHAPED ENCODE INTO THE ON-DISK VALUES:
+# writing a known 0.283 produced 0.568 on disk (== sRGB-encode(0.283) almost
+# exactly). Tagging the same image "Non-Color" (or "sRGB") before `.save()`
+# instead writes 0.283 back out unchanged -- a true passthrough.
+#
+# Bug 2 (semantic, read side): a volume layer's RGB values (yt_idv's own
+# colormap output, read back via `yt_idv_renderer.render_volume`) are NOT
+# scene-linear radiometric data the way Cycles' beauty pass is -- they're
+# already final, display-ready bytes (confirmed via `yt.write_bitmap`, which
+# every yt_idv example/the interactive GUI relies on: zero gamma, just
+# scale+clip+cast, and it looks correct). They need ZERO net color transform
+# end to end. The beauty layer, by contrast, IS genuine scene-linear light
+# data and needs exactly ONE sRGB encode (Standard view transform's own, at
+# final output) to display correctly.
+#
+# `set_linear_colorspace` (below) forces the passthrough tag needed at BOTH:
+# (a) write_render_result's `.save()` (fixes bug 1), and (b) the beauty
+# node's `.load()` (correct: real linear data + Standard's one mandatory
+# encode = one real gamma correction, exactly right). `set_display_referred_
+# colorspace` (also below) forces "sRGB" specifically for a volume-layer
+# node's `.load()`: it applies a compensating DECODE that, combined with
+# Standard's unconditionally-applied ENCODE at final output, nets to the
+# desired identity (bug 2's fix) -- but ONLY once bug 1 is also fixed;
+# before that, the write side's accidental bake and this decode canceled
+# each other out, reproducing the OLD (still one-extra-encode-too-bright)
+# behavior by accident. Measured end to end with a real yt_idv octarine/log
+# render: mean RGB (72.06, 83.91, 43.19) through the fixed
+# write-Non-Color/read-sRGB path vs (72.06, 83.90, 43.20) writing the exact
+# same raw array directly via `yt.write_bitmap` with no Blender involved at
+# all -- matches to within rounding. Before this fix: (137.6, 154.9, 112.0),
+# roughly one full sRGB encode too bright across the board, worst on the
+# lowest-valued channel (matches an extra gamma curve's signature: it lifts
+# shadows proportionally more than highlights).
+#
+# Cross-checking against a real desktop Blender binary (not the pip `bpy`
+# wheel) was attempted and did not succeed -- it crashed on unrelated,
+# pre-existing personal startup-script state (`chezmoi_sync.py`) before ever
+# reaching this code, including with `--factory-startup`. The measurements
+# above were made entirely with direct OpenEXR file inspection (bypassing
+# Blender's own image-loading heuristics) plus real compositor/render passes
+# on pip bpy, so they don't depend on trusting `bpy.data.images.load()`'s own
+# colorspace auto-detection (which was found to be unreliable/file-metadata-
+# dependent) -- but whether this pip wheel's OCIO config or EXR writer
+# differs from a full desktop install in some OTHER way remains unconfirmed.
 
 
 def _is_group_api(scene):
@@ -75,12 +134,19 @@ def _is_group_api(scene):
 
 
 def set_linear_colorspace(image):
-    """Assign `image`'s input color space to whichever name this Blender's
-    loaded OCIO config actually uses for "scene-linear, no view transform"
-    -- see `LINEAR_COLORSPACE_CANDIDATES`. Used for every EXR this add-on
-    reads or writes as raw linear data (beauty/volume-layer reads here,
-    per-object render results in operators.py) so none of it gets an
-    unwanted display/view color transform applied.
+    """Forces `image` onto a genuine byte-for-byte passthrough colorspace
+    tag -- no transform in either direction, on `.save()` or on `.load()`/
+    `.pixels` -- see the comment block above `LINEAR_COLORSPACE_CANDIDATES`
+    for the full story and the exact measurements behind this.
+
+    Used at the two call sites that need real passthrough semantics:
+    `operators.write_render_result()`'s newly-created EXR image, right
+    before `.save()` (its `.new()` default, "Linear Rec.709", was found to
+    bake an sRGB-shaped encode into the file instead), and
+    `build_or_update_graph()`'s beauty-layer Image node on `.load()` (Cycles'
+    own File Output write really is genuine scene-linear data, so it wants
+    passthrough on read and lets Standard view transform apply its one real
+    encode at final output).
     """
     for name in LINEAR_COLORSPACE_CANDIDATES:
         try:
@@ -89,10 +155,27 @@ def set_linear_colorspace(image):
         except TypeError:
             continue
     raise RuntimeError(
-        f"none of {LINEAR_COLORSPACE_CANDIDATES!r} is a valid color space/role "
-        "name on this Blender -- its OCIO config uses some other name; add it "
-        "to LINEAR_COLORSPACE_CANDIDATES"
+        f"none of {LINEAR_COLORSPACE_CANDIDATES} is a valid colorspace name "
+        "on this Blender's OCIO config"
     )
+
+
+def set_display_referred_colorspace(image):
+    """Forces `image` to "sRGB" -- used ONLY for `build_or_update_graph()`'s
+    per-object volume-layer Image nodes on `.load()`.
+
+    A volume layer's colors are already final, display-ready bytes (see the
+    comment block above `LINEAR_COLORSPACE_CANDIDATES`), not scene-linear
+    data -- they need ZERO net color transform end to end. Standard view
+    transform always applies its own encode once, unconditionally, at final
+    output, for every layer alike, so this tags the loaded image with a
+    matching, compensating DECODE that cancels it out. Relies on
+    `write_render_result()` writing via `set_linear_colorspace` first (a true
+    passthrough on disk) -- otherwise this decode would instead be canceling
+    out that write-side bug, silently reproducing the old, wrong,
+    one-extra-encode-too-bright behavior.
+    """
+    image.colorspace_settings.name = "sRGB"
 
 
 def ensure_compositor_tree(scene):
@@ -127,29 +210,34 @@ def _clear_managed_nodes(tree):
             tree.nodes.remove(node)
 
 
-def _load_fresh_image(path, node_label):
+def _load_fresh_image(path, node_label, colorspace_fn=set_linear_colorspace):
     """Load `path` as a brand-new Image datablock, replacing any datablock
     left over from a previous frame under the same name -- this is the
     "reloaded fresh each frame, not cached" requirement. We give the image
     datablock a per-node stable name (not the frame-numbered filename) so
     each call cleanly replaces the previous frame's data instead of
     accumulating one orphaned Image datablock per frame over an animation.
+
+    `colorspace_fn` -- `set_linear_colorspace` (default, correct for the
+    beauty layer) or `set_display_referred_colorspace` (correct for a
+    volume layer) -- see both functions' docstrings; the two need genuinely
+    different treatment, not just different names for the same fix.
     """
     existing = bpy.data.images.get(node_label)
     if existing is not None:
         bpy.data.images.remove(existing)
     img = bpy.data.images.load(path, check_existing=False)
     img.name = node_label
-    set_linear_colorspace(img)
+    colorspace_fn(img)
     img.source = "FILE"
     return img
 
 
-def _make_image_node(tree, name, path):
+def _make_image_node(tree, name, path, colorspace_fn=set_linear_colorspace):
     node = tree.nodes.new("CompositorNodeImage")
     node.name = name
     node.label = name
-    node.image = _load_fresh_image(path, name)
+    node.image = _load_fresh_image(path, name, colorspace_fn)
     return node
 
 
@@ -280,7 +368,9 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     current_output = _color_output_socket(beauty_node)
 
     for i, (obj_name, exr_path) in enumerate(volume_layers):
-        vol_node = _make_image_node(tree, _node_name("Vol", obj_name), exr_path)
+        vol_node = _make_image_node(
+            tree, _node_name("Vol", obj_name), exr_path, set_display_referred_colorspace,
+        )
         alpha_over = _make_alpha_over(
             tree, _node_name("Over", str(i), obj_name),
             current_output, _color_output_socket(vol_node),

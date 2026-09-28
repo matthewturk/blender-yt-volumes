@@ -986,12 +986,24 @@ def render_current_frame(context):
         # only -- the other renderer modes never touch EGL/GL, so there's no
         # reason to override this scene setting for them.
         scene.render.compositor_device = "CPU"
+    # This frame's own full-float EXR intermediates (beauty/depth/per-object
+    # volume results) -- real bug found running a real animation at full HD:
+    # nothing ever deleted these, so a long run silently accumulates one
+    # full set per frame in `work_dir` forever. At HD resolution over a few
+    # hundred frames that's easily multiple GB, and it crashed a real render
+    # outright (ENOSPC mid-write corrupted a depth EXR, which then failed to
+    # load with a confusing "loaded as size=(0, 0)... file_format='TARGA'"
+    # error that has nothing to do with the actual cause). Collected as we
+    # go and swept in `finally` below so a mid-frame exception still cleans
+    # up whatever THIS frame created, not just the success path.
+    frame_temp_paths = []
     try:
         # --- Pass 1: real Cycles beauty + Z, flagged objects hidden -----
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
                 scene, work_dir, scene.frame_current,
             )
+        frame_temp_paths += [beauty_path, depth_path]
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with scene_sync.hidden_from_main_render(flagged):
             with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
@@ -1025,6 +1037,7 @@ def render_current_frame(context):
             with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
                 write_render_result(result, result_path)
             volume_layers.append((obj.name, result_path))
+            frame_temp_paths.append(result_path)
 
         # --- Pass 2: compositor-only (cheap engine), writes the real output
         with step("pass2 build/update compositor graph"):
@@ -1039,6 +1052,11 @@ def render_current_frame(context):
         view_layer.use_pass_z = prev_use_pass_z
         scene.render.compositor_device = prev_compositor_device
         scene.view_settings.view_transform = prev_view_transform
+        for path in frame_temp_paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass  # never created (early exception) or already gone -- either way, nothing to clean up
 
 
 def _show_render_result(context):
