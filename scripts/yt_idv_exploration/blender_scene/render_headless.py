@@ -79,15 +79,16 @@ from cycles_volume_override import operators  # noqa: E402  -- for render_sessio
 BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
 # RENDER_START_FRAME/RENDER_END_FRAME (env vars, both inclusive, default the
-# full 1-250 range): lets a shell loop invoke this script repeatedly across
-# successive frame ranges, each a FRESH process/GPU context -- needed
-# because Cycles/OptiX was found to leak GPU memory across ~180 consecutive
-# bpy.ops.render.render() calls in one long-lived process (real crash:
-# "System is out of GPU memory" at frame 183 of a real HD run). A single
-# process safely handles a few hundred frames at low-res but far fewer at
-# full HD -- keep chunks well under ~150 frames at HD to leave margin.
+# full 1-250 range): for rendering (or re-rendering) just part of the
+# animation, e.g. resuming after an interrupted run. A full 1-250 HD run
+# fits in ONE process -- the "System is out of GPU memory" crash once seen
+# at frame 183 was NOT Cycles/OptiX, as first assumed, but yt_idv leaking
+# one depth-clip texture per frame (~20MB each), since fixed in
+# yt_idv_renderer.set_external_depth_clip (see its own comment); no need
+# to chunk the frame range across processes anymore.
 # scene_setup.py's FIXED_CMAP_MIN/MAX (not this script) is what keeps the
-# color mapping consistent across chunk boundaries -- see its own comment.
+# color mapping consistent when a run starts partway through the
+# animation -- see its own comment.
 FRAMES = range(
     int(os.environ.get("RENDER_START_FRAME", 1)),
     int(os.environ.get("RENDER_END_FRAME", 250)) + 1,

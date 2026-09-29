@@ -25,15 +25,14 @@ COLORMAP = "octarine"  # any yt/matplotlib colormap name -- applied directly to
 # Pinned from a real frame-1 auto-scan of this exact dataset/field/camera
 # (the "Computed new cmap values ..." line yt_idv prints the first time a
 # component renders). Explicit, not left to "whatever frame happens to run
-# first", because Cycles/OptiX was found to leak GPU memory across ~180
-# consecutive bpy.ops.render.render() calls in one long-lived process (a
-# real, reproducible crash: "System is out of GPU memory" at frame 183 of a
-# real 250-frame HD run) -- the robust fix is restarting the render process
-# periodically (see render_headless.py's RENDER_START_FRAME/RENDER_END_FRAME),
-# and a fresh process's own frame 1 is a DIFFERENT camera view than the
-# animation's real frame 1, which would silently re-anchor the color mapping
-# partway through if left to auto-scan again. Sourced from this dataset's
-# real frame 1 in a run that got to frame 182 before hitting the leak.
+# first", because a run started partway through the animation (see
+# render_headless.py's RENDER_START_FRAME/RENDER_END_FRAME -- e.g. resuming
+# an interrupted run) has a DIFFERENT first camera view than the
+# animation's real frame 1, and would silently re-anchor the color mapping
+# for its whole range if left to auto-scan again. Originally needed because
+# full HD runs had to be split across processes to dodge a GPU-memory leak
+# (yt_idv depth-clip textures, since fixed -- see yt_idv_renderer.
+# set_external_depth_clip); still the right thing for any partial-range run.
 FIXED_CMAP_MIN = 4.552790869638557e-06
 FIXED_CMAP_MAX = 0.784118115901947
 
