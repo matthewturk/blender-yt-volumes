@@ -350,3 +350,136 @@ def test_build_or_update_graph_composites_named_part_beauty_and_result_exrs(clea
     bpy.ops.render.render(write_still=True)  # would raise TypeError before the fix
 
     assert os.path.exists(final_path)
+
+
+# --- reuse-in-place instead of rebuild-every-frame (perf) ---------------------
+# Real perf bug found doing an optimization pass on real per-frame timings:
+# unconditionally tearing down and rebuilding these graphs every frame, even
+# though their SHAPE usually never changes, was found to invalidate Cycles'
+# own use_persistent_data session/BVH cache just as badly as switching render
+# engines did. Both graph builders now reuse existing nodes (just updating
+# properties) when nothing structural actually changed, and only fall back to
+# a real rebuild when it did.
+
+def test_build_pass1_capture_graph_reuses_nodes_across_calls(clean_scene, tmp_path):
+    scene = clean_scene
+    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
+    scene.camera = bpy.context.object
+    bpy.ops.object.light_add(type="SUN")
+    scene.render.resolution_x = 8
+    scene.render.resolution_y = 8
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 4
+    bpy.context.view_layer.use_pass_z = True
+
+    tree = cb.ensure_compositor_tree(scene)
+
+    dir1 = tmp_path / "frame1"
+    dir1.mkdir()
+    beauty_path1, depth_path1 = cb.build_pass1_capture_graph(scene, str(dir1), 1)
+    # .as_pointer() (the underlying C pointer, stable regardless of Python
+    # wrapper churn) -- bpy's RNA wrapper objects aren't singleton-cached,
+    # so plain `is` on two separate `tree.nodes[name]` lookups is NOT a
+    # reliable identity check even for the exact same underlying node.
+    rlayers_ptr = tree.nodes[cb._node_name("Pass1RLayers")].as_pointer()
+    beauty_ptr = tree.nodes[cb._node_name("Pass1BeautyOut")].as_pointer()
+
+    dir2 = tmp_path / "frame2"
+    dir2.mkdir()
+    scene.frame_set(2)  # #### substitution uses scene.frame_current, not the frame_number arg below
+    beauty_path2, depth_path2 = cb.build_pass1_capture_graph(scene, str(dir2), 2)
+
+    assert tree.nodes[cb._node_name("Pass1RLayers")].as_pointer() == rlayers_ptr, "node identity must be preserved, not recreated"
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].as_pointer() == beauty_ptr
+    assert beauty_path1 != beauty_path2  # different frame_dir each time -- the one thing that DOES need to change
+    assert beauty_path1.startswith(str(dir1)) and beauty_path2.startswith(str(dir2))
+
+    bpy.ops.render.render(write_still=False)
+    assert os.path.exists(beauty_path2), f"expected {beauty_path2!r} after the reused-node render, dir has {os.listdir(dir2)}"
+
+
+def _build_solid_volume_image(tmp_path, name, green, alpha=0.5):
+    h, w = 8, 8
+    rgba = np.zeros((h, w, 4), dtype="float32")
+    rgba[..., 1] = green
+    rgba[..., 3] = alpha
+    path = str(tmp_path / f"{name}.exr")
+    img = bpy.data.images.new(f"{name}_tmp", width=w, height=h, alpha=True, float_buffer=True)
+    cb.set_linear_colorspace(img)
+    img.pixels.foreach_set(rgba.ravel())
+    img.filepath_raw = path
+    img.file_format = "OPEN_EXR"
+    img.save()
+    bpy.data.images.remove(img)
+    return path
+
+
+def test_build_or_update_graph_reuses_nodes_when_same_objects_same_order(clean_scene, tmp_path):
+    scene = clean_scene
+    tree = cb.ensure_compositor_tree(scene)
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty", green=0.1)
+    vol_a_path1 = _build_solid_volume_image(tmp_path, "a1", green=0.3)
+    vol_b_path1 = _build_solid_volume_image(tmp_path, "b1", green=0.4)
+
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path1), ("B", vol_b_path1)])
+    # .as_pointer() -- see test_build_pass1_capture_graph_reuses_nodes_across_calls
+    # for why plain `is` doesn't reliably check bpy node identity.
+    beauty_ptr = tree.nodes[cb._node_name("Beauty")].as_pointer()
+    vol_a_ptr = tree.nodes[cb._node_name("Vol", "A")].as_pointer()
+    vol_b_ptr = tree.nodes[cb._node_name("Vol", "B")].as_pointer()
+    over_node = tree.nodes.get(cb._node_name("Over", "0", "A"))
+    assert over_node is not None
+    over_ptr = over_node.as_pointer()
+
+    vol_a_path2 = _build_solid_volume_image(tmp_path, "a2", green=0.35)
+    vol_b_path2 = _build_solid_volume_image(tmp_path, "b2", green=0.45)
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path2), ("B", vol_b_path2)])
+
+    # Same object names, same order -- nodes reused in place, not recreated.
+    assert tree.nodes[cb._node_name("Beauty")].as_pointer() == beauty_ptr
+    assert tree.nodes[cb._node_name("Vol", "A")].as_pointer() == vol_a_ptr
+    assert tree.nodes[cb._node_name("Vol", "B")].as_pointer() == vol_b_ptr
+    assert tree.nodes[cb._node_name("Over", "0", "A")].as_pointer() == over_ptr
+    # But the image CONTENT was refreshed to the new call's paths.
+    assert tree.nodes[cb._node_name("Vol", "A")].image.filepath_raw.endswith("a2.exr")
+    assert tree.nodes[cb._node_name("Vol", "B")].image.filepath_raw.endswith("b2.exr")
+
+
+def test_build_or_update_graph_rebuilds_when_object_set_changes(clean_scene, tmp_path):
+    scene = clean_scene
+    tree = cb.ensure_compositor_tree(scene)
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty", green=0.1)
+    vol_a_path = _build_solid_volume_image(tmp_path, "a", green=0.3)
+
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path)])
+    assert tree.nodes.get(cb._node_name("Vol", "B")) is None
+
+    vol_b_path = _build_solid_volume_image(tmp_path, "b", green=0.4)
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path), ("B", vol_b_path)])
+
+    assert tree.nodes.get(cb._node_name("Vol", "A")) is not None
+    assert tree.nodes.get(cb._node_name("Vol", "B")) is not None
+
+
+def test_build_or_update_graph_rebuilds_when_order_changes(clean_scene, tmp_path):
+    # Same SET of objects, different order -- e.g. the camera moved such
+    # that two volumes swapped which one is closer. Must NOT be silently
+    # treated as "topology unchanged": the Alpha Over chain's compositing
+    # order has to match, or occlusion comes out wrong.
+    scene = clean_scene
+    tree = cb.ensure_compositor_tree(scene)
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty", green=0.1)
+    vol_a_path = _build_solid_volume_image(tmp_path, "a", green=0.3)
+    vol_b_path = _build_solid_volume_image(tmp_path, "b", green=0.4)
+
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path), ("B", vol_b_path)])
+    assert tree.nodes.get(cb._node_name("Over", "0", "A")) is not None
+    assert tree.nodes.get(cb._node_name("Over", "1", "B")) is not None
+
+    cb.build_or_update_graph(scene, beauty_path, [("B", vol_b_path), ("A", vol_a_path)])
+
+    # The old A-first chain nodes must be gone, replaced by a B-first chain.
+    assert tree.nodes.get(cb._node_name("Over", "0", "A")) is None
+    assert tree.nodes.get(cb._node_name("Over", "0", "B")) is not None
+    assert tree.nodes.get(cb._node_name("Over", "1", "A")) is not None

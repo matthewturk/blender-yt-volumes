@@ -614,6 +614,81 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
     assert scene.view_settings.view_transform == "AgX"  # left alone
 
 
+# --- pass2 engine / persistent_data perf fixes --------------------------------
+# Real perf bug found doing an optimization pass on real per-frame timings:
+# forcing scene.render.engine to "BLENDER_WORKBENCH" for pass2 invalidated
+# Cycles' own use_persistent_data session/BVH cache on EVERY frame (measured:
+# any intervening render through a different engine does this, not just an
+# engine change on the same scene), forcing a full from-scratch reinit each
+# time pass1 ran again next frame. Keeping the same engine active the whole
+# time -- pass2's own compositor graph never references Render Layers, so
+# Blender doesn't bother path-tracing anything for it anyway (confirmed via
+# direct pixel-diff: identical output regardless of engine) -- measured 6x
+# faster overall.
+
+def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+
+    seen_engine_during_render = []
+
+    def fake_renderer(request):
+        seen_engine_during_render.append(scene.render.engine)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+
+    # render_volume runs between pass1 and pass2 -- at that point the engine
+    # must still be whatever pass1 used, never switched to a different one.
+    assert seen_engine_during_render == ["CYCLES"]
+    assert scene.render.engine == "CYCLES"  # unchanged afterward too -- nothing to even restore
+
+
+def test_render_current_frame_enables_and_restores_use_persistent_data(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.render.use_persistent_data = False
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.mesh.primitive_cube_add()
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+
+    seen_persistent_data = []
+
+    def fake_renderer(request):
+        seen_persistent_data.append(scene.render.use_persistent_data)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+
+    assert seen_persistent_data == [True]  # enabled during the render
+    assert scene.render.use_persistent_data is False  # restored to whatever it was before
+
+
 # --- per-frame temp directory cleanup -----------------------------------------
 # Real bug found running a real HD animation: nothing ever deleted the
 # per-frame beauty/depth/volume-result EXRs, so a long run silently

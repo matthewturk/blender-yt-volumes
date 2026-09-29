@@ -352,16 +352,57 @@ def _configure_single_file_output(node, directory, name_prefix):
     return node.inputs[0]
 
 
+_VOLUME_ORDER_KEY = "vo_volume_order"
+
+
 def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     """(Re)builds the `VO_`-prefixed subgraph and links it to the final
-    composited output.
+    composited output -- OR, when the exact same ordered set of volume
+    layers as last call is already built, updates the EXISTING Image nodes
+    in place instead.
 
     `volume_layers`: list of (object_name, exr_path), already ordered
     farthest-from-camera first, nearest last (see module docstring on
     Alpha Over chain ordering). Pass `[]` for a frame with no flagged
     volumes -- beauty is wired straight to the final output.
+
+    Real perf bug found doing an optimization pass on real per-frame
+    timings: unconditionally tearing down and rebuilding this graph every
+    single frame -- even for the overwhelmingly common case where its SHAPE
+    never actually changes (a fixed set of flagged objects, camera-only
+    animation) -- was found to invalidate Cycles' own `use_persistent_data`
+    session/BVH cache just as badly as switching render engines did (see
+    `build_pass1_capture_graph`'s own docstring for the measurements this
+    finding is shared with). Reassigning `.image` on an EXISTING Image node
+    does NOT trigger this -- only creating/deleting nodes does -- so this
+    now only does a full rebuild when the volume layers' object names OR
+    THEIR ORDER actually differ from what's already built (an object got
+    flagged/unflagged, or the camera moved such that two volumes swapped
+    which one is closer -- `_sorted_far_to_near` can genuinely reorder
+    `volume_layers` frame to frame even with the same object SET, and the
+    Alpha Over chain's compositing order has to match or occlusion comes
+    out wrong). The exact order actually built is stashed as a custom ID
+    property on the tree (`_VOLUME_ORDER_KEY`) specifically to detect that
+    reordering case, not just a set/count change.
     """
     tree = ensure_compositor_tree(scene)
+
+    expected_order = [obj_name for obj_name, _ in volume_layers]
+    beauty_node = tree.nodes.get(_node_name("Beauty"))
+    topology_matches = (
+        beauty_node is not None
+        and list(tree.get(_VOLUME_ORDER_KEY, [])) == expected_order
+    )
+
+    if topology_matches:
+        beauty_node.image = _load_fresh_image(beauty_exr_path, _node_name("Beauty"), set_linear_colorspace)
+        for obj_name, exr_path in volume_layers:
+            vol_node = tree.nodes[_node_name("Vol", obj_name)]
+            vol_node.image = _load_fresh_image(
+                exr_path, _node_name("Vol", obj_name), set_display_referred_colorspace,
+            )
+        return tree
+
     _clear_managed_nodes(tree)
 
     beauty_node = _make_image_node(tree, _node_name("Beauty"), beauty_exr_path)
@@ -382,9 +423,26 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
         current_output = alpha_over.outputs.get("Image")
 
     _link_final_output(scene, tree, current_output)
+    tree[_VOLUME_ORDER_KEY] = expected_order
 
     _layout_nodes(tree)
     return tree
+
+
+def _redirect_single_file_output(node, directory):
+    """Repoints an ALREADY-CONFIGURED File Output node (one
+    `_configure_single_file_output` already set up) at a new output
+    directory, without touching its `file_output_items`/`file_slots` --
+    calling `_configure_single_file_output` again would append a DUPLICATE
+    item on the group API. Only the directory ever needs to change frame to
+    frame (each frame gets its own fresh `frame_dir`, see operators.py); the
+    filename template/format were already correct from the first call and
+    never need to change.
+    """
+    if hasattr(node, "file_output_items"):
+        node.directory = directory
+    else:
+        node.base_path = directory
 
 
 def build_pass1_capture_graph(scene, output_dir, frame_number):
@@ -404,31 +462,51 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
     Implements spec item 3's requirement to read back passes via a File
     Output node rather than assuming in-memory access to render results is
     reliably available.
+
+    Built ONCE, not every frame -- real perf bug found doing an
+    optimization pass on real per-frame timings: this graph's SHAPE never
+    varies at all (always exactly Render Layers -> two File Output nodes ->
+    a sink), yet it was being unconditionally torn down and rebuilt from
+    scratch every single frame. That turned out to invalidate Cycles' own
+    `use_persistent_data` session/BVH cache just as badly as switching
+    render engines did (confirmed directly: rebuilt every frame, ~4.4s
+    steady-state; built once and just repointing the output directory
+    thereafter, ~1.4s -- reassigning properties on EXISTING nodes doesn't
+    trigger this, only creating/deleting nodes does). Only the output
+    directory actually needs to change frame to frame (each frame gets its
+    own fresh temp directory, see operators.py's `frame_dir`), so that's
+    all this does on any call after the first.
     """
     tree = ensure_compositor_tree(scene)
-    _clear_managed_nodes(tree)
 
-    render_layers = tree.nodes.new("CompositorNodeRLayers")
-    render_layers.name = _node_name("Pass1RLayers")
+    render_layers = tree.nodes.get(_node_name("Pass1RLayers"))
+    if render_layers is None:
+        _clear_managed_nodes(tree)
 
-    beauty_out = tree.nodes.new("CompositorNodeOutputFile")
-    beauty_out.name = _node_name("Pass1BeautyOut")
-    beauty_socket = _configure_single_file_output(beauty_out, output_dir, "vo_beauty_")
-    tree.links.new(render_layers.outputs["Image"], beauty_socket)
+        render_layers = tree.nodes.new("CompositorNodeRLayers")
+        render_layers.name = _node_name("Pass1RLayers")
 
-    depth_out = tree.nodes.new("CompositorNodeOutputFile")
-    depth_out.name = _node_name("Pass1DepthOut")
-    depth_socket = _configure_single_file_output(depth_out, output_dir, "vo_depth_")
-    tree.links.new(render_layers.outputs["Depth"], depth_socket)
+        beauty_out = tree.nodes.new("CompositorNodeOutputFile")
+        beauty_out.name = _node_name("Pass1BeautyOut")
+        beauty_socket = _configure_single_file_output(beauty_out, output_dir, "vo_beauty_")
+        tree.links.new(render_layers.outputs["Image"], beauty_socket)
 
-    # Also route Combined straight to the final output so pass 1's own render
-    # result / viewport preview isn't blank -- irrelevant to what we
-    # actually save (pass 2 does that), just avoids a jarring black frame
-    # if you're watching the Image Editor while it renders.
-    pass1_sink = _link_final_output(scene, tree, render_layers.outputs["Image"])
-    pass1_sink.name = _node_name("Pass1Composite")
+        depth_out = tree.nodes.new("CompositorNodeOutputFile")
+        depth_out.name = _node_name("Pass1DepthOut")
+        depth_socket = _configure_single_file_output(depth_out, output_dir, "vo_depth_")
+        tree.links.new(render_layers.outputs["Depth"], depth_socket)
 
-    _layout_nodes(tree)
+        # Also route Combined straight to the final output so pass 1's own
+        # render result / viewport preview isn't blank -- irrelevant to what
+        # we actually save (pass 2 does that), just avoids a jarring black
+        # frame if you're watching the Image Editor while it renders.
+        pass1_sink = _link_final_output(scene, tree, render_layers.outputs["Image"])
+        pass1_sink.name = _node_name("Pass1Composite")
+
+        _layout_nodes(tree)
+    else:
+        _redirect_single_file_output(tree.nodes[_node_name("Pass1BeautyOut")], output_dir)
+        _redirect_single_file_output(tree.nodes[_node_name("Pass1DepthOut")], output_dir)
 
     # Compute the exact path each File Output wrote so the caller doesn't
     # have to glob the output directory. Both APIs zero-pad to the same
