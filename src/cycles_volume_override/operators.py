@@ -996,6 +996,25 @@ def read_depth_buffer(scene, path):
 
 
 _RESULT_IMAGE_NAME = "vo_result_tmp"
+_EXR_WRITER_SCENE_NAME = "__VolumeOverrideExrWriter"
+
+
+def _exr_writer_scene():
+    """Internal Scene whose `render.image_settings` exist only to be passed
+    as `Image.save_render(..., scene=)` by `write_render_result` below --
+    never rendered, never linked to any object. Settings are only assigned
+    when not already correct, same same-value-reassignment caution as
+    `scene_sync.sync_scene_state`.
+    """
+    scene = bpy.data.scenes.get(_EXR_WRITER_SCENE_NAME)
+    if scene is None:
+        scene = bpy.data.scenes.new(_EXR_WRITER_SCENE_NAME)
+    settings = scene.render.image_settings
+    if settings.file_format != "OPEN_EXR":
+        settings.file_format = "OPEN_EXR"
+    if settings.color_depth != "32":
+        settings.color_depth = "32"
+    return scene
 
 
 def write_render_result(result, path):
@@ -1020,6 +1039,26 @@ def write_render_result(result, path):
     remove+recreate -- Image.scale() distorts rather than reallocates) if
     the resolution genuinely changes between calls, which doesn't happen
     in the per-frame loop this is actually called from.
+
+    Writes via `Image.save_render()`, NOT `Image.save()` -- real perf bug,
+    the root cause of pass 2's unexplained ~3s/frame: every `Image.save()`
+    call makes Cycles' NEXT render (with `use_persistent_data`) re-sync
+    every mesh object and rebuild its light tree from scratch ("Synchronizing
+    object" + "Updating Lights | Computing tree" in the render stats, ~3s at
+    1080p on test-cycles-override.blend) -- pinned down by bisecting the
+    real per-frame loop step by step: pixel writes (`foreach_set`), the
+    colorspace tag, and `filepath_raw`/`file_format` assignments are each
+    free; `save()` alone is the trigger; `save_render()` of the identical
+    datablock is free. Pass 2 was simply the next render after this write,
+    so it paid the cost -- which is also why hand-assembled repros only
+    reproduced it when this call was present. `save()` also silently flips
+    the datablock to `source == "FILE"` backed by `path` (deleted with the
+    rest of `frame_dir` at the end of each frame), which reads back as
+    `size == (0, 0)` once Blender frees its buffer and defeats the reuse
+    check below (confirmed: remove+recreate on the next call); `save_render()`
+    leaves it GENERATED. Output is bit-identical to `save()`'s (confirmed via
+    direct OpenEXR inspection -- same RGBA float32 channels, max |diff| 0.0,
+    independent of any scene's view transform: EXR is written linear).
     """
     h, w = result.rgba.shape[:2]
     img = bpy.data.images.get(_RESULT_IMAGE_NAME)
@@ -1030,9 +1069,7 @@ def write_render_result(result, path):
         img = bpy.data.images.new(_RESULT_IMAGE_NAME, width=w, height=h, alpha=True, float_buffer=True)
     compositor_build.set_linear_colorspace(img)
     img.pixels.foreach_set(result.rgba.astype("float32").ravel())
-    img.filepath_raw = path
-    img.file_format = "OPEN_EXR"
-    img.save()
+    img.save_render(path, scene=_exr_writer_scene())
 
 
 # --- Per-frame pipeline ------------------------------------------------------
@@ -1143,21 +1180,11 @@ class render_session:
         # Sweep once here instead of every frame -- see _sweep_stale_frame_
         # dirs's own docstring for why crash-recovery cleanup is inherently
         # a once-per-run concern, not a per-frame one (nothing legitimately
-        # crashes mid-loop without stopping the whole process). Real perf
-        # bug found doing an optimization pass: calling it every frame
-        # measured fine in total isolation, but COMBINED with the rest of a
-        # real frame's own work (read_depth_buffer, build_camera_params/
-        # build_frame_params/build_volume_params, write_render_result --
-        # any one of those alone, or the sweep alone, was fine; only the
-        # combination reproduced it) it was found to cost pass 2's own
-        # render almost an extra ~3s every single frame, even though
-        # `os.listdir()` found nothing to actually remove on any frame
-        # after the first. Root mechanism not fully understood (a plain
-        # filesystem listdir call measurably affecting an unrelated later
-        # Cycles render is not obviously explicable) -- but moving it here
-        # is independently the right architecture regardless: this sweep
-        # only ever does anything on the FIRST frame after a hard crash,
-        # never on any frame after that within the same run. Best-effort,
+        # crashes mid-loop without stopping the whole process). This was
+        # once believed to be a ~3s/frame pass-2 perf fix; it wasn't -- the
+        # real cause was write_render_result's Image.save() (see its own
+        # docstring), which the hand-assembled repro that implicated the
+        # sweep also ran. Best-effort,
         # like the sweep itself -- render_session's own restore logic (the
         # whole rest of this class) is usable standalone, addon-enabled or
         # not (see its own unit tests), so a session entered before the
@@ -1199,10 +1226,8 @@ def render_current_frame(context):
 
     work_dir = _work_dir(context)
     # Skipped here when a render_session is active -- it already swept once,
-    # up front, in its own __enter__. See render_session's own comment for
-    # why calling this every frame is both unnecessary AND, surprisingly,
-    # measurably expensive when combined with the rest of a real frame's
-    # work. A bare call (no session -- e.g. a single F12 press) still
+    # up front, in its own __enter__ (see render_session's own comment). A
+    # bare call (no session -- e.g. a single F12 press) still
     # sweeps every time, same as always: each one is a fully standalone,
     # non-looping render, so there's no per-frame cost to avoid.
     if _active_render_session is None:

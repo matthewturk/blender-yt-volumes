@@ -1048,6 +1048,39 @@ def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_pa
     assert np.allclose(reread_b.data, 0.75, atol=1e-5)
 
 
+def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp_path):
+    # The real per-frame case the test above doesn't cover: render_current_
+    # frame deletes each frame's frame_dir (including the previous call's
+    # EXR) before the next call. Image.save() used to leave the datablock
+    # FILE-backed by that now-deleted path (reading back size == (0, 0)),
+    # so the reuse check never actually held in the real loop -- see
+    # write_render_result's docstring (save_render, not save).
+    import numpy as np
+
+    from cycles_volume_override import external_render
+
+    def result(value):
+        return external_render.RenderResult(
+            rgba=np.full((3, 4, 4), value, dtype="float32"),
+            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+        )
+
+    path_a = str(tmp_path / "a.exr")
+    operators.write_render_result(result(0.25), path_a)
+    img = bpy.data.images[operators._RESULT_IMAGE_NAME]
+    pointer_after_first = img.as_pointer()
+    assert img.source == "GENERATED"
+    os.remove(path_a)
+    img.buffers_free()
+
+    path_b = str(tmp_path / "b.exr")
+    operators.write_render_result(result(0.75), path_b)
+    img = bpy.data.images[operators._RESULT_IMAGE_NAME]
+    assert img.as_pointer() == pointer_after_first
+    assert tuple(img.size) == (4, 3)
+    assert np.allclose(operators.read_depth_buffer(bpy.context.scene, path_b).data, 0.75, atol=1e-5)
+
+
 def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
     # Same fix, same reasoning, as the write-side test above -- see
     # operators.read_depth_buffer's own docstring.
