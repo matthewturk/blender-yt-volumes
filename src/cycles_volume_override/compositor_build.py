@@ -204,10 +204,48 @@ def _node_name(*parts):
     return NODE_PREFIX + "_".join(parts)
 
 
-def _clear_managed_nodes(tree):
+# Pass 1's own nodes (VO_Pass1RLayers, VO_Pass1BeautyOut, VO_Pass1DepthOut,
+# VO_Pass1Composite) all share this sub-prefix, distinct from pass 2's
+# (VO_Beauty, VO_Vol_*, VO_Over_*, VO_Composite) -- see _clear_managed_nodes's
+# own docstring for why this distinction has to exist at all.
+_PASS1_NODE_PREFIX = _node_name("Pass1")
+
+
+def _clear_managed_nodes(tree, exclude_prefix=None, only_prefix=None):
+    """Remove every node this add-on manages (`NODE_PREFIX`-tagged) --
+    narrowed to just `only_prefix` when given, or to everything EXCEPT
+    `exclude_prefix` when given (mutually exclusive; at most one is passed).
+
+    Real, severe perf bug found doing an optimization pass on real per-frame
+    timings, found only once pass 1 and pass 2 were profiled TOGETHER in a
+    real per-frame loop rather than each in isolation (which is exactly what
+    this file's own unit tests do, and why they never caught it): pass 1's
+    nodes (`VO_Pass1*`) and pass 2's nodes (`VO_Beauty`/`VO_Vol_*`/`VO_Over_*`/
+    `VO_Composite`) share ONE compositor tree and used to share ONE blanket
+    `NODE_PREFIX` sweep here with no exclusion. Each pass's own "is my node
+    already there?" check (`build_pass1_capture_graph`'s `Pass1RLayers`,
+    `build_or_update_graph`'s `Beauty`) only ever looks for ITS OWN node --
+    so the moment pass 2 built/updated its graph and unconditionally swept
+    every `VO_`-prefixed node first, it also deleted pass 1's nodes; the
+    NEXT frame's pass 1 call then found `Pass1RLayers` missing, took ITS OWN
+    "rebuild from scratch" path, and swept every `VO_`-prefixed node AGAIN --
+    this time deleting pass 2's. Every single frame, both passes' graphs
+    were being torn down and rebuilt from scratch, TWICE, even though each
+    pass's own reuse logic was already working correctly in isolation.
+    Confirmed directly: this alone reproduced almost the full ~4s/frame
+    pass-1 cost this whole optimization pass has been chasing, independent
+    of yt_idv, write_still, frame-stepping, or anything else already ruled
+    out. Each call site now excludes the OTHER pass's node prefix, so
+    neither pass's rebuild can ever delete nodes it doesn't own.
+    """
     for node in list(tree.nodes):
-        if node.name.startswith(NODE_PREFIX):
-            tree.nodes.remove(node)
+        if not node.name.startswith(NODE_PREFIX):
+            continue
+        if only_prefix is not None and not node.name.startswith(only_prefix):
+            continue
+        if exclude_prefix is not None and node.name.startswith(exclude_prefix):
+            continue
+        tree.nodes.remove(node)
 
 
 def _load_fresh_image(path, node_label, colorspace_fn=set_linear_colorspace):
@@ -412,15 +450,39 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     )
 
     if topology_matches:
-        beauty_node.image = _load_fresh_image(beauty_exr_path, _node_name("Beauty"), set_linear_colorspace)
+        # `.as_pointer()` guards below, NOT unconditional reassignment --
+        # real perf bug found doing an optimization pass:
+        # `CompositorNodeImage.image` invalidates Cycles' own
+        # `use_persistent_data` session/BVH cache on EVERY reassignment,
+        # even to the exact same Image datablock it already held (confirmed
+        # directly, isolated from everything else: reloading that
+        # datablock's pixels via `.reload()` alone is free; only the
+        # `.image = ...` property write itself costs anything, and it costs
+        # the same whether the value actually changes or not).
+        # `_load_fresh_image` already reuses the same datablock by name
+        # across calls (see its own docstring), so after the first call
+        # these are always same-datablock reassignments -- skipping them is
+        # free and correct: the node already references the live datablock
+        # `_load_fresh_image` just refreshed in place. Comparing
+        # `.as_pointer()` rather than `is` -- same bpy quirk as node lookups
+        # elsewhere in this file: `beauty_node.image` hands back a fresh RNA
+        # wrapper on every access, so `is` would ALWAYS be true-mismatch
+        # even for the identical underlying datablock (confirmed directly:
+        # an `is not` guard here did not fix this bug at all).
+        beauty_img = _load_fresh_image(beauty_exr_path, _node_name("Beauty"), set_linear_colorspace)
+        if beauty_node.image is None or beauty_node.image.as_pointer() != beauty_img.as_pointer():
+            beauty_node.image = beauty_img
         for obj_name, exr_path in volume_layers:
             vol_node = tree.nodes[_node_name("Vol", obj_name)]
-            vol_node.image = _load_fresh_image(
+            vol_img = _load_fresh_image(
                 exr_path, _node_name("Vol", obj_name), set_display_referred_colorspace,
             )
+            if vol_node.image is None or vol_node.image.as_pointer() != vol_img.as_pointer():
+                vol_node.image = vol_img
+        _mute_pass1_file_outputs(tree)
         return tree
 
-    _clear_managed_nodes(tree)
+    _clear_managed_nodes(tree, exclude_prefix=_PASS1_NODE_PREFIX)
 
     beauty_node = _make_image_node(tree, _node_name("Beauty"), beauty_exr_path)
     current_output = _color_output_socket(beauty_node)
@@ -443,7 +505,36 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     tree[_VOLUME_ORDER_KEY] = expected_order
 
     _layout_nodes(tree)
+    _mute_pass1_file_outputs(tree)
     return tree
+
+
+def _mute_pass1_file_outputs(tree):
+    """Mute pass 1's Beauty/Depth File Output nodes so pass 2's own render
+    doesn't redundantly re-write their EXRs a second time this frame.
+
+    Real perf bug found doing an optimization pass: once `build_pass1_
+    capture_graph`/`build_or_update_graph` stopped deleting each other's
+    nodes every frame (see `_clear_managed_nodes`'s own docstring), pass 1's
+    Render Layers -> File Output nodes correctly started PERSISTING through
+    pass 2's own render too -- but a File Output node writes to disk
+    whenever it has live input, regardless of whether anything downstream
+    (like pass 2's own Alpha Over chain) actually needs that write. Pass 2's
+    render was measured re-writing pass 1's full-float Beauty+Depth EXRs a
+    second, wholly redundant time every single frame -- confirmed directly:
+    muting these two nodes before pass 2 renders (un-muted again next time
+    pass 1 itself runs -- see build_pass1_capture_graph's own un-mute) cut
+    pass 2's own render time roughly in half, with byte-identical actual
+    output. `mute` is a plain property flip, not a node create/delete, so
+    it doesn't trigger the `use_persistent_data` cache-invalidation this
+    whole optimization pass has been chasing (confirmed directly).
+    """
+    beauty_out = tree.nodes.get(_node_name("Pass1BeautyOut"))
+    if beauty_out is not None:
+        beauty_out.mute = True
+    depth_out = tree.nodes.get(_node_name("Pass1DepthOut"))
+    if depth_out is not None:
+        depth_out.mute = True
 
 
 def _redirect_single_file_output(node, directory):
@@ -498,7 +589,7 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
 
     render_layers = tree.nodes.get(_node_name("Pass1RLayers"))
     if render_layers is None:
-        _clear_managed_nodes(tree)
+        _clear_managed_nodes(tree, only_prefix=_PASS1_NODE_PREFIX)
 
         render_layers = tree.nodes.new("CompositorNodeRLayers")
         render_layers.name = _node_name("Pass1RLayers")
@@ -524,6 +615,16 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
     else:
         _redirect_single_file_output(tree.nodes[_node_name("Pass1BeautyOut")], output_dir)
         _redirect_single_file_output(tree.nodes[_node_name("Pass1DepthOut")], output_dir)
+
+    # Unmute -- see build_or_update_graph's own comment for why pass 2 mutes
+    # these before its own render (pass 1's Render Layers node has to stay
+    # in the tree so its Depth/Combined outputs are still available to
+    # `use_pass_z`, but pass 1's own File Output nodes writing their EXRs a
+    # SECOND, redundant time during pass 2's render is pure waste -- muting
+    # a File Output node skips that write; un-muting here every time pass 1
+    # runs is what actually needs its own write to happen).
+    tree.nodes[_node_name("Pass1BeautyOut")].mute = False
+    tree.nodes[_node_name("Pass1DepthOut")].mute = False
 
     # Compute the exact path each File Output wrote so the caller doesn't
     # have to glob the output directory. Both APIs zero-pad to the same

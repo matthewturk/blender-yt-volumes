@@ -1140,6 +1140,33 @@ class render_session:
         }
         global _active_render_session
         _active_render_session = self
+        # Sweep once here instead of every frame -- see _sweep_stale_frame_
+        # dirs's own docstring for why crash-recovery cleanup is inherently
+        # a once-per-run concern, not a per-frame one (nothing legitimately
+        # crashes mid-loop without stopping the whole process). Real perf
+        # bug found doing an optimization pass: calling it every frame
+        # measured fine in total isolation, but COMBINED with the rest of a
+        # real frame's own work (read_depth_buffer, build_camera_params/
+        # build_frame_params/build_volume_params, write_render_result --
+        # any one of those alone, or the sweep alone, was fine; only the
+        # combination reproduced it) it was found to cost pass 2's own
+        # render almost an extra ~3s every single frame, even though
+        # `os.listdir()` found nothing to actually remove on any frame
+        # after the first. Root mechanism not fully understood (a plain
+        # filesystem listdir call measurably affecting an unrelated later
+        # Cycles render is not obviously explicable) -- but moving it here
+        # is independently the right architecture regardless: this sweep
+        # only ever does anything on the FIRST frame after a hard crash,
+        # never on any frame after that within the same run. Best-effort,
+        # like the sweep itself -- render_session's own restore logic (the
+        # whole rest of this class) is usable standalone, addon-enabled or
+        # not (see its own unit tests), so a session entered before the
+        # addon is registered yet (`_get_prefs` needs it) shouldn't raise;
+        # it just means there's no work_dir to sweep yet either.
+        try:
+            _sweep_stale_frame_dirs(_work_dir(self._context))
+        except KeyError:
+            pass
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -1171,7 +1198,15 @@ def render_current_frame(context):
         f"resolution={scene.render.resolution_x}x{scene.render.resolution_y}")
 
     work_dir = _work_dir(context)
-    _sweep_stale_frame_dirs(work_dir)
+    # Skipped here when a render_session is active -- it already swept once,
+    # up front, in its own __enter__. See render_session's own comment for
+    # why calling this every frame is both unnecessary AND, surprisingly,
+    # measurably expensive when combined with the rest of a real frame's
+    # work. A bare call (no session -- e.g. a single F12 press) still
+    # sweeps every time, same as always: each one is a fully standalone,
+    # non-looping render, so there's no per-frame cost to avoid.
+    if _active_render_session is None:
+        _sweep_stale_frame_dirs(work_dir)
     frame_dir = tempfile.mkdtemp(prefix=_FRAME_DIR_PREFIX, dir=work_dir)
     flagged = properties.flagged_objects(scene)
     log(f"flagged objects: {[o.name for o in flagged]}, frame_dir={frame_dir}")

@@ -819,6 +819,40 @@ def test_render_current_frame_inside_a_session_only_restores_at_session_exit(add
     assert scene.view_settings.view_transform == "AgX"  # restored once, at session exit
 
 
+def test_render_current_frame_sweeps_once_per_session_not_once_per_frame(addon_enabled, monkeypatch, tmp_path):
+    # Real perf bug found doing an optimization pass: calling _sweep_stale_
+    # frame_dirs every single frame measured fine in total isolation, but
+    # combined with the rest of a real frame's own work it was found to
+    # cost the frame's OWN render substantially -- moved into render_
+    # session's own __enter__ (called once per multi-frame run) instead.
+    # A bare call (no session) still sweeps every time -- each one is a
+    # fully standalone render, not a per-frame cost to avoid.
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    calls = []
+    real_sweep = operators._sweep_stale_frame_dirs
+
+    def counting_sweep(work_dir):
+        calls.append(work_dir)
+        return real_sweep(work_dir)
+
+    monkeypatch.setattr(operators, "_sweep_stale_frame_dirs", counting_sweep)
+
+    operators.render_current_frame(bpy.context)
+    operators.render_current_frame(bpy.context)
+    assert len(calls) == 2, "a bare call (no session) sweeps every single time"
+
+    calls.clear()
+    with operators.render_session(bpy.context):
+        assert len(calls) == 1, "render_session.__enter__ itself sweeps once, up front"
+        operators.render_current_frame(bpy.context)
+        operators.render_current_frame(bpy.context)
+        operators.render_current_frame(bpy.context)
+    assert len(calls) == 1, "no per-frame call inside an active session -- only the one from __enter__"
+
+
 def test_render_session_restores_original_values_even_if_never_forced(clean_scene):
     # No render happens at all here -- just the context manager's own
     # capture/restore, in isolation, for all four properties it manages.

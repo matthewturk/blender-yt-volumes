@@ -440,6 +440,100 @@ def test_build_pass1_capture_graph_reuses_nodes_across_calls(clean_scene, tmp_pa
     assert os.path.exists(beauty_path2), f"expected {beauty_path2!r} after the reused-node render, dir has {os.listdir(dir2)}"
 
 
+def test_pass1_and_pass2_graphs_coexist_across_interleaved_frames(clean_scene, tmp_path):
+    # Severe perf bug found doing an optimization pass, only once pass 1 and
+    # pass 2 were profiled TOGETHER in a real per-frame loop -- exactly what
+    # neither this test file's other reuse tests do, each exercising only
+    # ONE of the two builders in isolation, which is exactly why they never
+    # caught this: pass 1's and pass 2's nodes used to share ONE blanket
+    # `NODE_PREFIX` sweep in `_clear_managed_nodes`, so each pass's own "is
+    # my node already there?" check only ever looked for its OWN node --
+    # meaning the moment pass 2 built/updated its graph, it deleted pass 1's
+    # nodes too (and vice versa), forcing a full rebuild of BOTH graphs
+    # every single frame, in a ping-pong that reproduced almost this whole
+    # session's entire original per-frame slowdown. This test pins that
+    # pass 1's nodes and pass 2's nodes BOTH survive node-identity-stable
+    # (`.as_pointer()`-stable, see test_build_pass1_capture_graph_reuses_
+    # nodes_across_calls for why plain `is` doesn't work here) across
+    # multiple frames where BOTH builders get called every frame, the real
+    # per-frame pattern render_current_frame actually uses.
+    scene = clean_scene
+    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
+    scene.camera = bpy.context.object
+    bpy.ops.object.light_add(type="SUN")
+    scene.render.resolution_x = 8
+    scene.render.resolution_y = 8
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 4
+    bpy.context.view_layer.use_pass_z = True
+
+    tree = cb.ensure_compositor_tree(scene)
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty0", green=0.1)
+    vol_path = _build_solid_volume_image(tmp_path, "vol0", green=0.2)
+
+    frame1_dir = tmp_path / "frame1"
+    frame1_dir.mkdir()
+    real_beauty_path, _ = cb.build_pass1_capture_graph(scene, str(frame1_dir), 1)
+    bpy.ops.render.render(write_still=False)
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_path)])
+    bpy.ops.render.render(write_still=False)
+
+    rlayers_ptr = tree.nodes[cb._node_name("Pass1RLayers")].as_pointer()
+    beauty_out_ptr = tree.nodes[cb._node_name("Pass1BeautyOut")].as_pointer()
+    pass2_beauty_ptr = tree.nodes[cb._node_name("Beauty")].as_pointer()
+    vol_ptr = tree.nodes[cb._node_name("Vol", "A")].as_pointer()
+
+    frame2_dir = tmp_path / "frame2"
+    frame2_dir.mkdir()
+    scene.frame_set(2)
+    cb.build_pass1_capture_graph(scene, str(frame2_dir), 2)
+    bpy.ops.render.render(write_still=False)
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_path)])
+    bpy.ops.render.render(write_still=False)
+
+    assert tree.nodes[cb._node_name("Pass1RLayers")].as_pointer() == rlayers_ptr, (
+        "pass 1's own nodes must survive pass 2's build/render, not get swept away by it"
+    )
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].as_pointer() == beauty_out_ptr
+    assert tree.nodes[cb._node_name("Beauty")].as_pointer() == pass2_beauty_ptr, (
+        "pass 2's own nodes must survive pass 1's build/render, not get swept away by it"
+    )
+    assert tree.nodes[cb._node_name("Vol", "A")].as_pointer() == vol_ptr
+
+
+def test_build_or_update_graph_mutes_pass1_file_outputs_and_pass1_unmutes_them(clean_scene, tmp_path):
+    # See _mute_pass1_file_outputs's own docstring: pass 1's File Output
+    # nodes persisting (correctly, per the fix above) into pass 2's own
+    # render means they'd otherwise redundantly re-write their EXRs a
+    # second time every frame -- muting them for pass 2's render (and
+    # un-muting again the next time pass 1 itself builds/renders) avoids
+    # that waste without touching node identity at all.
+    scene = clean_scene
+    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
+    scene.camera = bpy.context.object
+    bpy.context.view_layer.use_pass_z = True
+
+    tree = cb.ensure_compositor_tree(scene)
+    frame_dir = tmp_path / "frame1"
+    frame_dir.mkdir()
+    cb.build_pass1_capture_graph(scene, str(frame_dir), 1)
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].mute is False
+    assert tree.nodes[cb._node_name("Pass1DepthOut")].mute is False
+
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty1", green=0.1)
+    vol_path = _build_solid_volume_image(tmp_path, "vol1", green=0.2)
+    cb.build_or_update_graph(scene, beauty_path, [("A", vol_path)])
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].mute is True
+    assert tree.nodes[cb._node_name("Pass1DepthOut")].mute is True
+
+    scene.frame_set(2)
+    cb.build_pass1_capture_graph(scene, str(frame_dir), 2)
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].mute is False
+    assert tree.nodes[cb._node_name("Pass1DepthOut")].mute is False
+
+
 def _build_solid_volume_image(tmp_path, name, green, alpha=0.5):
     h, w = 8, 8
     rgba = np.zeros((h, w, 4), dtype="float32")
