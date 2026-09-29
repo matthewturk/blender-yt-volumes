@@ -916,50 +916,74 @@ DEPTH_CONVENTION = "PLANAR"
 DEPTH_NO_HIT_VALUE = 1e10
 DEPTH_ROW_ORDER = "BOTTOM_LEFT_ORIGIN"
 
+_DEPTH_IMAGE_NAME = "vo_depth_tmp"
+
 
 def read_depth_buffer(scene, path):
+    """Read `path` (this frame's Z-pass EXR) back into a DepthBuffer.
+
+    Reuses a single, stably-named Image datablock across every call
+    (`.filepath = path; .reload()`) instead of `bpy.data.images.load()` +
+    `.remove()` each time -- real perf bug found doing an optimization
+    pass: destroying and recreating this datablock every frame was found
+    to invalidate Cycles' own `use_persistent_data` session/BVH cache for
+    the MAIN scene being rendered, even though nothing about ITS geometry/
+    camera/etc. actually changed. Confirmed directly (real Cycles render,
+    real GPU, not this file's own unit tests): with load+remove every
+    frame, steady-state pass 1 time was ~4.0-4.2s; reusing the datablock
+    brought it back down to ~0.78-0.83s, matching every other already-
+    fixed trigger's best-case numbers (engine switches, compositor node
+    rebuilds, hide_render toggles, same-value Scene.world/.camera
+    reassignment -- see compositor_build.py's build_pass1_capture_graph/
+    build_or_update_graph and scene_sync.sync_scene_state docstrings for
+    those). compositor_build._load_fresh_image got the identical fix for
+    the identical reason.
+    """
     import numpy as np
 
-    img = bpy.data.images.load(path, check_existing=False)
-    try:
-        w, h = img.size[0], img.size[1]
-        channels = img.channels
-        if w == 0 or h == 0 or channels == 0:
-            # Real bug hit once (Blender 5.x, real install, not just the pip
-            # test module): bpy.data.images.load() + .pixels silently
-            # decoded a genuinely-written, non-empty EXR as 0x0/0-channel
-            # instead of raising -- traced to compositor_build.py writing
-            # this file as a NAMED multi-part EXR, which that Python-facing
-            # pixel-buffer path doesn't reliably support (see
-            # _configure_single_file_output's docstring for the fix -- item
-            # names are empty now). Failing loudly here with the actual
-            # on-disk facts is the safety net if that regresses, or if some
-            # other Blender version hits the same failure mode differently.
-            on_disk = os.path.exists(path)
-            size_bytes = os.path.getsize(path) if on_disk else None
-            raise RuntimeError(
-                f"read_depth_buffer: {path!r} loaded as size={img.size[:]} "
-                f"channels={channels} (expected a real image) -- "
-                f"file exists on disk: {on_disk}, size: {size_bytes} bytes, "
-                f"img.file_format={img.file_format!r}. See "
-                "_configure_single_file_output's docstring in compositor_build.py."
-            )
-        # foreach_get(), NOT `img.pixels[:]` -- real perf bug found doing an
-        # optimization pass on real per-frame timings: `pixels[:]` measured
-        # at ~1.02s for a 1920x1080 image on this bpy build (matching this
-        # function's entire measured per-frame cost almost exactly),
-        # `foreach_get` at ~0.02s for the identical bytes -- a ~55x
-        # difference for what should be a trivial bulk copy. `pixels[:]`
-        # goes through Blender's slow per-element Python-facing sequence
-        # protocol; `foreach_get`/`foreach_set` use the fast bulk-copy path
-        # instead (already used on the WRITE side, `write_render_result`'s
-        # own `foreach_set` call -- this was only ever a read-side gap).
-        buf = np.empty(h * w * channels, dtype=np.float32)
-        img.pixels.foreach_get(buf)
-        data = buf.reshape(h, w, channels)
-        data = data[..., 0]  # single-channel Z; ignore any padding channels
-    finally:
-        bpy.data.images.remove(img)
+    img = bpy.data.images.get(_DEPTH_IMAGE_NAME)
+    if img is None:
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = _DEPTH_IMAGE_NAME
+    else:
+        img.filepath = path
+        img.reload()
+    w, h = img.size[0], img.size[1]
+    channels = img.channels
+    if w == 0 or h == 0 or channels == 0:
+        # Real bug hit once (Blender 5.x, real install, not just the pip
+        # test module): bpy.data.images.load() + .pixels silently
+        # decoded a genuinely-written, non-empty EXR as 0x0/0-channel
+        # instead of raising -- traced to compositor_build.py writing
+        # this file as a NAMED multi-part EXR, which that Python-facing
+        # pixel-buffer path doesn't reliably support (see
+        # _configure_single_file_output's docstring for the fix -- item
+        # names are empty now). Failing loudly here with the actual
+        # on-disk facts is the safety net if that regresses, or if some
+        # other Blender version hits the same failure mode differently.
+        on_disk = os.path.exists(path)
+        size_bytes = os.path.getsize(path) if on_disk else None
+        raise RuntimeError(
+            f"read_depth_buffer: {path!r} loaded as size={img.size[:]} "
+            f"channels={channels} (expected a real image) -- "
+            f"file exists on disk: {on_disk}, size: {size_bytes} bytes, "
+            f"img.file_format={img.file_format!r}. See "
+            "_configure_single_file_output's docstring in compositor_build.py."
+        )
+    # foreach_get(), NOT `img.pixels[:]` -- real perf bug found doing an
+    # optimization pass on real per-frame timings: `pixels[:]` measured
+    # at ~1.02s for a 1920x1080 image on this bpy build (matching this
+    # function's entire measured per-frame cost almost exactly),
+    # `foreach_get` at ~0.02s for the identical bytes -- a ~55x
+    # difference for what should be a trivial bulk copy. `pixels[:]`
+    # goes through Blender's slow per-element Python-facing sequence
+    # protocol; `foreach_get`/`foreach_set` use the fast bulk-copy path
+    # instead (already used on the WRITE side, `write_render_result`'s
+    # own `foreach_set` call -- this was only ever a read-side gap).
+    buf = np.empty(h * w * channels, dtype=np.float32)
+    img.pixels.foreach_get(buf)
+    data = buf.reshape(h, w, channels)
+    data = data[..., 0]  # single-channel Z; ignore any padding channels
 
     scale_length = scene.unit_settings.scale_length
     return external_render.DepthBuffer(
@@ -971,6 +995,9 @@ def read_depth_buffer(scene, path):
     )
 
 
+_RESULT_IMAGE_NAME = "vo_result_tmp"
+
+
 def write_render_result(result, path):
     """Write a RenderResult.rgba (H, W, 4) float32 array to a full-float EXR.
 
@@ -979,15 +1006,33 @@ def write_render_result(result, path):
     convention via DepthBuffer.row_order and is expected to echo it, since
     Image.pixels (used both to read depth back and here to write the
     result) only ever works in that one convention.
+
+    Reuses a single, stably-named Image datablock across every call (this
+    function runs once per flagged object per frame, all at the same
+    resolution) instead of `bpy.data.images.new()` + `.remove()` each time
+    -- same `use_persistent_data` cache-invalidation fix as
+    `read_depth_buffer`/`compositor_build._load_fresh_image`, see read_
+    depth_buffer's own docstring for the measurements behind it. Safe to
+    reuse across different objects/paths within one frame because each
+    call's pixel-write -> save() is fully synchronous before the next call
+    starts -- there's never a moment where two objects' data are needed
+    from this datablock at once. Only resized (which still requires a
+    remove+recreate -- Image.scale() distorts rather than reallocates) if
+    the resolution genuinely changes between calls, which doesn't happen
+    in the per-frame loop this is actually called from.
     """
     h, w = result.rgba.shape[:2]
-    img = bpy.data.images.new(f"vo_result_tmp", width=w, height=h, alpha=True, float_buffer=True)
+    img = bpy.data.images.get(_RESULT_IMAGE_NAME)
+    if img is not None and (img.size[0], img.size[1]) != (w, h):
+        bpy.data.images.remove(img)
+        img = None
+    if img is None:
+        img = bpy.data.images.new(_RESULT_IMAGE_NAME, width=w, height=h, alpha=True, float_buffer=True)
     compositor_build.set_linear_colorspace(img)
     img.pixels.foreach_set(result.rgba.astype("float32").ravel())
     img.filepath_raw = path
     img.file_format = "OPEN_EXR"
     img.save()
-    bpy.data.images.remove(img)
 
 
 # --- Per-frame pipeline ------------------------------------------------------
@@ -1035,6 +1080,80 @@ def _apply_opacity(result, opacity):
     )
 
 
+_active_render_session = None  # set by render_session.__enter__/__exit__ below
+
+
+class render_session:
+    """Context manager wrapping multiple `render_current_frame` calls (a
+    real multi-frame animation render) so the four scene-level settings it
+    needs during EVERY frame -- `view_layer.use_pass_z`, `scene.render.
+    use_persistent_data`, `scene.render.compositor_device`, `scene.
+    view_settings.view_transform` -- are captured and restored ONCE here,
+    instead of after every individual frame.
+
+    Real perf bug found doing an optimization pass, on top of the pass2-
+    engine and compositor-graph-rebuild fixes elsewhere in this file:
+    `render_current_frame` already guards each of these four so it only
+    touches a property when it's not already at the value it needs (see
+    its own comment) -- meaning frame 1 of any run pays the real,
+    unavoidable transition cost once, and every property is ALREADY
+    correct on every call after that. The remaining question is only
+    whether "already correct" gets left alone (this class active) or gets
+    restored-then-re-forced back to the same values on every single call
+    anyway (a bare call, the default). Confirmed directly that the latter
+    -- even though every individual reassignment is a same-value no-op --
+    reproduces almost the ENTIRE original per-frame Cycles cache-
+    invalidation cost by itself: a non-additive interaction between the
+    four (each alone contributes much less test-by-test), not four small
+    independent costs.
+
+    Purely additive/opt-in: `render_current_frame` called WITHOUT an
+    active session (a single interactive F12 press, or any standalone
+    call) behaves EXACTLY as it always has, fully self-contained -- forces
+    what it needs, restores it at the end of that same call. Only a caller
+    doing many frames back-to-back (render_headless.py,
+    `VOLUMEOVERRIDE_OT_render`'s own `animation=True` modal loop) needs to
+    opt in.
+
+    Not reentrant/nestable -- this codebase never needs that (exactly one
+    top-level render loop active at a time).
+
+    Usage::
+
+        with operators.render_session(context):
+            for frame in frames:
+                scene.frame_set(frame)
+                bpy.ops.render.volume_override(animation=False)
+    """
+
+    def __init__(self, context):
+        self._context = context
+
+    def __enter__(self):
+        scene = self._context.scene
+        view_layer = self._context.view_layer
+        self._saved = {
+            "use_pass_z": view_layer.use_pass_z,
+            "use_persistent_data": scene.render.use_persistent_data,
+            "compositor_device": scene.render.compositor_device,
+            "view_transform": scene.view_settings.view_transform,
+        }
+        global _active_render_session
+        _active_render_session = self
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        global _active_render_session
+        _active_render_session = None
+        scene = self._context.scene
+        view_layer = self._context.view_layer
+        view_layer.use_pass_z = self._saved["use_pass_z"]
+        scene.render.use_persistent_data = self._saved["use_persistent_data"]
+        scene.render.compositor_device = self._saved["compositor_device"]
+        scene.view_settings.view_transform = self._saved["view_transform"]
+        return False  # never swallow exceptions
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     object visibility even if any step raises.
@@ -1058,9 +1177,29 @@ def render_current_frame(context):
     log(f"flagged objects: {[o.name for o in flagged]}, frame_dir={frame_dir}")
     scene_sync.sync_scene_state(scene, flagged)
 
+    # Real perf bug found doing an optimization pass, on TOP of the pass2-
+    # engine/graph-rebuild fixes above: even with those fixed, unconditionally
+    # re-forcing-then-restoring these four scene settings every single frame
+    # -- even back to the exact same value -- was found to reproduce almost
+    # the ENTIRE original per-frame Cycles use_persistent_data cache-
+    # invalidation cost by itself. Confirmed both individually (each on its
+    # own contributes a modest amount) and combined (all together, ~4.5-5.5s
+    # steady-state pass1 -- matching the real pipeline's own unfixed cost
+    # almost exactly) -- a non-additive interaction, not four small
+    # independent costs. Each one below is now guarded to only actually
+    # touch the property when it's not already at the value we need, so a
+    # bare `render_current_frame` call still gets the FULL benefit on its
+    # own (frame 1 of any run pays the real, unavoidable transition cost
+    # once; every property is already correct on every call after that,
+    # guarded call included). The remaining piece -- restoring at the very
+    # end of a whole multi-frame render instead of after every individual
+    # call -- needs the CALLER to opt in via `render_session` below, since
+    # a bare call has no way to know whether more frames are coming; see
+    # that class's own docstring.
     view_layer = context.view_layer
     prev_use_pass_z = view_layer.use_pass_z
-    view_layer.use_pass_z = True
+    if not prev_use_pass_z:
+        view_layer.use_pass_z = True
 
     # Real perf finding from the same optimization pass as pass2's engine
     # fix above: without this, Cycles rebuilds its BVH/geometry cache from
@@ -1070,9 +1209,9 @@ def render_current_frame(context):
     # -- purely a performance knob, doesn't change render OUTPUT, and cheap
     # to always request even for non-Cycles renderer modes.
     prev_use_persistent_data = scene.render.use_persistent_data
-    scene.render.use_persistent_data = True
+    if not prev_use_persistent_data:
+        scene.render.use_persistent_data = True
 
-    prev_engine = scene.render.engine
     prev_compositor_device = scene.render.compositor_device
     prev_view_transform = scene.view_settings.view_transform
     if prefs.renderer_mode in YT_IDV_RENDERER_MODES:
@@ -1119,7 +1258,8 @@ def render_current_frame(context):
         # real bpy + real yt_idv in one interpreter). Scoped to yt_idv modes
         # only -- the other renderer modes never touch EGL/GL, so there's no
         # reason to override this scene setting for them.
-        scene.render.compositor_device = "CPU"
+        if prev_compositor_device != "CPU":
+            scene.render.compositor_device = "CPU"
     # This frame's own full-float EXR intermediates (beauty/depth/per-object
     # volume results) all live in `frame_dir`, a fresh per-frame directory
     # (see `_sweep_stale_frame_dirs`'s own docstring for the real bug this
@@ -1200,11 +1340,18 @@ def render_current_frame(context):
         log(f"pass2 done; final output at {scene.render.frame_path()!r} "
             f"(Render Result image also holds it -- see _show_render_result)")
     finally:
-        scene.render.engine = prev_engine
-        view_layer.use_pass_z = prev_use_pass_z
-        scene.render.compositor_device = prev_compositor_device
-        scene.view_settings.view_transform = prev_view_transform
-        scene.render.use_persistent_data = prev_use_persistent_data
+        # Restored here on a bare call (the default -- e.g. a single
+        # interactive F12 press), same as always. Skipped when a
+        # `render_session` is active around a whole multi-frame render --
+        # THAT restores once, at the true end, instead. See render_session's
+        # own docstring for why (this is the actual perf win: skipping this
+        # means frame 2 onward never touches these properties at all, not
+        # even a same-value reassignment).
+        if _active_render_session is None:
+            view_layer.use_pass_z = prev_use_pass_z
+            scene.render.compositor_device = prev_compositor_device
+            scene.view_settings.view_transform = prev_view_transform
+            scene.render.use_persistent_data = prev_use_persistent_data
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 
@@ -1260,6 +1407,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     animation: bpy.props.BoolProperty(name="Animation", default=False)
     _timer = None
     _frame_iter = None
+    _session = None
 
     def execute(self, context):
         if not properties.flagged_objects(context.scene):
@@ -1289,6 +1437,14 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.01, window=context.window)
         wm.modal_handler_add(self)
+        # See render_session's own docstring -- this is what actually makes
+        # a real animation render fast: entered here (once, before the
+        # modal loop starts), exited in _finish (once, however the loop
+        # ends -- normal completion, ESC, or an error) instead of every
+        # individual render_current_frame call restoring-then-re-forcing
+        # the same four scene settings on every single frame.
+        self._session = render_session(context)
+        self._session.__enter__()
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
@@ -1319,6 +1475,9 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
         if self._timer is not None:
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
+        if self._session is not None:
+            self._session.__exit__(None, None, None)
+            self._session = None
 
     def cancel(self, context):
         self._finish(context)

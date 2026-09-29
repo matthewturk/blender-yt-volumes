@@ -74,6 +74,7 @@ sys.path.insert(0, ADDON_SRC_PARENT)
 sys.path.insert(0, HERE)  # so SCENE_SETUP_MODULE resolves as an importable module
 
 import bpy  # noqa: E402
+from cycles_volume_override import operators  # noqa: E402  -- for render_session, see the loop below
 
 BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
@@ -160,13 +161,22 @@ if hasattr(scene.cycles, "denoising_use_gpu"):
 
 FRAME_PREFIX = "frame2_"  # distinct from the earlier 480x270 "frame_" run -- doesn't overwrite it
 
+# render_session (not just animation=True, which needs Blender's own modal
+# event loop -- unavailable in --background, see finding 1) is what makes a
+# real multi-frame run here fast: without it, render_current_frame restores
+# then re-forces the same four scene settings (view_transform,
+# compositor_device, use_pass_z, use_persistent_data) every single frame,
+# which was found to reproduce almost the entire original per-frame Cycles
+# cache-invalidation cost by itself -- see operators.render_session's own
+# docstring for the full story and the measurements behind it.
 try:
-    for frame in FRAMES:
-        scene.frame_set(frame)
-        # Per-frame, NOT hoisted above the loop -- see module docstring, finding 2.
-        scene.render.filepath = os.path.join(OUT_DIR, f"{FRAME_PREFIX}{frame:04d}")
-        result = bpy.ops.render.volume_override(animation=False)
-        print(f"[render_headless] frame {frame}: {result} -> {scene.render.filepath}.png")
+    with operators.render_session(bpy.context):
+        for frame in FRAMES:
+            scene.frame_set(frame)
+            # Per-frame, NOT hoisted above the loop -- see module docstring, finding 2.
+            scene.render.filepath = os.path.join(OUT_DIR, f"{FRAME_PREFIX}{frame:04d}")
+            result = bpy.ops.render.volume_override(animation=False)
+            print(f"[render_headless] frame {frame}: {result} -> {scene.render.filepath}.png")
 except KeyboardInterrupt:
     # Ctrl+C mid-run -- every frame rendered so far already finished and
     # was written to disk (each iteration is fully synchronous, see

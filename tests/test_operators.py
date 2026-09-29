@@ -768,6 +768,79 @@ def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(ad
     assert box.hide_render is False
 
 
+# --- render_session (batch-scoped restore) --------------------------------
+# Real perf bug found doing an optimization pass: restoring-then-re-forcing
+# view_transform/compositor_device/use_pass_z/use_persistent_data after
+# EVERY individual render_current_frame call -- even back to the exact same
+# values -- was found to reproduce almost the entire original per-frame
+# Cycles cache-invalidation cost by itself. render_session lets a caller
+# doing many frames back-to-back opt into restoring once at the true end
+# instead; a bare call (no active session) must still behave exactly as
+# before, fully self-contained.
+
+def _setup_yt_idv_scene(scene, tmp_path, view_transform="AgX"):
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = view_transform
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+    return prefs
+
+
+def test_render_current_frame_without_a_session_restores_every_call(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    operators.render_current_frame(bpy.context)
+    assert scene.view_settings.view_transform == "AgX"  # restored after THIS call
+
+    operators.render_current_frame(bpy.context)
+    assert scene.view_settings.view_transform == "AgX"  # restored again -- no session active
+
+
+def test_render_current_frame_inside_a_session_only_restores_at_session_exit(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    with operators.render_session(bpy.context):
+        operators.render_current_frame(bpy.context)
+        assert scene.view_settings.view_transform == "Standard"  # NOT restored mid-session
+
+        operators.render_current_frame(bpy.context)
+        assert scene.view_settings.view_transform == "Standard"  # still not restored
+
+    assert scene.view_settings.view_transform == "AgX"  # restored once, at session exit
+
+
+def test_render_session_restores_original_values_even_if_never_forced(clean_scene):
+    # No render happens at all here -- just the context manager's own
+    # capture/restore, in isolation, for all four properties it manages.
+    scene = clean_scene
+    view_layer = bpy.context.view_layer
+    scene.view_settings.view_transform = "Filmic"
+    scene.render.compositor_device = "GPU"
+    scene.render.use_persistent_data = False
+    view_layer.use_pass_z = False
+
+    with operators.render_session(bpy.context):
+        scene.view_settings.view_transform = "Standard"
+        scene.render.compositor_device = "CPU"
+        scene.render.use_persistent_data = True
+        view_layer.use_pass_z = True
+
+    assert scene.view_settings.view_transform == "Filmic"
+    assert scene.render.compositor_device == "GPU"
+    assert scene.render.use_persistent_data is False
+    assert view_layer.use_pass_z is False
+
+
 # --- per-frame temp directory cleanup -----------------------------------------
 # Real bug found running a real HD animation: nothing ever deleted the
 # per-frame beauty/depth/volume-result EXRs, so a long run silently
@@ -897,6 +970,88 @@ def test_apply_opacity_scales_premultiplied_rgba_uniformly():
     assert out.rgba.dtype == np.dtype("float32")
     assert out.alpha_mode == "PREMULTIPLIED"
     assert out.color_space == "LINEAR"
+
+
+def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_path):
+    # Real perf bug found doing an optimization pass: bpy.data.images.new()
+    # + .remove() every call was found to invalidate Cycles' own
+    # use_persistent_data cache for the scene being rendered -- see
+    # operators.write_render_result's own docstring. This pins the fix:
+    # repeated calls must reuse ONE Image datablock (by stable name), never
+    # accumulate or recreate it, while still writing each call's own
+    # correct, distinct pixel data to each call's own path.
+    import numpy as np
+
+    from cycles_volume_override import external_render
+
+    path_a = str(tmp_path / "a.exr")
+    path_b = str(tmp_path / "b.exr")
+    result_a = external_render.RenderResult(
+        rgba=np.full((2, 2, 4), 0.25, dtype="float32"),
+        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+    )
+    result_b = external_render.RenderResult(
+        rgba=np.full((2, 2, 4), 0.75, dtype="float32"),
+        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+    )
+
+    operators.write_render_result(result_a, path_a)
+    img_after_first = bpy.data.images.get(operators._RESULT_IMAGE_NAME)
+    assert img_after_first is not None
+    pointer_after_first = img_after_first.as_pointer()
+
+    operators.write_render_result(result_b, path_b)
+    img_after_second = bpy.data.images.get(operators._RESULT_IMAGE_NAME)
+
+    assert img_after_second is not None
+    assert img_after_second.as_pointer() == pointer_after_first
+    assert os.path.exists(path_a)
+    assert os.path.exists(path_b)
+
+    reread_a = operators.read_depth_buffer(bpy.context.scene, path_a)
+    reread_b = operators.read_depth_buffer(bpy.context.scene, path_b)
+    assert np.allclose(reread_a.data, 0.25, atol=1e-5)
+    assert np.allclose(reread_b.data, 0.75, atol=1e-5)
+
+
+def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
+    # Same fix, same reasoning, as the write-side test above -- see
+    # operators.read_depth_buffer's own docstring.
+    import numpy as np
+
+    from cycles_volume_override import external_render
+
+    path_a = str(tmp_path / "depth_a.exr")
+    path_b = str(tmp_path / "depth_b.exr")
+    operators.write_render_result(
+        external_render.RenderResult(
+            rgba=np.full((2, 2, 4), 1.5, dtype="float32"),
+            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+        ),
+        path_a,
+    )
+    operators.write_render_result(
+        external_render.RenderResult(
+            rgba=np.full((2, 2, 4), 3.0, dtype="float32"),
+            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
+        ),
+        path_b,
+    )
+
+    scene = bpy.context.scene
+    depth_a = operators.read_depth_buffer(scene, path_a)
+    img_after_first = bpy.data.images.get(operators._DEPTH_IMAGE_NAME)
+    assert img_after_first is not None
+    pointer_after_first = img_after_first.as_pointer()
+
+    depth_b = operators.read_depth_buffer(scene, path_b)
+    img_after_second = bpy.data.images.get(operators._DEPTH_IMAGE_NAME)
+
+    assert img_after_second is not None
+    assert img_after_second.as_pointer() == pointer_after_first
+    scale_length = scene.unit_settings.scale_length
+    assert np.allclose(depth_a.data, 1.5 * scale_length, atol=1e-4)
+    assert np.allclose(depth_b.data, 3.0 * scale_length, atol=1e-4)
 
 
 def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_scene_with_props):

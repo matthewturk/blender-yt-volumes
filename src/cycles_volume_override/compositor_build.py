@@ -211,23 +211,40 @@ def _clear_managed_nodes(tree):
 
 
 def _load_fresh_image(path, node_label, colorspace_fn=set_linear_colorspace):
-    """Load `path` as a brand-new Image datablock, replacing any datablock
-    left over from a previous frame under the same name -- this is the
-    "reloaded fresh each frame, not cached" requirement. We give the image
-    datablock a per-node stable name (not the frame-numbered filename) so
-    each call cleanly replaces the previous frame's data instead of
-    accumulating one orphaned Image datablock per frame over an animation.
+    """Point the Image datablock named `node_label` at `path`'s on-disk
+    pixels, reusing that SAME datablock across calls (create once, then
+    `.filepath = path; .reload()`) rather than removing and re-`.load()`ing
+    it every call -- this is the "each frame sees this frame's pixels, not
+    stale/cached ones" requirement; a stable name is what lets repeated
+    calls find and reuse the same datablock instead of accumulating one
+    orphaned Image per frame over an animation.
+
+    Real perf bug found doing an optimization pass on real per-frame
+    timings, the same one `operators.read_depth_buffer`'s own docstring
+    documents in more detail: destroying and recreating an Image datablock
+    every frame (`bpy.data.images.remove()` + `.load()`, what this function
+    used to do) invalidates Cycles' own `use_persistent_data` session/BVH
+    cache for the MAIN scene, even though nothing about the main scene's
+    own geometry/camera/etc. changed -- confirmed directly, and independent
+    of every other cache-invalidation trigger fixed elsewhere (engine
+    switches, compositor node rebuilds, hide_render toggles, same-value
+    Scene.world/.camera reassignment). Reusing the datablock in place fixed
+    it here too.
 
     `colorspace_fn` -- `set_linear_colorspace` (default, correct for the
     beauty layer) or `set_display_referred_colorspace` (correct for a
     volume layer) -- see both functions' docstrings; the two need genuinely
-    different treatment, not just different names for the same fix.
+    different treatment, not just different names for the same fix. Re-
+    applied on every call (cheap, idempotent) since which one is correct
+    doesn't change between calls for a given node_label.
     """
-    existing = bpy.data.images.get(node_label)
-    if existing is not None:
-        bpy.data.images.remove(existing)
-    img = bpy.data.images.load(path, check_existing=False)
-    img.name = node_label
+    img = bpy.data.images.get(node_label)
+    if img is None:
+        img = bpy.data.images.load(path, check_existing=False)
+        img.name = node_label
+    else:
+        img.filepath = path
+        img.reload()
     colorspace_fn(img)
     img.source = "FILE"
     return img

@@ -277,6 +277,47 @@ def test_compositor_volume_layer_image_node_passes_through_display_ready_value_u
     )
 
 
+def _write_exr(path, value, size=2):
+    img = bpy.data.images.new("tmp_src", width=size, height=size, alpha=True, float_buffer=True)
+    cb.set_linear_colorspace(img)
+    px = np.full((size, size, 4), value, dtype=np.float32)
+    px[..., 3] = 1.0
+    img.pixels.foreach_set(px.ravel())
+    img.filepath_raw = path
+    img.file_format = "OPEN_EXR"
+    img.save()
+    bpy.data.images.remove(img)
+
+
+def test_load_fresh_image_reuses_the_same_datablock_across_calls(clean_scene, tmp_path):
+    # Real perf bug found doing an optimization pass: bpy.data.images.
+    # remove() + .load() on every call (this function's old behavior) was
+    # found to invalidate Cycles' own use_persistent_data cache for the
+    # scene being rendered -- see _load_fresh_image's own docstring, and
+    # operators.read_depth_buffer's for the fuller measured story. This
+    # pins the fix: repeated calls under the same node_label must reuse
+    # ONE Image datablock, not create-then-destroy a new one each time,
+    # while still correctly picking up each call's own on-disk pixels.
+    path_a = str(tmp_path / "a.exr")
+    path_b = str(tmp_path / "b.exr")
+    _write_exr(path_a, 0.2)
+    _write_exr(path_b, 0.8)
+
+    img_a = cb._load_fresh_image(path_a, "Test_Reused")
+    pointer_after_first = img_a.as_pointer()
+    buf_a = np.empty(2 * 2 * img_a.channels, dtype=np.float32)
+    img_a.pixels.foreach_get(buf_a)
+
+    img_b = cb._load_fresh_image(path_b, "Test_Reused")
+    buf_b = np.empty(2 * 2 * img_b.channels, dtype=np.float32)
+    img_b.pixels.foreach_get(buf_b)
+
+    assert img_b.as_pointer() == pointer_after_first, "must reuse the same datablock, not recreate it"
+    assert np.allclose(buf_a.reshape(2, 2, -1)[..., 0], 0.2, atol=1e-5)
+    assert np.allclose(buf_b.reshape(2, 2, -1)[..., 0], 0.8, atol=1e-5)
+    assert len([i for i in bpy.data.images if i.name.startswith("Test_Reused")]) == 1
+
+
 def test_build_pass1_capture_graph_returns_paths_that_actually_get_written(clean_scene, tmp_path):
     # End-to-end on the real (5.0+) API: render a trivial scene through the
     # pass-1 graph and confirm the two paths build_pass1_capture_graph()
