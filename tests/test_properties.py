@@ -13,7 +13,7 @@ def clean_scene():
 
 
 def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.density_scale = 2.5
@@ -34,7 +34,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
 
 
 def test_ensure_dataset_uuid_generates_once_and_persists(clean_scene):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     assert obj.volume_override.dataset_uuid == ""
 
@@ -46,12 +46,12 @@ def test_ensure_dataset_uuid_generates_once_and_persists(clean_scene):
 
 def test_flagged_objects_filters_by_flag(clean_scene):
     scene = clean_scene
-    bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
+    bpy.ops.object.empty_add(type='CUBE', location=(0, 0, 0))
     flagged = bpy.context.active_object
     flagged.name = "Flagged"
     flagged.volume_override.is_volume_override = True
 
-    bpy.ops.mesh.primitive_cube_add(location=(2, 0, 0))
+    bpy.ops.object.empty_add(type='CUBE', location=(2, 0, 0))
     plain = bpy.context.active_object
     plain.name = "Plain"
 

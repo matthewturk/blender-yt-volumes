@@ -103,7 +103,7 @@ def clean_scene_with_props():
 
 
 def test_build_dataset_params_generic_path_not_a_volume_object(clean_scene_with_props):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
@@ -120,7 +120,7 @@ def test_build_dataset_params_generic_path_not_a_volume_object(clean_scene_with_
 
 
 def test_build_dataset_params_repeat_call_same_value_reports_unchanged(clean_scene_with_props):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
@@ -132,7 +132,7 @@ def test_build_dataset_params_repeat_call_same_value_reports_unchanged(clean_sce
 
 
 def test_build_dataset_params_path_change_reports_changed(clean_scene_with_props):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
@@ -160,7 +160,7 @@ def test_build_dataset_params_volume_object_overrides_path_from_blender_data(cle
 
 
 def test_build_volume_params_dataset_and_params_version_are_independent(clean_scene_with_props):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
@@ -174,13 +174,53 @@ def test_build_volume_params_dataset_and_params_version_are_independent(clean_sc
     assert second.dataset.version.changed is False
 
 
+def test_build_volume_params_bounding_box_comes_from_empty_display_size(clean_scene_with_props):
+    # Flagged objects are REQUIRED to be Empty-Cube -- see build_volume_
+    # params's own docstring for the two independent reasons (bound_box/
+    # dimensions are always degenerate zeros for a non-mesh object; an
+    # Empty never renders in Cycles regardless of visibility, unlike a
+    # real mesh with a real material). empty_display_size, not bound_box,
+    # is the real source of the extent now.
+    bpy.ops.object.empty_add(type='CUBE')
+    obj = bpy.context.active_object
+    obj.empty_display_size = 2.5
+    obj.volume_override.is_volume_override = True
+
+    params = operators.build_volume_params(obj)
+
+    corners = params.bounding_box_local
+    assert len(corners) == 8
+    xs = {c[0] for c in corners}
+    ys = {c[1] for c in corners}
+    zs = {c[2] for c in corners}
+    assert xs == ys == zs == {-2.5, 2.5}
+
+
+def test_build_volume_params_rejects_a_mesh_object(clean_scene_with_props):
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+
+    with pytest.raises(RuntimeError, match="Empty-Cube"):
+        operators.build_volume_params(obj)
+
+
+def test_build_volume_params_rejects_a_non_cube_empty(clean_scene_with_props):
+    bpy.ops.object.empty_add(type='SPHERE')
+    obj = bpy.context.active_object
+    obj.volume_override.is_volume_override = True
+
+    with pytest.raises(RuntimeError, match="Empty-Cube"):
+        operators.build_volume_params(obj)
+
+
 def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_scene_with_props):
     # `clean_scene_with_props` registers `properties` only, not the whole
     # add-on -- `bpy.context.preferences.addons[__package__]` genuinely
     # doesn't exist in that state (confirmed: raises KeyError), which is
     # exactly the case `_yt_idv_custom_params`'s own try/except is for. Pins
     # the fallback down explicitly, not just "the other test still passes".
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
 
@@ -206,7 +246,7 @@ def test_build_volume_params_includes_yt_idv_settings_when_addon_enabled(addon_e
     prefs.yt_idv.fog_colormap = "inferno"
     prefs.yt_idv.fog_ramp_power = 0.42
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
 
@@ -361,7 +401,7 @@ def test_resolve_sequence_frame_no_duration_returns_none():
 # --- Time mapping (requested_time) ------------------------------------------
 
 def _flagged_cube(scene):
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     return obj
@@ -452,7 +492,7 @@ def test_render_operator_delegates_to_plain_render_when_nothing_flagged(register
 
 def test_render_operator_runs_pipeline_when_something_flagged(registered_render_operator, monkeypatch):
     scene = bpy.context.scene
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -502,7 +542,7 @@ def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(add
     scene.view_settings.view_transform = "AgX"
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -534,7 +574,7 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
     scene.view_settings.view_transform = "Standard"
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -571,7 +611,7 @@ def test_render_current_frame_view_transform_warning_ignores_verbose_logging(add
     scene.view_settings.view_transform = "AgX"
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -601,7 +641,7 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
     scene.view_settings.view_transform = "AgX"
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -634,7 +674,7 @@ def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, mo
     scene.cycles.samples = 1
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -667,7 +707,7 @@ def test_render_current_frame_enables_and_restores_use_persistent_data(addon_ena
     scene.render.use_persistent_data = False
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -689,6 +729,45 @@ def test_render_current_frame_enables_and_restores_use_persistent_data(addon_ena
     assert scene.render.use_persistent_data is False  # restored to whatever it was before
 
 
+def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(addon_enabled, monkeypatch, tmp_path):
+    # Real perf finding from the same pass as the two tests above: flagged
+    # objects used to get hide_render toggled on for pass1 and restored
+    # after -- necessary back when they could be arbitrary mesh objects
+    # with a real material, but Empty-Cube (now required, see build_volume_
+    # params's own docstring) never renders in Cycles at all regardless of
+    # hide_render, and toggling it every frame was found to invalidate
+    # Cycles' use_persistent_data cache too, same as the engine switch and
+    # the graph rebuild did.
+    scene = addon_enabled
+    scene.render.resolution_x = 16
+    scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+
+    bpy.ops.object.empty_add(type='CUBE')
+    box = bpy.context.active_object
+    box.volume_override.is_volume_override = True
+    box.hide_render = False
+
+    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs.work_dir = str(tmp_path)
+
+    seen_hide_render = []
+
+    def fake_renderer(request):
+        seen_hide_render.append(box.hide_render)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+
+    assert seen_hide_render == [False]  # never set to True at any point
+    assert box.hide_render is False
+
+
 # --- per-frame temp directory cleanup -----------------------------------------
 # Real bug found running a real HD animation: nothing ever deleted the
 # per-frame beauty/depth/volume-result EXRs, so a long run silently
@@ -706,7 +785,7 @@ def _render_one_frame(scene, work_dir):
     scene.cycles.samples = 1
     _add_camera(scene, "PERSP", lens=50.0)
 
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
@@ -827,7 +906,7 @@ def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_
     # standard keyframe_insert/frame_set actually animates it -- confirmed
     # directly (AddonPreferences instances have no animation_data at all,
     # id_data is None, keyframe_insert raises outright).
-    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     assert obj.volume_override.opacity == pytest.approx(1.0)

@@ -48,9 +48,14 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     is_volume_override: bpy.props.BoolProperty(
         name="Render with External Volume Renderer",
         description=(
-            "Hide this object from the Cycles pass and render it instead "
-            "via the external volume renderer, composited back in via "
-            "depth-clipped Alpha Over"
+            "Render this object's region via the external volume renderer "
+            "instead, composited back in via depth-clipped Alpha Over. "
+            "Requires an Empty with Display Type 'Cube' -- see "
+            "operators.build_volume_params's docstring for why (an Empty "
+            "never renders in Cycles at all, so there's no need to hide it "
+            "for pass 1, and a real mesh's own bound_box would double as "
+            "the volume's registered extent even though that's not what "
+            "you'd want)"
         ),
         default=False,
     )
@@ -298,8 +303,15 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.object.volume_override
+        obj = context.object
+        props = obj.volume_override
         layout.prop(props, "is_volume_override")
+
+        if props.is_volume_override and (obj.type != "EMPTY" or obj.empty_display_type != "CUBE"):
+            box = layout.box()
+            box.alert = True
+            box.label(text="Must be an Empty with Display Type 'Cube'", icon="ERROR")
+            box.label(text=f"(this is a {obj.type.title()}) -- rendering will raise an error")
 
         col = layout.column()
         col.enabled = props.is_volume_override

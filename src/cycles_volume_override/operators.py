@@ -18,23 +18,38 @@ this frame's volume-renderer result from it.
 Fix: two passes, explicitly triggered by our own operator (the spec's "or an
 overridden render operator" option) rather than handlers alone:
 
-  Pass 1 (real Cycles): main scene, flagged objects hidden, Z pass on,
-  compositor set to JUST write Combined + Z to full-float EXR via File
-  Output (compositor_build.build_pass1_capture_graph). We throw away
-  whatever pass 1's own Composite output is -- it's built from stale/no
-  volume layers -- we only want the two EXRs it wrote to disk.
+  Pass 1 (real Cycles): main scene, Z pass on, compositor set to JUST
+  write Combined + Z to full-float EXR via File Output
+  (compositor_build.build_pass1_capture_graph). We throw away whatever
+  pass 1's own Composite output is -- it's built from stale/no volume
+  layers -- we only want the two EXRs it wrote to disk. Flagged objects do
+  NOT need hiding here -- see build_volume_params's own docstring on why
+  they're required to be Empty-Cube objects, which never contribute
+  anything to a Cycles render in the first place (confirmed directly: a
+  scene with vs. without an Empty present, hide_render on or off, renders
+  BYTE-IDENTICAL either way). A real, un-hidden mesh with a real material
+  used to need an explicit hide-for-pass-1/unhide-after dance -- besides
+  the correctness reason (don't let its own material double-render on top
+  of the external volume result), that toggle was ALSO found to invalidate
+  Cycles' own use_persistent_data session/BVH cache every single frame,
+  same as switching render engines or rebuilding the compositor graph did
+  (see compositor_build.py's build_pass1_capture_graph/build_or_update_
+  graph docstrings for those two). Requiring Empty-Cube objects instead
+  sidesteps that whole class of problem structurally, not just for this
+  one call site.
 
   Between passes: read the Z EXR back into a DepthBuffer, call
   render_volume() per flagged object, write each RenderResult to its own
   EXR, then rebuild the compositor as Image(beauty EXR) -> chained Alpha
   Over per volume -> Composite (compositor_build.build_or_update_graph).
 
-  Pass 2 (cheap, engine swapped to Workbench): the compositor graph built
-  above reads EVERYTHING from EXRs via Image nodes -- it has no live
-  Render Layers dependency -- so pass 2's own 3D render is thrown away too;
-  it exists purely to make Blender execute the compositor and write the
-  real final output file. Workbench is a rasterizer and essentially free
-  compared to a second Cycles pass, which is the whole point.
+  Pass 2 (cheap): the compositor graph built above reads EVERYTHING from
+  EXRs via Image nodes -- it has no live Render Layers dependency -- so
+  pass 2's own 3D render is thrown away too; it exists purely to make
+  Blender execute the compositor and write the real final output file.
+  Deliberately does NOT switch render engines for this (see render_
+  current_frame's own comment) -- same use_persistent_data reasoning as
+  above.
 """
 
 import math
@@ -664,13 +679,69 @@ def _yt_idv_custom_params():
     return params
 
 
+def _empty_cube_bounding_box_local(obj):
+    """The 8 local-space corners of a flagged volume object's region --
+    `[-size, +size]` in each of X/Y/Z, `size` being the Empty's own
+    `empty_display_size` -- combined with `matrix_world` (by
+    `yt_idv_renderer._bbox_local_min_extent`/`_registered_camera_kwargs`)
+    the exact same way a mesh's `obj.bound_box` used to be.
+
+    Flagged objects are REQUIRED to be Empty-Cube (`obj.type == "EMPTY"`,
+    `obj.empty_display_type == "CUBE"`), not an arbitrary mesh -- a real,
+    deliberate restriction, not a limitation this function works around.
+    Two independent reasons converged on it: (1) `obj.bound_box`/
+    `obj.dimensions` are always degenerate zeros for a non-mesh object
+    (confirmed directly), so SOME other source of "extent" was needed
+    regardless, and `empty_display_size` is exactly that for a Cube-type
+    Empty; (2) an Empty NEVER contributes anything to a Cycles render, in
+    any visibility state (confirmed directly: with-Empty vs. without-Empty
+    renders came out byte-identical, hide_render True or False) -- so
+    unlike a real mesh with a real material, there's no need to hide it
+    for pass 1 at all, which sidesteps a real perf problem (see operators.
+    py's own module docstring, "Pass 1" -- toggling hide_render every frame
+    was found to invalidate Cycles' own use_persistent_data cache, same as
+    switching render engines or rebuilding the compositor graph did).
+
+    Raises a clear error for anything else, rather than silently computing
+    a degenerate/wrong bounding box from a real mesh's now-unused
+    `bound_box` or a non-Cube Empty's meaningless one.
+
+    NOTE for future readers, not implemented here: this assumes an
+    axis-aligned BOX region specifically -- `_registered_camera_kwargs`'s
+    whole registration transform, and yt_idv's own unitary `[0, 1]^3`
+    domain convention, are built around that shape. A genuinely different
+    region shape (the obvious one: Empty-Sphere, for a spherical volume --
+    `empty_display_size` there is a true radius, not a half-extent) is NOT
+    just "a new branch here computing a sphere's bounding box" -- the
+    REGISTRATION math and yt_idv's own camera/domain conventions would
+    need real new work to make a sphere-shaped region meaningful, not only
+    this function. Flagged here because it's a real, plausible future use
+    case (the person who asked for the Empty-Cube requirement raised it
+    themselves), not because it's close to being supported.
+    """
+    if obj.type != "EMPTY" or obj.empty_display_type != "CUBE":
+        raise RuntimeError(
+            f"{obj.name!r} is flagged as a volume override but is not an "
+            f"Empty-Cube object (type={obj.type!r}, empty_display_type="
+            f"{getattr(obj, 'empty_display_type', None)!r}) -- flagged "
+            "objects must be an Empty with Display Type 'Cube' (Object "
+            "Properties > Viewport Display > Cube, or Add > Empty > Cube). "
+            "See build_volume_params's own docstring for why."
+        )
+    size = obj.empty_display_size
+    return [
+        [x, y, z]
+        for x in (-size, size) for y in (-size, size) for z in (-size, size)
+    ]
+
+
 def build_volume_params(obj):
     custom_params = obj.volume_override.to_custom_params()
     custom_params.update(_yt_idv_custom_params())
     cache_key = properties.ensure_dataset_uuid(obj)
     return external_render.VolumeObjectParams(
         matrix_world=_matrix_to_list(obj.matrix_world),
-        bounding_box_local=[list(corner) for corner in obj.bound_box],
+        bounding_box_local=_empty_cube_bounding_box_local(obj),
         custom_params=custom_params,
         params_version=change_tracking.version_for(cache_key, "params", custom_params),
         dataset=build_dataset_params(obj, cache_key),
@@ -1061,15 +1132,17 @@ def render_current_frame(context):
     # automatically covers any future file this pipeline starts writing
     # without needing a matching update here.
     try:
-        # --- Pass 1: real Cycles beauty + Z, flagged objects hidden -----
+        # --- Pass 1: real Cycles beauty + Z ---------------------------------
+        # No hide/unhide dance for flagged objects -- they're required to be
+        # Empty-Cube, which never renders in Cycles at all (see this module's
+        # own docstring and build_volume_params's).
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
                 scene, frame_dir, scene.frame_current,
             )
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
-        with scene_sync.hidden_from_main_render(flagged):
-            with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
-                bpy.ops.render.render(write_still=False)
+        with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
+            bpy.ops.render.render(write_still=False)
         log(f"pass1 wrote beauty exists={os.path.exists(beauty_path)} depth exists={os.path.exists(depth_path)}")
 
         with step("read_depth_buffer"):

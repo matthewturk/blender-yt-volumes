@@ -105,10 +105,26 @@ prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
 prefs.verbose_logging = True
 scene_setup.configure_preferences(prefs)
 
-# This test file's own cube wasn't actually flagged -- see module docstring.
-# Skip/adjust this block once you're pointing BLEND_PATH at a file where
-# the volume object(s) were already flagged (and tuned) in the GUI.
-cube = bpy.data.objects["Cube"]
+# This test file's own volume marker wasn't actually flagged -- see module
+# docstring. Skip/adjust this block once you're pointing BLEND_PATH at a
+# file where the volume object(s) were already flagged (and tuned) in the
+# GUI. Must be an Empty with Display Type 'Cube', not a mesh -- see
+# operators.build_volume_params's own docstring for why (a real mesh's
+# bound_box would double as the registered extent even though that's not
+# what you'd want, and unlike an Empty, a real mesh's own material would
+# need hiding from pass 1's Cycles render every single frame, which was
+# found to be a real perf problem independent of that correctness issue).
+VOLUME_OBJECT_NAME = "Volume 1"
+cube = bpy.data.objects[VOLUME_OBJECT_NAME]
+if cube.type != "EMPTY" or cube.empty_display_type != "CUBE":
+    raise RuntimeError(
+        f"{BLEND_PATH}'s {VOLUME_OBJECT_NAME!r} object is a {cube.type}, "
+        "not an Empty-Cube -- flagged volume objects are required to be "
+        "one (see operators.build_volume_params's own docstring). Replace "
+        "it in the .blend file (Add > Empty > Cube, matching the desired "
+        "transform, Object Properties > Viewport Display > Cube) and "
+        "re-save before running this script."
+    )
 cube.volume_override.is_volume_override = True
 cube.volume_override.density_scale = 3.0
 cube.volume_override.yt_idv_volume_provider = f"{SCENE_SETUP_MODULE}:setup_volume"
