@@ -534,6 +534,51 @@ def test_build_or_update_graph_mutes_pass1_file_outputs_and_pass1_unmutes_them(c
     assert tree.nodes[cb._node_name("Pass1DepthOut")].mute is False
 
 
+def test_pass1_and_pass2_graphs_share_exactly_one_final_output(clean_scene, tmp_path):
+    # Real bug: pass 1 used to add its own final-output node (VO_Pass1Composite,
+    # Render Layers -> output) for a non-blank preview. Once pass 1's nodes
+    # stopped being swept by pass 2, both output nodes coexisted and Blender
+    # used pass 1's during pass 2's render -- every saved frame was the bare
+    # beauty pass, no volume. See build_pass1_capture_graph's own comment.
+    scene = clean_scene
+    bpy.ops.mesh.primitive_cube_add()
+    bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
+    scene.camera = bpy.context.object
+    bpy.context.view_layer.use_pass_z = True
+    output_type = "NodeGroupOutput" if cb._is_group_api(scene) else "CompositorNodeComposite"
+
+    tree = cb.ensure_compositor_tree(scene)
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty1", green=0.1)
+    vol_path = _build_solid_volume_image(tmp_path, "vol1", green=0.2)
+    for frame in (1, 2):
+        frame_dir = tmp_path / f"frame{frame}"
+        frame_dir.mkdir()
+        scene.frame_set(frame)
+        cb.build_pass1_capture_graph(scene, str(frame_dir), frame)
+        cb.build_or_update_graph(scene, beauty_path, [("A", vol_path)])
+
+        outputs = [n for n in tree.nodes if n.bl_idname == output_type]
+        assert [n.name for n in outputs] == [cb._node_name("Composite")]
+        (link,) = [l for l in tree.links if l.to_node == outputs[0]]
+        assert link.from_node.name == cb._node_name("Over", "0", "A")
+
+
+def test_build_pass1_capture_graph_removes_obsolete_pass1_output_node(clean_scene, tmp_path):
+    # A tree built by an older version (e.g. saved in a .blend) still has the
+    # VO_Pass1Composite output node -- it must be cleaned up, not left to
+    # shadow pass 2's own output.
+    scene = clean_scene
+    bpy.context.view_layer.use_pass_z = True
+    tree = cb.ensure_compositor_tree(scene)
+    cb.build_pass1_capture_graph(scene, str(tmp_path), 1)
+    stale = cb._link_final_output(scene, tree, tree.nodes[cb._node_name("Pass1RLayers")].outputs["Image"])
+    stale.name = cb._node_name("Pass1Composite")
+
+    cb.build_pass1_capture_graph(scene, str(tmp_path), 2)
+
+    assert tree.nodes.get(cb._node_name("Pass1Composite")) is None
+
+
 def _build_solid_volume_image(tmp_path, name, green, alpha=0.5):
     h, w = 8, 8
     rgba = np.zeros((h, w, 4), dtype="float32")

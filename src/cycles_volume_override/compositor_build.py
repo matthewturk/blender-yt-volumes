@@ -204,8 +204,8 @@ def _node_name(*parts):
     return NODE_PREFIX + "_".join(parts)
 
 
-# Pass 1's own nodes (VO_Pass1RLayers, VO_Pass1BeautyOut, VO_Pass1DepthOut,
-# VO_Pass1Composite) all share this sub-prefix, distinct from pass 2's
+# Pass 1's own nodes (VO_Pass1RLayers, VO_Pass1BeautyOut, VO_Pass1DepthOut)
+# all share this sub-prefix, distinct from pass 2's
 # (VO_Beauty, VO_Vol_*, VO_Over_*, VO_Composite) -- see _clear_managed_nodes's
 # own docstring for why this distinction has to exist at all.
 _PASS1_NODE_PREFIX = _node_name("Pass1")
@@ -587,6 +587,13 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
     """
     tree = ensure_compositor_tree(scene)
 
+    # One-time cleanup of the obsolete pass-1 output node (see the comment
+    # in the rebuild branch below) in a tree built by an older version of
+    # this function -- e.g. saved into a .blend file.
+    stale_sink = tree.nodes.get(_node_name("Pass1Composite"))
+    if stale_sink is not None:
+        tree.nodes.remove(stale_sink)
+
     render_layers = tree.nodes.get(_node_name("Pass1RLayers"))
     if render_layers is None:
         _clear_managed_nodes(tree, only_prefix=_PASS1_NODE_PREFIX)
@@ -604,12 +611,17 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
         depth_socket = _configure_single_file_output(depth_out, output_dir, "vo_depth_")
         tree.links.new(render_layers.outputs["Depth"], depth_socket)
 
-        # Also route Combined straight to the final output so pass 1's own
-        # render result / viewport preview isn't blank -- irrelevant to what
-        # we actually save (pass 2 does that), just avoids a jarring black
-        # frame if you're watching the Image Editor while it renders.
-        pass1_sink = _link_final_output(scene, tree, render_layers.outputs["Image"])
-        pass1_sink.name = _node_name("Pass1Composite")
+        # Deliberately NO final-output node of pass 1's own. There used to
+        # be one (`VO_Pass1Composite`, Render Layers -> group output /
+        # Composite, purely so pass 1's Render Result preview wasn't
+        # blank) -- real bug: once pass 1's nodes stopped being swept by
+        # pass 2 (see _clear_managed_nodes's docstring), BOTH passes'
+        # final-output nodes coexisted in one tree, and Blender used pass
+        # 1's as the active one during pass 2's render too. Every saved
+        # frame was the bare Cycles beauty pass with no volume layer at all
+        # -- confirmed with a constant-color test renderer: 20% of pixels
+        # red in the volume EXR, 0% in the final PNG. Pass 2's own output
+        # node (built by build_or_update_graph) is the only one now.
 
         _layout_nodes(tree)
     else:
