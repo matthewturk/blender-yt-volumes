@@ -1,13 +1,9 @@
 """Per-object render-engine override: flagged objects render via an external
-volume renderer instead of Cycles, composited back in automatically on
-F12 / animation render. See README.md for the full architecture writeup.
+volume renderer and are composited into the Cycles render on F12 /
+animation render. See README.md.
 
-Classic-style (`bl_info`) add-on so it can be installed by zipping this
-directory (or symlinking it) into Blender's addons folder on Blender
-3.x/4.x. See README "Blender 5.0+ compositor" for the one part of this
-add-on (compositor_build.py) known to need a follow-up patch on Blender
-5.0+, discovered empirically while building this against pip-installable
-`bpy==5.2.0`.
+Classic `bl_info` add-on; install by zipping or symlinking this directory
+into Blender's addons folder.
 """
 
 bl_info = {

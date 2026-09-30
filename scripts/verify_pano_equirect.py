@@ -1,15 +1,7 @@
-"""Empirically determine Cycles' equirectangular panoramic camera pixel
-mapping -- which world/camera-local direction lands at which (u, v) fraction
--- instead of trusting a formula from memory. Cycles' internal camera-space
-axis convention for panoramic rays is a known historical gotcha (it does NOT
-necessarily match Blender's object-space camera convention of forward=-Z,
-up=+Y), so this is exactly the kind of thing that bit us with the Z-pass
-assumption if taken on faith.
+"""Determine Cycles' equirectangular panorama mapping: which camera-local
+direction lands at which (u, v) image fraction.
 
-Method: one marker per direction (forward/back/up/down/right/left, in the
-camera's own local frame, with the camera at identity rotation so local ==
-world here), each rendered in isolation, centroid pixel converted to (u, v)
-fraction. Six small renders, cheap.
+Renders one marker per axis direction and reports its centroid (u, v).
 
 Run with: uv run python scripts/verify_pano_equirect.py
 """
@@ -104,12 +96,7 @@ def render_marker_direction(offset):
     rows, cols = np.indices(luminance.shape)
     total = luminance.sum()
     row = float((rows * luminance).sum() / total)
-    # Circular (wraparound-aware) mean for column: equirectangular wraps
-    # horizontally at the seam (u=0/1 are the same longitude), so a marker
-    # placed near "directly behind" the camera renders as two separate
-    # blobs at opposite horizontal edges of the image, and a naive linear
-    # average of column index would incorrectly land near the MIDDLE of the
-    # image instead of near the seam. Treat column index as an angle instead.
+    # Circular mean for column: a marker behind the camera straddles the u=0/1 seam.
     theta = 2 * np.pi * cols / w
     sin_mean = (np.sin(theta) * luminance).sum() / total
     cos_mean = (np.cos(theta) * luminance).sum() / total
@@ -132,11 +119,7 @@ def _get_or_create_compositor_tree(scene):
 
 
 def _make_file_output(tree, directory, name, socket_type, source_output):
-    # item name deliberately empty, not `name` -- a non-empty item name
-    # writes this file as a NAMED EXR part, which bpy.data.images.load()
-    # doesn't reliably decode (reproducibly returns a 0x0/0-channel image).
-    # See compositor_build.py's `_configure_single_file_output` docstring --
-    # this was found via a real add-on bug, not specific to this script.
+    # Empty item name: a named EXR part loads as a 0x0 image via bpy.data.images.load().
     node = tree.nodes.new("CompositorNodeOutputFile")
     if hasattr(node, "file_output_items"):
         node.directory = directory

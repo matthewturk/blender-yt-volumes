@@ -1,18 +1,8 @@
-"""Empirical verification that CameraParams.projection_matrix + matrix_world
-actually round-trips to real Cycles pixel coordinates, for PERSP and ORTHO.
+"""Verify that calc_matrix_camera() + matrix_world.inverted() projects world
+points to the correct Cycles pixel, for PERSP and ORTHO cameras.
 
-Method (same discipline as verify_zpass.py -- render the real thing and
-check against it, don't trust a hand-derived formula from memory): place a
-single bright emissive marker at a known world-space point, render it
-against a black background, find the brightest pixel by argmax, and compare
-that to the pixel my projection formula predicts from
-`Object.calc_matrix_camera()` + `matrix_world.inverted()`.
-
-Object.calc_matrix_camera(depsgraph, x, y, scale_x, scale_y) is a
-longstanding core Blender API (not part of the Blender-5.0-only compositor
-redesign that broke compositor_build.py's target API), so this is expected
-to hold on whatever Blender version you actually run this against too --
-still worth re-running there per the same "don't assume" discipline.
+Renders an emissive marker at a known point and compares its centroid pixel
+against the predicted projection.
 
 Run with:  uv run python scripts/verify_camera_projection.py
 """
@@ -89,11 +79,7 @@ def _get_or_create_compositor_tree(scene):
 
 
 def _make_file_output(tree, directory, name, socket_type, source_output):
-    # item name deliberately empty, not `name` -- a non-empty item name
-    # writes this file as a NAMED EXR part, which bpy.data.images.load()
-    # doesn't reliably decode (reproducibly returns a 0x0/0-channel image).
-    # See compositor_build.py's `_configure_single_file_output` docstring --
-    # this was found via a real add-on bug, not specific to this script.
+    # Empty item name: a named EXR part loads as a 0x0 image via bpy.data.images.load().
     node = tree.nodes.new("CompositorNodeOutputFile")
     if hasattr(node, "file_output_items"):
         node.directory = directory
@@ -166,10 +152,7 @@ def check_camera(cam_type, marker_world, **cam_kwargs):
     scene, cam_obj = build_scene(cam_type, marker_world, **cam_kwargs)
     arr, method = render_and_load(scene)
     luminance = arr[..., :3].sum(axis=-1) if arr.shape[-1] >= 3 else arr[..., 0]
-    # Intensity-weighted centroid, not raw argmax: the marker is a finite-size
-    # disc, not a point, so its single brightest pixel is a noisy proxy for
-    # its true projected center -- the weighted centroid of the whole bright
-    # blob tracks the analytic point projection much more closely.
+    # Weighted centroid tracks the projected center better than argmax.
     rows, cols = np.indices(luminance.shape)
     total = luminance.sum()
     actual_row = float((rows * luminance).sum() / total)

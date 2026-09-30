@@ -1,25 +1,14 @@
-"""A real `yt_idv_volume_provider` function, in its own module -- imported
-normally by `custom_volume_provider_demo.py` (both directly, and indirectly
-via `yt_idv_renderer._resolve_volume_provider("_custom_volume_provider_
-example:setup_volume")`, exactly the mechanism a real add-on user would
-configure through `obj.volume_override.yt_idv_volume_provider`). Kept in its
-own file rather than inside the demo script itself: a script executed as
-`__main__` and separately `importlib.import_module()`d by its filename
-becomes TWO DISTINCT module objects with independent globals -- this
-function's own module-level `calls` list would silently split into two
-never-reconciled copies if it lived in the `__main__` script instead.
+"""Example `yt_idv_volume_provider`, used by `custom_volume_provider_demo.py`.
+
+Kept in its own module: if it lived in the `__main__` demo script, importing
+it by name would create a second module copy with a separate `calls` list.
 """
 
-calls = []  # (previous_scene is not None) per call -- see custom_volume_provider_demo.py's own assertions
+calls = []  # (previous_scene is not None) per call, checked by the demo
 
 
 def setup_volume(ctx):
-    """Explicitly loads the exact same IsolatedGalaxy sample
-    `yt_idv_renderer._default_volume_provider` hardcodes, through real
-    `yt`/`yt_idv` calls a real user would write for their OWN dataset.
-    Deliberately does NOT use `yt_idv_renderer._load_sample_source`'s own
-    cache -- the whole point here is a provider that manages its own state.
-    """
+    """Load IsolatedGalaxy directly and reuse the scene on later calls."""
     calls.append(ctx.previous_scene is not None)
     if ctx.previous_scene is not None:
         from cycles_volume_override.yt_idv_renderer import VolumeSetupResult

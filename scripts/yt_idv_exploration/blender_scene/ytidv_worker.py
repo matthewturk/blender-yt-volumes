@@ -1,57 +1,26 @@
-"""HISTORICAL -- kept for the record, no longer the recommended path. This
-subprocess worker bridged this repo's own bpy==5.2.0/Python-3.13 dev venv
-to a throwaway yt_idv/Python-3.12 venv (see ../README.md and
-../setup_ytidv_venv.sh) to work around yt_idv's now-fixed unconditional
-`imgui` dependency, which used to make it uninstallable under Python 3.13
-at all. Fixed upstream 2026-09-15 (yt-project/yt_idv#268,
-"imgui-optional") -- `bpy` and real `yt_idv` now coexist in ONE Python-3.13
-venv (`uv sync --group ytidv` in this repo's own venv; see README
-"Development & testing" -> "Headless yt_idv testing, in this same venv"),
-so a script needing both no longer needs this bridge at all --
-`render_real_demo.py` in this same directory was ported off it as the
-worked example.
+"""HISTORICAL: subprocess worker bridging this repo's bpy/Python-3.13 venv
+to a separate yt_idv/Python-3.12 venv (see ../setup_ytidv_venv.sh). No
+longer needed: since yt_idv#268 made imgui optional, bpy and yt_idv share
+one venv (`uv sync --group ytidv`). Not part of the shipped add-on.
 
-Original docstring, for context on why this worker exists:
+Run inside the yt_idv venv:
 
-Subprocess worker: the yt_idv side of a bridge between this repo's own
-bpy==5.2.0/Python-3.13 dev venv and the throwaway yt_idv/Python-3.12 venv
-(see ../README.md and ../setup_ytidv_venv.sh -- bpy and yt_idv couldn't be
-installed in the same venv before the imgui fix above).
-
-This is NOT part of the shipped add-on -- in real Blender, yt_idv_renderer.py
-calls yt_idv in-process (see its module docstring), because real Blender's
-own embedded Python doesn't have the bpy-as-a-pip-wheel version conflict
-that forced this sandbox into two venvs. This worker exists purely so this
-sandbox can exercise the real `yt_idv_max_intensity_renderer` function
-driven by a REAL Blender camera (built with the add-on's own
-`operators.build_camera_params()`) across multiple frames, which needs bpy
-on one end and yt_idv on the other.
-
-Run inside the ytidv venv (see ../setup_ytidv_venv.sh):
-
-    describe_grids: dump the sample dataset's AMR grid bounding boxes (in
-    yt_idv's own "unitary" [0, 1]^3 convention) as JSON, for the Blender
-    side to build reference Empty objects from.
+    describe_grids: dump the sample dataset's AMR grid boxes (unitary
+    [0, 1]^3) as JSON.
 
         python ytidv_worker.py describe_grids --out grids.json --max-grids 40
 
-    render: load a JSON-serialized RenderRequest (built on the Blender side
-    from a real Blender camera via operators.build_camera_params(), see
-    render_frames_in_blender.py), call the real
-    yt_idv_max_intensity_renderer(), save the result as a PNG.
+    render: render one JSON RenderRequest with
+    yt_idv_max_intensity_renderer() to a PNG.
 
         python ytidv_worker.py render --request request.json --out frame.png
 
-    render_with_depth: like `render`, but takes a REAL per-pixel depth
-    array (a .npy, float32, same row order named in the request JSON's
-    "depth" block) instead of fabricating a uniform no_hit_value buffer --
-    this is the one a real two-pass pipeline run actually needs, since the
-    whole point of the Cycles Z-buffer wiring (see yt_idv_renderer.py's
-    "Cycles Z-buffer wiring" docstring section) is a genuine per-pixel
-    Z-pass, not a stand-in. Also takes --mode to pick which of the three
-    real renderer functions to call, and writes the RGBA result as a full-
-    float .npy (not a PNG) so premultiplied alpha survives the round trip
-    for the real add-on compositor to consume -- see render_real_demo.py.
+    render_many: render a JSON list of requests in one process (used by
+    render_frames_in_blender.py).
+
+    render_with_depth: like `render`, but with a real per-pixel depth array
+    (.npy float32) and a choice of --mode; writes float RGBA .npy so
+    premultiplied alpha survives.
 
         python ytidv_worker.py render_with_depth --request request.json \\
             --depth-npy depth.npy --mode projection --out-npy result.npy
@@ -69,10 +38,7 @@ ADDON_SRC = os.path.normpath(os.path.join(HERE, "..", "..", "..", "src", "cycles
 
 
 def _load_addon_module(name, path):
-    """Load one add-on submodule directly, bypassing
-    cycles_volume_override/__init__.py's eager bpy-dependent imports (no
-    bpy in this venv) -- see module docstring.
-    """
+    """Load one add-on submodule, skipping the package's bpy-dependent __init__."""
     spec = importlib.util.spec_from_file_location(f"cycles_volume_override.{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -164,15 +130,7 @@ def _build_request(external_render, req):
 
 
 def cmd_render_many(args):
-    """Render every request in a JSON list in ONE process -- unlike calling
-    `render` once per frame (a fresh subprocess each time, which would pay
-    yt_idv_renderer's dataset-load + GL-context-creation cost on every
-    single frame), this actually exercises `_load_sample_source`/
-    `_get_render_context`'s module-level caching the way a real, long-running
-    Blender session would: first frame pays the setup cost, every frame
-    after reuses it. See render_frames_in_blender.py for the driver that
-    builds `requests.json` from a real, moving Blender camera.
-    """
+    """Render every request in a JSON list in one process, reusing caches."""
     import time
 
     import yt
@@ -197,17 +155,14 @@ def cmd_render_many(args):
     print(f"timings: first={timings[0]:.3f}s, rest avg={sum(timings[1:]) / max(1, len(timings) - 1):.3f}s")
 
 
-_REAL_RENDER_MODES = None  # populated lazily -- see cmd_render_with_depth
+_REAL_RENDER_MODES = None
 
 
 def _build_request_full(external_render, req, depth_array):
-    """Like `_build_request` above, but takes REAL camera/volume/depth
-    values straight from a real Blender scene (see render_real_demo.py)
-    instead of hand-rolled test fixtures. `req["camera"]["projection_matrix"]`
-    in particular is expected to be the actual
-    `camera_obj.calc_matrix_camera(...)` result -- see operators.
-    build_camera_params() -- not the standalone OpenGL-formula stand-in
-    `explore_cycles_zbuffer_depth_clip.py` uses.
+    """Like `_build_request`, but with camera/volume/depth from a real scene.
+
+    `req["camera"]["projection_matrix"]` should come from
+    `operators.build_camera_params()`.
     """
     camera = external_render.CameraParams(
         matrix_world=req["camera"]["matrix_world"],

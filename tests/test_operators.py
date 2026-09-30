@@ -175,12 +175,7 @@ def test_build_volume_params_dataset_and_params_version_are_independent(clean_sc
 
 
 def test_build_volume_params_bounding_box_comes_from_empty_display_size(clean_scene_with_props):
-    # Flagged objects are REQUIRED to be Empty-Cube -- see build_volume_
-    # params's own docstring for the two independent reasons (bound_box/
-    # dimensions are always degenerate zeros for a non-mesh object; an
-    # Empty never renders in Cycles regardless of visibility, unlike a
-    # real mesh with a real material). empty_display_size, not bound_box,
-    # is the real source of the extent now.
+    # bound_box is all zeros for an Empty, so the extent comes from empty_display_size.
     bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.empty_display_size = 2.5
@@ -215,11 +210,7 @@ def test_build_volume_params_rejects_a_non_cube_empty(clean_scene_with_props):
 
 
 def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_scene_with_props):
-    # `clean_scene_with_props` registers `properties` only, not the whole
-    # add-on -- `bpy.context.preferences.addons[__package__]` genuinely
-    # doesn't exist in that state (confirmed: raises KeyError), which is
-    # exactly the case `_yt_idv_custom_params`'s own try/except is for. Pins
-    # the fallback down explicitly, not just "the other test still passes".
+    # Only `properties` is registered, so preferences.addons[...] raises KeyError.
     bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
@@ -231,9 +222,7 @@ def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_sce
 
 @pytest.fixture
 def addon_enabled():
-    # Real add-on-enable flow (not just bpy.utils.register_class) -- that
-    # alone does NOT populate bpy.context.preferences.addons[__package__]
-    # (confirmed: raises KeyError), which _yt_idv_custom_params reads.
+    # register_class alone doesn't populate preferences.addons[...]; a real enable does.
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.preferences.addon_enable(module="cycles_volume_override")
     change_tracking.reset()
@@ -254,18 +243,12 @@ def test_build_volume_params_includes_yt_idv_settings_when_addon_enabled(addon_e
 
     assert params.custom_params["yt_idv_fog_colormap"] == "inferno"
     assert params.custom_params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
-    # A field left at its default should match yt_idv_renderer.py's own
-    # module constant of the same name -- the whole point of the defaults
-    # being "the old hardcoded behavior, unchanged, until you touch a slider".
+    # Untouched fields default to yt_idv_renderer's module constants.
     from cycles_volume_override import yt_idv_renderer as yir
     assert params.custom_params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
 
 
 def test_yt_idv_custom_params_omits_curve_and_image_keys_by_default(addon_enabled):
-    # alpha_source/color_source default to RAMP_POWER/NAMED -- the new
-    # curve/image mechanism (see yt_idv_renderer.py module docstring's
-    # "Curve-driven alpha / image-driven color" section) must be a
-    # completely inert no-op until explicitly opted into.
     params = operators._yt_idv_custom_params()
     assert "yt_idv_alpha_curve" not in params
     assert "yt_idv_color_image_rgba" not in params
@@ -279,18 +262,13 @@ def test_get_or_create_alpha_curve_node_is_stable_across_calls(addon_enabled):
 
     node2 = operators._get_or_create_alpha_curve_node()
 
-    # NOT `is` -- repeated bpy_struct attribute access doesn't reliably
-    # return the identical Python wrapper object even for the same
-    # underlying RNA data; compare by name/identity-of-data instead.
+    # Compare .as_pointer(): bpy wrappers aren't cached, so `is` is unreliable.
     assert node2.name == node1.name
     assert node2.as_pointer() == node1.as_pointer()
     assert len(node2.mapping.curves[0].points) == 3
 
 
 def test_evaluate_alpha_curve_default_is_linear(addon_enabled):
-    # Untouched CurveMapping default is the identity ramp (points at (0,0)
-    # and (1,1)) -- see module investigation confirming this via a direct
-    # ShaderNodeFloatCurve test.
     values = operators._evaluate_alpha_curve(nbins=5)
     assert values == pytest.approx([0.0, 0.25, 0.5, 0.75, 1.0], abs=1e-3)
 
@@ -328,11 +306,7 @@ def test_sample_image_as_1d_rgba_averages_rows_and_resamples_width(addon_enabled
 
 
 def test_sample_image_as_1d_rgba_raises_on_zero_sized_image():
-    # A genuinely 0x0 image can't be produced via bpy.data.images.new()
-    # itself (confirmed: Blender clamps width/height to a 1x1 minimum) --
-    # this is the same "broken/unavailable source file" failure mode
-    # documented in operators.read_depth_buffer's own comment, reproduced
-    # here with a minimal stand-in rather than a real (unbreakable) Image.
+    # images.new() clamps to 1x1, so fake the 0x0 a missing source file gives.
     class _FakeZeroSizedImage:
         name = "broken"
         size = (0, 0)
@@ -364,9 +338,7 @@ def test_yt_idv_custom_params_includes_color_image_rgba_when_selected(addon_enab
 
 
 def test_yt_idv_custom_params_ignores_stale_color_image_name(addon_enabled):
-    # Image renamed/deleted after being selected -- see
-    # `_yt_idv_custom_params`'s own comment on why this falls back silently
-    # (to the NAMED-colormap mechanism) rather than raising mid-render.
+    # Image renamed/deleted after selection: fall back silently, don't raise mid-render.
     prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
     prefs.yt_idv.color_source = "IMAGE"
     prefs.yt_idv.color_image_name = "does_not_exist_anywhere"
@@ -432,10 +404,7 @@ def test_resolve_requested_time_manual_reads_property_directly(clean_scene_with_
 
 
 def test_requested_time_change_does_not_flip_dataset_version_changed(clean_scene_with_props):
-    """The whole point of excluding requested_time from the identity hash:
-    advancing frames (the normal case) must NOT look like "the dataset
-    changed" to the renderer, or every frame would force a reload.
-    """
+    """Advancing frames must not look like a dataset change (forcing a reload)."""
     obj = _flagged_cube(clean_scene_with_props)
     obj.volume_override.dataset_path = "/data/sim_001"
     obj.volume_override.mapping_policy = "DIRECT"
@@ -465,14 +434,7 @@ def registered_render_operator():
 
 
 def test_render_operator_delegates_to_plain_render_when_nothing_flagged(registered_render_operator, monkeypatch):
-    """Enabling this add-on remaps F12/Ctrl+F12 to render.volume_override
-    unconditionally (see handlers.py) -- so for a scene with no flagged
-    volumes, this operator must behave exactly like Blender's own
-    render.render, not run the two-pass pipeline (which forces the Z pass
-    on, rebuilds the compositor graph, and swaps the engine to Workbench).
-    Otherwise installing the add-on breaks ordinary rendering everywhere,
-    even in scenes that never use the override.
-    """
+    """F12 is remapped unconditionally, so unflagged scenes must render normally."""
     scene = bpy.context.scene
     scene.render.resolution_x = 16
     scene.render.resolution_y = 16
@@ -507,19 +469,8 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
 
 
 # --- view_transform forced to Standard for yt_idv modes (AgX washout fix) ---
-#
-# Real, measured finding (not a style preference): Blender's `AgX` view
-# transform -- the default on every new scene since 4.0, so "a pretty much
-# exactly default" file has it -- applies a filmic highlight rolloff meant
-# for photographic renders. Applied to an already-colormapped scientific
-# visualization, it crushes real signal into a flat, low-contrast plateau
-# (confirmed directly: same frame/data/camera, AgX topped out at 197/255
-# with ~95% of pixels in one narrow band; `Standard` reached 254/255 with
-# real gradation). `render_current_frame` now forces `Standard` for the
-# duration of any yt_idv-mode render and restores whatever was there
-# afterward -- these tests exercise the REAL function end to end (a real,
-# tiny Cycles pass1 render), with `RENDERER_MODES` monkeypatched so no real
-# yt_idv is needed to check what view_transform the "renderer" itself saw.
+# AgX (the default view transform) washes out colormapped output. These run a
+# real tiny Cycles pass 1 with RENDERER_MODES monkeypatched (no yt_idv needed).
 
 def _fake_render_result(request):
     import numpy as np
@@ -565,7 +516,6 @@ def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(add
 
 
 def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled, monkeypatch, tmp_path, capsys):
-    # No override, and no warning, when it was already what we'd set it to.
     scene = addon_enabled
     scene.render.resolution_x = 16
     scene.render.resolution_y = 16
@@ -600,9 +550,6 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
 
 
 def test_render_current_frame_view_transform_warning_ignores_verbose_logging(addon_enabled, monkeypatch, tmp_path, capsys):
-    # The warning is a correctness heads-up, not a step-by-step trace line --
-    # it must print even with Verbose Logging off (unlike the [+N.NNs] step
-    # log, which `render_current_frame` gates behind that preference).
     scene = addon_enabled
     scene.render.resolution_x = 16
     scene.render.resolution_y = 16
@@ -630,9 +577,6 @@ def test_render_current_frame_view_transform_warning_ignores_verbose_logging(add
 
 
 def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(addon_enabled, monkeypatch, tmp_path):
-    # Only yt_idv modes go through this add-on's own colormapping -- a
-    # non-yt_idv renderer_mode's output is unaffected by AgX the same way
-    # any ordinary Blender render is, so there's nothing to correct.
     scene = addon_enabled
     scene.render.resolution_x = 16
     scene.render.resolution_y = 16
@@ -655,16 +599,8 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
 
 
 # --- pass2 engine / persistent_data perf fixes --------------------------------
-# Real perf bug found doing an optimization pass on real per-frame timings:
-# forcing scene.render.engine to "BLENDER_WORKBENCH" for pass2 invalidated
-# Cycles' own use_persistent_data session/BVH cache on EVERY frame (measured:
-# any intervening render through a different engine does this, not just an
-# engine change on the same scene), forcing a full from-scratch reinit each
-# time pass1 ran again next frame. Keeping the same engine active the whole
-# time -- pass2's own compositor graph never references Render Layers, so
-# Blender doesn't bother path-tracing anything for it anyway (confirmed via
-# direct pixel-diff: identical output regardless of engine) -- measured 6x
-# faster overall.
+# Switching pass 2 to Workbench invalidated Cycles' persistent-data cache every
+# frame; pass 2 doesn't path-trace anyway, since it never uses Render Layers.
 
 def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, monkeypatch, tmp_path):
     scene = addon_enabled
@@ -692,8 +628,6 @@ def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, mo
 
     operators.render_current_frame(bpy.context)
 
-    # render_volume runs between pass1 and pass2 -- at that point the engine
-    # must still be whatever pass1 used, never switched to a different one.
     assert seen_engine_during_render == ["CYCLES"]
     assert scene.render.engine == "CYCLES"  # unchanged afterward too -- nothing to even restore
 
@@ -730,14 +664,8 @@ def test_render_current_frame_enables_and_restores_use_persistent_data(addon_ena
 
 
 def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(addon_enabled, monkeypatch, tmp_path):
-    # Real perf finding from the same pass as the two tests above: flagged
-    # objects used to get hide_render toggled on for pass1 and restored
-    # after -- necessary back when they could be arbitrary mesh objects
-    # with a real material, but Empty-Cube (now required, see build_volume_
-    # params's own docstring) never renders in Cycles at all regardless of
-    # hide_render, and toggling it every frame was found to invalidate
-    # Cycles' use_persistent_data cache too, same as the engine switch and
-    # the graph rebuild did.
+    # Regression (perf): toggling hide_render per frame invalidated Cycles'
+    # persistent-data cache; Empties never render anyway.
     scene = addon_enabled
     scene.render.resolution_x = 16
     scene.render.resolution_y = 16
@@ -769,14 +697,8 @@ def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(ad
 
 
 # --- render_session (batch-scoped restore) --------------------------------
-# Real perf bug found doing an optimization pass: restoring-then-re-forcing
-# view_transform/compositor_device/use_pass_z/use_persistent_data after
-# EVERY individual render_current_frame call -- even back to the exact same
-# values -- was found to reproduce almost the entire original per-frame
-# Cycles cache-invalidation cost by itself. render_session lets a caller
-# doing many frames back-to-back opt into restoring once at the true end
-# instead; a bare call (no active session) must still behave exactly as
-# before, fully self-contained.
+# Restoring/re-forcing scene settings around every frame invalidated Cycles'
+# cache; render_session restores once at the end. Bare calls still restore.
 
 def _setup_yt_idv_scene(scene, tmp_path, view_transform="AgX"):
     scene.render.resolution_x = 16
@@ -820,13 +742,7 @@ def test_render_current_frame_inside_a_session_only_restores_at_session_exit(add
 
 
 def test_render_current_frame_sweeps_once_per_session_not_once_per_frame(addon_enabled, monkeypatch, tmp_path):
-    # Real perf bug found doing an optimization pass: calling _sweep_stale_
-    # frame_dirs every single frame measured fine in total isolation, but
-    # combined with the rest of a real frame's own work it was found to
-    # cost the frame's OWN render substantially -- moved into render_
-    # session's own __enter__ (called once per multi-frame run) instead.
-    # A bare call (no session) still sweeps every time -- each one is a
-    # fully standalone render, not a per-frame cost to avoid.
+    # Regression (perf): sweeping every frame slowed the render.
     scene = addon_enabled
     _setup_yt_idv_scene(scene, tmp_path)
     monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
@@ -854,8 +770,6 @@ def test_render_current_frame_sweeps_once_per_session_not_once_per_frame(addon_e
 
 
 def test_render_session_restores_original_values_even_if_never_forced(clean_scene):
-    # No render happens at all here -- just the context manager's own
-    # capture/restore, in isolation, for all four properties it manages.
     scene = clean_scene
     view_layer = bpy.context.view_layer
     scene.view_settings.view_transform = "Filmic"
@@ -876,14 +790,8 @@ def test_render_session_restores_original_values_even_if_never_forced(clean_scen
 
 
 # --- per-frame temp directory cleanup -----------------------------------------
-# Real bug found running a real HD animation: nothing ever deleted the
-# per-frame beauty/depth/volume-result EXRs, so a long run silently
-# accumulated gigabytes in work_dir and eventually crashed outright with
-# ENOSPC. Fixed by giving each frame its own directory (one shutil.rmtree in
-# `finally` cleans up everything, not a hand-tracked list of paths) plus a
-# startup sweep for whatever a hard crash (confirmed real: an X11 BadAccess
-# GLX error took the whole process down without ever unwinding through
-# Python, so `finally` never ran) leaves behind.
+# Regression: per-frame EXRs were never deleted, so long runs hit ENOSPC. Hard
+# crashes (e.g. X11 BadAccess) skip `finally`, hence the startup sweep.
 
 def _render_one_frame(scene, work_dir):
     scene.render.resolution_x = 16
@@ -940,9 +848,6 @@ def test_render_current_frame_cleans_up_frame_dir_even_when_pipeline_raises(addo
 
 
 def test_render_current_frame_sweeps_a_frame_dir_left_by_a_previous_hard_crash(addon_enabled, monkeypatch, tmp_path):
-    # Simulates exactly what an X11 BadAccess/segfault/kill -9 leaves behind:
-    # a frame_* directory with real files in it, but no Python exception
-    # ever ran to trigger the normal finally-block cleanup.
     stale_dir = tmp_path / f"{operators._FRAME_DIR_PREFIX}stale123"
     stale_dir.mkdir()
     (stale_dir / "vo_beauty_0001.exr").write_bytes(b"leftover")
@@ -986,7 +891,7 @@ def test_apply_opacity_is_a_noop_at_default_1_0():
 
     out = operators._apply_opacity(result, 1.0)
 
-    assert out is result  # exact no-op, not just numerically equal -- see _apply_opacity's own docstring
+    assert out is result  # exact no-op, not just numerically equal
 
 
 def test_apply_opacity_scales_premultiplied_rgba_uniformly():
@@ -1007,13 +912,8 @@ def test_apply_opacity_scales_premultiplied_rgba_uniformly():
 
 
 def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_path):
-    # Real perf bug found doing an optimization pass: bpy.data.images.new()
-    # + .remove() every call was found to invalidate Cycles' own
-    # use_persistent_data cache for the scene being rendered -- see
-    # operators.write_render_result's own docstring. This pins the fix:
-    # repeated calls must reuse ONE Image datablock (by stable name), never
-    # accumulate or recreate it, while still writing each call's own
-    # correct, distinct pixel data to each call's own path.
+    # Regression (perf): images.new() + remove() per call invalidated
+    # Cycles' persistent-data cache.
     import numpy as np
 
     from cycles_volume_override import external_render
@@ -1049,12 +949,8 @@ def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_pa
 
 
 def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp_path):
-    # The real per-frame case the test above doesn't cover: render_current_
-    # frame deletes each frame's frame_dir (including the previous call's
-    # EXR) before the next call. Image.save() used to leave the datablock
-    # FILE-backed by that now-deleted path (reading back size == (0, 0)),
-    # so the reuse check never actually held in the real loop -- see
-    # write_render_result's docstring (save_render, not save).
+    # Regression: Image.save() left the datablock backed by the (since
+    # deleted) file, reading back as (0, 0), so reuse never held per-frame.
     import numpy as np
 
     from cycles_volume_override import external_render
@@ -1082,8 +978,6 @@ def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp
 
 
 def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
-    # Same fix, same reasoning, as the write-side test above -- see
-    # operators.read_depth_buffer's own docstring.
     import numpy as np
 
     from cycles_volume_override import external_render
@@ -1122,12 +1016,7 @@ def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path
 
 
 def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_scene_with_props):
-    # The whole point of putting `opacity` on obj.volume_override (a real
-    # Object-level PropertyGroup) rather than alongside the yt_idv alpha
-    # controls in AddonPreferences: Object supports animation_data, so
-    # standard keyframe_insert/frame_set actually animates it -- confirmed
-    # directly (AddonPreferences instances have no animation_data at all,
-    # id_data is None, keyframe_insert raises outright).
+    # Lives on the Object, not AddonPreferences, because only the former is keyframable.
     bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True

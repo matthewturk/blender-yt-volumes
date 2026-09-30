@@ -1,54 +1,27 @@
-"""Programmatic compositor node graph: Cycles beauty (read back from EXR,
-NOT a live Render Layers node -- see operators.py's two-pass rationale)
-composited with N external-volume-renderer layers via chained,
-premultiplied Alpha Over, no Z-Combine anywhere.
+"""Compositor node graph: the Cycles beauty (read back from EXR) composited
+with N external volume layers via a chain of premultiplied Alpha Over nodes.
 
-Supports BOTH compositor scripting APIs, detected at runtime (no Blender
-version string ever parsed -- see `_is_group_api` and README "Blender 5.0+
-compositor"):
+Supports both compositor scripting APIs, detected at runtime:
 
-  Classic (Blender 3.x/4.x): `scene.node_tree` (auto-created by
-  `scene.use_nodes = True`), `CompositorNodeComposite` as the graph's sink,
-  `CompositorNodeOutputFile.base_path` / `.file_slots[i].path`.
+  Classic (Blender 3.x/4.x): `scene.node_tree`, `CompositorNodeComposite` as
+  the sink, `CompositorNodeOutputFile.base_path` / `.file_slots[i].path`.
 
-  Blender 5.0+: the compositor tree became an independent `CompositorNodeTree`
-  datablock (`scene.compositing_node_group`, not auto-created), the graph's
-  sink is a `NodeTreeInterface`-defined OUTPUT socket fed by a
-  `NodeGroupOutput` node (there is no `CompositorNodeComposite` node type at
-  all anymore), and `CompositorNodeOutputFile` gained a `file_output_items`
-  collection: `.directory` + `.file_name` (a node-level filename template --
-  literal `#` runs in it get zero-padded-frame-number substituted, same
-  convention as `output_properties.filepath`; NOT auto-appended for you the
-  way classic `file_slots[i].path` is) replace `.base_path`; `item.name` is
-  now purely an in-container part/layer label, NOT the on-disk filename.
-  `node.format.file_format` is locked to `'OPEN_EXR_MULTILAYER'` once you try
-  to set it directly (the node's own format is the multi-part-EXR container
-  format); getting a plain single-layer OPEN_EXR out of one item requires
-  `item.override_node_format = True` + configuring `item.format` instead.
-  All empirically confirmed against pip `bpy==5.2.0` -- see
-  `scripts/verify_zpass.py` (`get_or_create_compositor_tree`/
-  `_make_file_output`), which independently reached the same shape.
+  Blender 5.0+: `scene.compositing_node_group` (a standalone
+  `CompositorNodeTree`, not auto-created); the sink is a `NodeGroupOutput`
+  feeding an interface OUTPUT socket (no Composite node exists); File Output
+  uses `.directory` + `.file_name` (a `####` run is replaced by the frame
+  number, not auto-appended) and `file_output_items`, with per-item format
+  overrides since the node's own format is locked to OPEN_EXR_MULTILAYER.
 
-Graph shape per frame (all nodes prefixed `VO_` so this coexists with any
-of your own unrelated compositor nodes in the same tree):
+Graph shape (all nodes prefixed `VO_`):
 
     Image(VO_Beauty) --\\
                          AlphaOver(farthest volume) --\\
     Image(VO_Vol_<far>)-/                              AlphaOver(next) -- ... -- [sink]
                                           Image(VO_Vol_<near>)-/
 
-`[sink]` is `CompositorNodeComposite` (classic) or `NodeGroupOutput` wired to
-the tree's "Image" interface output socket (5.0+) -- see `_link_final_output`.
-
-Ordering resolves "Open question 1" (multiple flagged volumes per frame):
-each volume is composited independently against the same Cycles beauty/Z,
-then chained back-to-front (farthest camera-distance first) via Alpha Over,
-so a nearer volume correctly draws over a farther one. This does NOT handle
-volume-through-volume self-occlusion within a single ray interval -- two
-volumes that are actually interleaved in depth along the same ray will still
-just layer in distance-sorted order, not blend physically correctly. Noted
-as a v1 limitation in the README alongside the solid-fully-enclosed-by-
-volume case.
+Volumes are layered back-to-front by camera distance; volumes interleaved in
+depth along the same ray are not blended physically.
 """
 
 import os
@@ -58,75 +31,18 @@ import bpy
 NODE_PREFIX = "VO_"
 FINAL_OUTPUT_SOCKET_NAME = "Image"
 
-# Blender < 5.0's default (Filmic-based) OCIO config names its scene-linear
-# working space "Linear". Blender 5.0 ships a different default OCIO config
-# where that exact name no longer exists at all (confirmed empirically
-# against pip bpy==5.2.0 -- assigning "Linear" raises `TypeError`). "Non-Color"
-# is tried first: confirmed (see set_linear_colorspace's docstring) to be the
-# one tag that behaves as a genuine byte-for-byte passthrough in BOTH
-# directions (on `.save()` and on `.load()`/`.pixels`), unlike "Linear Rec.709"
-# which looks like it should mean the same thing but silently bakes an
-# sRGB-shaped encode into the file at `.save()` time. "Linear Rec.709" and the
-# portable `scene_linear` ROLE alias are kept as fallbacks for a future OCIO
-# config where "Non-Color" itself doesn't exist, not because they're
-# preferred.
+# "Linear" doesn't exist in Blender 5.0's default OCIO config. "Non-Color" is
+# the only tag that is a true passthrough on both save and load; the others
+# are fallbacks for configs without it.
 LINEAR_COLORSPACE_CANDIDATES = ("Non-Color", "Linear Rec.709", "scene_linear")
 
-# The real story, now fully understood (previous revisions of this comment
-# recorded this as a not-yet-understood, provisional workaround -- it no
-# longer is). Two INDEPENDENT bugs were stacked on top of each other, and a
-# single shared no-op function was accidentally compensating for both by
-# accident in one of the two call sites while silently breaking the other:
-#
-# Bug 1 (write side, THE actual root cause): `operators.write_render_result()`
-# builds its EXR with `bpy.data.images.new(..., float_buffer=True)`, whose own
-# default colorspace tag is "Linear Rec.709". Confirmed via direct,
-# Blender-bypassing OpenEXR inspection (`OpenEXR.InputFile`, not
-# `bpy.data.images.load()`) that saving a `.new()` float image tagged
-# "Linear Rec.709" BAKES AN sRGB-SHAPED ENCODE INTO THE ON-DISK VALUES:
-# writing a known 0.283 produced 0.568 on disk (== sRGB-encode(0.283) almost
-# exactly). Tagging the same image "Non-Color" (or "sRGB") before `.save()`
-# instead writes 0.283 back out unchanged -- a true passthrough.
-#
-# Bug 2 (semantic, read side): a volume layer's RGB values (yt_idv's own
-# colormap output, read back via `yt_idv_renderer.render_volume`) are NOT
-# scene-linear radiometric data the way Cycles' beauty pass is -- they're
-# already final, display-ready bytes (confirmed via `yt.write_bitmap`, which
-# every yt_idv example/the interactive GUI relies on: zero gamma, just
-# scale+clip+cast, and it looks correct). They need ZERO net color transform
-# end to end. The beauty layer, by contrast, IS genuine scene-linear light
-# data and needs exactly ONE sRGB encode (Standard view transform's own, at
-# final output) to display correctly.
-#
-# `set_linear_colorspace` (below) forces the passthrough tag needed at BOTH:
-# (a) write_render_result's `.save()` (fixes bug 1), and (b) the beauty
-# node's `.load()` (correct: real linear data + Standard's one mandatory
-# encode = one real gamma correction, exactly right). `set_display_referred_
-# colorspace` (also below) forces "sRGB" specifically for a volume-layer
-# node's `.load()`: it applies a compensating DECODE that, combined with
-# Standard's unconditionally-applied ENCODE at final output, nets to the
-# desired identity (bug 2's fix) -- but ONLY once bug 1 is also fixed;
-# before that, the write side's accidental bake and this decode canceled
-# each other out, reproducing the OLD (still one-extra-encode-too-bright)
-# behavior by accident. Measured end to end with a real yt_idv octarine/log
-# render: mean RGB (72.06, 83.91, 43.19) through the fixed
-# write-Non-Color/read-sRGB path vs (72.06, 83.90, 43.20) writing the exact
-# same raw array directly via `yt.write_bitmap` with no Blender involved at
-# all -- matches to within rounding. Before this fix: (137.6, 154.9, 112.0),
-# roughly one full sRGB encode too bright across the board, worst on the
-# lowest-valued channel (matches an extra gamma curve's signature: it lifts
-# shadows proportionally more than highlights).
-#
-# Cross-checking against a real desktop Blender binary (not the pip `bpy`
-# wheel) was attempted and did not succeed -- it crashed on unrelated,
-# pre-existing personal startup-script state (`chezmoi_sync.py`) before ever
-# reaching this code, including with `--factory-startup`. The measurements
-# above were made entirely with direct OpenEXR file inspection (bypassing
-# Blender's own image-loading heuristics) plus real compositor/render passes
-# on pip bpy, so they don't depend on trusting `bpy.data.images.load()`'s own
-# colorspace auto-detection (which was found to be unreliable/file-metadata-
-# dependent) -- but whether this pip wheel's OCIO config or EXR writer
-# differs from a full desktop install in some OTHER way remains unconfirmed.
+# Colorspace handling:
+# - Saving a float image tagged "Linear Rec.709" (the `images.new()` default)
+#   bakes an sRGB encode into the EXR, so result EXRs are written "Non-Color".
+# - The beauty pass is scene-linear and is read as "Non-Color"; the Standard
+#   view transform applies the one sRGB encode it needs.
+# - Volume layers (yt_idv colormap output) are already display-referred, so
+#   they are read as "sRGB" to cancel the Standard view transform's encode.
 
 
 def _is_group_api(scene):
@@ -134,20 +50,7 @@ def _is_group_api(scene):
 
 
 def set_linear_colorspace(image):
-    """Forces `image` onto a genuine byte-for-byte passthrough colorspace
-    tag -- no transform in either direction, on `.save()` or on `.load()`/
-    `.pixels` -- see the comment block above `LINEAR_COLORSPACE_CANDIDATES`
-    for the full story and the exact measurements behind this.
-
-    Used at the two call sites that need real passthrough semantics:
-    `operators.write_render_result()`'s newly-created EXR image, right
-    before `.save()` (its `.new()` default, "Linear Rec.709", was found to
-    bake an sRGB-shaped encode into the file instead), and
-    `build_or_update_graph()`'s beauty-layer Image node on `.load()` (Cycles'
-    own File Output write really is genuine scene-linear data, so it wants
-    passthrough on read and lets Standard view transform apply its one real
-    encode at final output).
-    """
+    """Tag `image` with a passthrough colorspace (no transform on save or load)."""
     for name in LINEAR_COLORSPACE_CANDIDATES:
         try:
             image.colorspace_settings.name = name
@@ -161,28 +64,12 @@ def set_linear_colorspace(image):
 
 
 def set_display_referred_colorspace(image):
-    """Forces `image` to "sRGB" -- used ONLY for `build_or_update_graph()`'s
-    per-object volume-layer Image nodes on `.load()`.
-
-    A volume layer's colors are already final, display-ready bytes (see the
-    comment block above `LINEAR_COLORSPACE_CANDIDATES`), not scene-linear
-    data -- they need ZERO net color transform end to end. Standard view
-    transform always applies its own encode once, unconditionally, at final
-    output, for every layer alike, so this tags the loaded image with a
-    matching, compensating DECODE that cancels it out. Relies on
-    `write_render_result()` writing via `set_linear_colorspace` first (a true
-    passthrough on disk) -- otherwise this decode would instead be canceling
-    out that write-side bug, silently reproducing the old, wrong,
-    one-extra-encode-too-bright behavior.
-    """
+    """Tag a display-referred volume layer as "sRGB" (see colorspace notes above)."""
     image.colorspace_settings.name = "sRGB"
 
 
 def ensure_compositor_tree(scene):
-    """Version-agnostic accessor for the scene's compositor node tree --
-    creates it if it doesn't exist yet, exactly like classic
-    `scene.use_nodes = True` used to do implicitly.
-    """
+    """Return the scene's compositor node tree, creating it if needed."""
     if _is_group_api(scene):
         tree = scene.compositing_node_group
         if tree is None:
@@ -204,39 +91,16 @@ def _node_name(*parts):
     return NODE_PREFIX + "_".join(parts)
 
 
-# Pass 1's own nodes (VO_Pass1RLayers, VO_Pass1BeautyOut, VO_Pass1DepthOut)
-# all share this sub-prefix, distinct from pass 2's
-# (VO_Beauty, VO_Vol_*, VO_Over_*, VO_Composite) -- see _clear_managed_nodes's
-# own docstring for why this distinction has to exist at all.
 _PASS1_NODE_PREFIX = _node_name("Pass1")
 
 
 def _clear_managed_nodes(tree, exclude_prefix=None, only_prefix=None):
-    """Remove every node this add-on manages (`NODE_PREFIX`-tagged) --
-    narrowed to just `only_prefix` when given, or to everything EXCEPT
-    `exclude_prefix` when given (mutually exclusive; at most one is passed).
+    """Remove `VO_`-prefixed nodes, optionally limited to `only_prefix` or
+    skipping `exclude_prefix`.
 
-    Real, severe perf bug found doing an optimization pass on real per-frame
-    timings, found only once pass 1 and pass 2 were profiled TOGETHER in a
-    real per-frame loop rather than each in isolation (which is exactly what
-    this file's own unit tests do, and why they never caught it): pass 1's
-    nodes (`VO_Pass1*`) and pass 2's nodes (`VO_Beauty`/`VO_Vol_*`/`VO_Over_*`/
-    `VO_Composite`) share ONE compositor tree and used to share ONE blanket
-    `NODE_PREFIX` sweep here with no exclusion. Each pass's own "is my node
-    already there?" check (`build_pass1_capture_graph`'s `Pass1RLayers`,
-    `build_or_update_graph`'s `Beauty`) only ever looks for ITS OWN node --
-    so the moment pass 2 built/updated its graph and unconditionally swept
-    every `VO_`-prefixed node first, it also deleted pass 1's nodes; the
-    NEXT frame's pass 1 call then found `Pass1RLayers` missing, took ITS OWN
-    "rebuild from scratch" path, and swept every `VO_`-prefixed node AGAIN --
-    this time deleting pass 2's. Every single frame, both passes' graphs
-    were being torn down and rebuilt from scratch, TWICE, even though each
-    pass's own reuse logic was already working correctly in isolation.
-    Confirmed directly: this alone reproduced almost the full ~4s/frame
-    pass-1 cost this whole optimization pass has been chasing, independent
-    of yt_idv, write_still, frame-stepping, or anything else already ruled
-    out. Each call site now excludes the OTHER pass's node prefix, so
-    neither pass's rebuild can ever delete nodes it doesn't own.
+    Both passes share one tree, so each pass's sweep must exclude the other
+    pass's nodes; otherwise they delete each other's graphs every frame and
+    force full rebuilds.
     """
     for node in list(tree.nodes):
         if not node.name.startswith(NODE_PREFIX):
@@ -249,32 +113,11 @@ def _clear_managed_nodes(tree, exclude_prefix=None, only_prefix=None):
 
 
 def _load_fresh_image(path, node_label, colorspace_fn=set_linear_colorspace):
-    """Point the Image datablock named `node_label` at `path`'s on-disk
-    pixels, reusing that SAME datablock across calls (create once, then
-    `.filepath = path; .reload()`) rather than removing and re-`.load()`ing
-    it every call -- this is the "each frame sees this frame's pixels, not
-    stale/cached ones" requirement; a stable name is what lets repeated
-    calls find and reuse the same datablock instead of accumulating one
-    orphaned Image per frame over an animation.
+    """Point the Image datablock named `node_label` at `path`, reusing it
+    across calls.
 
-    Real perf bug found doing an optimization pass on real per-frame
-    timings, the same one `operators.read_depth_buffer`'s own docstring
-    documents in more detail: destroying and recreating an Image datablock
-    every frame (`bpy.data.images.remove()` + `.load()`, what this function
-    used to do) invalidates Cycles' own `use_persistent_data` session/BVH
-    cache for the MAIN scene, even though nothing about the main scene's
-    own geometry/camera/etc. changed -- confirmed directly, and independent
-    of every other cache-invalidation trigger fixed elsewhere (engine
-    switches, compositor node rebuilds, hide_render toggles, same-value
-    Scene.world/.camera reassignment). Reusing the datablock in place fixed
-    it here too.
-
-    `colorspace_fn` -- `set_linear_colorspace` (default, correct for the
-    beauty layer) or `set_display_referred_colorspace` (correct for a
-    volume layer) -- see both functions' docstrings; the two need genuinely
-    different treatment, not just different names for the same fix. Re-
-    applied on every call (cheap, idempotent) since which one is correct
-    doesn't change between calls for a given node_label.
+    Removing and re-loading an Image datablock every frame invalidates
+    Cycles' persistent-data cache, so the datablock is reloaded in place.
     """
     img = bpy.data.images.get(node_label)
     if img is None:
@@ -297,21 +140,10 @@ def _make_image_node(tree, name, path, colorspace_fn=set_linear_colorspace):
 
 
 def _color_output_socket(image_node):
-    """The Image node's primary RGBA output socket.
+    """The Image node's color output socket.
 
-    Normally named "Image" -- true for any plain, non-multi-part EXR, which
-    covers every per-object result `operators.write_render_result()` writes
-    (plain `bpy.data.images.new()` + `.save()`, no part name involved). But
-    Blender 5.0+ names this node's output after the EXR's internal
-    part/channel-group name instead when the part itself was named --
-    confirmed empirically true of this module's OWN beauty/depth EXRs, which
-    get their part name from `file_output_items`'s item name (see
-    `_configure_single_file_output`) via a real `CompositorNodeOutputFile`
-    node rather than a plain `Image.save()`. There is exactly one color
-    output socket either way (no separate "Alpha" output appears in the
-    named-part case), so falling back to `outputs[0]` when "Image" isn't
-    present covers both without this module needing to know or replicate
-    whatever name it gave that file_output_items entry.
+    Blender 5.0+ names it after the EXR part name when the part is named, so
+    fall back to `outputs[0]` when there is no "Image" socket.
     """
     return image_node.outputs.get("Image") or image_node.outputs[0]
 
@@ -320,16 +152,8 @@ def _make_alpha_over(tree, name, background_socket, foreground_socket):
     node = tree.nodes.new("CompositorNodeAlphaOver")
     node.name = name
     node.label = name
-    # Our inputs are already premultiplied per the external_render.py
-    # contract (RenderResult.alpha_mode == "PREMULTIPLIED") and Cycles'
-    # Combined pass is premultiplied by convention -- so we must NOT let
-    # Alpha Over re-convert straight-alpha-to-premultiplied. Historically a
-    # node-level `use_premultiply` checkbox (default off = "treat as already
-    # premultiplied", which is what we want); Blender 5.x moved this to a
-    # "Straight Alpha" input socket instead (confirmed default value is
-    # already `False`, i.e. already-premultiplied -- this explicit set is
-    # belt-and-suspenders, not correctness-critical). Handle both, default-
-    # safe either way since both APIs default to the behavior we want.
+    # Inputs are already premultiplied. Classic API uses `use_premultiply`;
+    # Blender 5.x uses a "Straight Alpha" input socket.
     if hasattr(node, "use_premultiply"):
         node.use_premultiply = False
     straight_alpha_input = node.inputs.get("Straight Alpha")
@@ -341,13 +165,8 @@ def _make_alpha_over(tree, name, background_socket, foreground_socket):
 
 
 def _link_final_output(scene, tree, source_socket):
-    """Wire `source_socket` to whatever this Blender's compositor treats as
-    "the final composited result" -- a `CompositorNodeComposite` node
-    (classic) or the tree's "Image" interface output socket via a
-    `NodeGroupOutput` node (5.0+, where `CompositorNodeComposite` doesn't
-    exist at all). Named/prefixed so `_clear_managed_nodes` tears it down
-    and it gets rebuilt fresh next call, same as the classic Composite node
-    always was.
+    """Wire `source_socket` to the final output: a Composite node (classic)
+    or a `NodeGroupOutput` on the "Image" interface socket (5.0+).
     """
     if _is_group_api(scene):
         group_out = tree.nodes.new("NodeGroupOutput")
@@ -363,34 +182,12 @@ def _link_final_output(scene, tree, source_socket):
 
 
 def _configure_single_file_output(node, directory, name_prefix):
-    """Point `node` (a fresh `CompositorNodeOutputFile`) at a single
-    full-float OPEN_EXR file per frame, named `<name_prefix><frame>.exr`.
-    Returns the node's single data input socket to link a source into.
+    """Configure a fresh File Output node to write one full-float OPEN_EXR
+    per frame, named `<name_prefix><frame>.exr`. Returns its input socket.
 
-    Blender 5.0+: `directory` + `file_name` (a node-level filename template;
-    a literal `####` run gets substituted with the zero-padded frame number
-    -- NOT automatic, unlike classic `file_slots[i].path`, confirmed
-    empirically) + one `file_output_items` entry, format overridden at the
-    item level since the node's own `.format.file_format` is locked to
-    'OPEN_EXR_MULTILAYER' once items exist.
-
-    `item.name` is left **empty**, deliberately -- this is a real bug fix,
-    not cosmetic. A non-empty item name makes Blender write this file as a
-    named EXR "part" (confirmed via direct OpenEXR inspection: the channels
-    end up grouped as e.g. `vo_depth_.R/.G/.B/.A` under that name instead of
-    plain `R/G/B/A`). A NAMED part loads fine through the compositor's own
-    Image node (used for the beauty EXR in pass 2 -- `_color_output_socket()`
-    exists to shrug off its differently-named output socket) but empirically
-    fails through the plain Python `bpy.data.images.load()` + `.pixels` path
-    `operators.read_depth_buffer()` uses for the depth EXR: on a real
-    Blender 5.x install this reproduced as `img.size == (0, 0)` /
-    `img.channels == 0`, then a downstream `IndexError` -- i.e. Blender's
-    Python-facing pixel-buffer API doesn't reliably support multi-part EXRs
-    the way its internal compositor file reader does. An empty item name
-    keeps the part unnamed with plain `RGBA` channels -- structurally
-    identical to what `operators.write_render_result()`'s plain
-    `Image.save()` already produces and which loads back fine -- so both
-    read paths this add-on actually uses stay on the well-supported shape.
+    The item name is left empty: a named item makes Blender write a named
+    EXR part, which fails to load through `bpy.data.images.load()` +
+    `.pixels` (size (0, 0)).
     """
     if hasattr(node, "file_output_items"):
         node.directory = directory
@@ -411,34 +208,15 @@ _VOLUME_ORDER_KEY = "vo_volume_order"
 
 
 def build_or_update_graph(scene, beauty_exr_path, volume_layers):
-    """(Re)builds the `VO_`-prefixed subgraph and links it to the final
-    composited output -- OR, when the exact same ordered set of volume
-    layers as last call is already built, updates the EXISTING Image nodes
-    in place instead.
+    """Build the pass-2 graph, or update the existing Image nodes in place if
+    the same ordered volume layers are already built.
 
-    `volume_layers`: list of (object_name, exr_path), already ordered
-    farthest-from-camera first, nearest last (see module docstring on
-    Alpha Over chain ordering). Pass `[]` for a frame with no flagged
-    volumes -- beauty is wired straight to the final output.
+    `volume_layers`: list of (object_name, exr_path), ordered farthest from
+    the camera first. Pass `[]` to wire beauty straight to the output.
 
-    Real perf bug found doing an optimization pass on real per-frame
-    timings: unconditionally tearing down and rebuilding this graph every
-    single frame -- even for the overwhelmingly common case where its SHAPE
-    never actually changes (a fixed set of flagged objects, camera-only
-    animation) -- was found to invalidate Cycles' own `use_persistent_data`
-    session/BVH cache just as badly as switching render engines did (see
-    `build_pass1_capture_graph`'s own docstring for the measurements this
-    finding is shared with). Reassigning `.image` on an EXISTING Image node
-    does NOT trigger this -- only creating/deleting nodes does -- so this
-    now only does a full rebuild when the volume layers' object names OR
-    THEIR ORDER actually differ from what's already built (an object got
-    flagged/unflagged, or the camera moved such that two volumes swapped
-    which one is closer -- `_sorted_far_to_near` can genuinely reorder
-    `volume_layers` frame to frame even with the same object SET, and the
-    Alpha Over chain's compositing order has to match or occlusion comes
-    out wrong). The exact order actually built is stashed as a custom ID
-    property on the tree (`_VOLUME_ORDER_KEY`) specifically to detect that
-    reordering case, not just a set/count change.
+    Creating/deleting nodes invalidates Cycles' persistent-data cache, so a
+    rebuild only happens when the layer names or their order change. The
+    built order is stored on the tree under `_VOLUME_ORDER_KEY`.
     """
     tree = ensure_compositor_tree(scene)
 
@@ -450,25 +228,9 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     )
 
     if topology_matches:
-        # `.as_pointer()` guards below, NOT unconditional reassignment --
-        # real perf bug found doing an optimization pass:
-        # `CompositorNodeImage.image` invalidates Cycles' own
-        # `use_persistent_data` session/BVH cache on EVERY reassignment,
-        # even to the exact same Image datablock it already held (confirmed
-        # directly, isolated from everything else: reloading that
-        # datablock's pixels via `.reload()` alone is free; only the
-        # `.image = ...` property write itself costs anything, and it costs
-        # the same whether the value actually changes or not).
-        # `_load_fresh_image` already reuses the same datablock by name
-        # across calls (see its own docstring), so after the first call
-        # these are always same-datablock reassignments -- skipping them is
-        # free and correct: the node already references the live datablock
-        # `_load_fresh_image` just refreshed in place. Comparing
-        # `.as_pointer()` rather than `is` -- same bpy quirk as node lookups
-        # elsewhere in this file: `beauty_node.image` hands back a fresh RNA
-        # wrapper on every access, so `is` would ALWAYS be true-mismatch
-        # even for the identical underlying datablock (confirmed directly:
-        # an `is not` guard here did not fix this bug at all).
+        # Reassigning `.image`, even to the same datablock, invalidates
+        # Cycles' persistent-data cache, so only assign when it differs.
+        # bpy returns a fresh wrapper per access, so compare `.as_pointer()`.
         beauty_img = _load_fresh_image(beauty_exr_path, _node_name("Beauty"), set_linear_colorspace)
         if beauty_node.image is None or beauty_node.image.as_pointer() != beauty_img.as_pointer():
             beauty_node.image = beauty_img
@@ -495,10 +257,6 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
             tree, _node_name("Over", str(i), obj_name),
             current_output, _color_output_socket(vol_node),
         )
-        # AlphaOver is a regular processing node (not file-backed), so its
-        # own output is always reliably named "Image" regardless of Blender
-        # version -- unlike the Image nodes above, which read Blender-5.0-
-        # renamed part names off disk (see _color_output_socket).
         current_output = alpha_over.outputs.get("Image")
 
     _link_final_output(scene, tree, current_output)
@@ -510,24 +268,8 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
 
 
 def _mute_pass1_file_outputs(tree):
-    """Mute pass 1's Beauty/Depth File Output nodes so pass 2's own render
-    doesn't redundantly re-write their EXRs a second time this frame.
-
-    Real perf bug found doing an optimization pass: once `build_pass1_
-    capture_graph`/`build_or_update_graph` stopped deleting each other's
-    nodes every frame (see `_clear_managed_nodes`'s own docstring), pass 1's
-    Render Layers -> File Output nodes correctly started PERSISTING through
-    pass 2's own render too -- but a File Output node writes to disk
-    whenever it has live input, regardless of whether anything downstream
-    (like pass 2's own Alpha Over chain) actually needs that write. Pass 2's
-    render was measured re-writing pass 1's full-float Beauty+Depth EXRs a
-    second, wholly redundant time every single frame -- confirmed directly:
-    muting these two nodes before pass 2 renders (un-muted again next time
-    pass 1 itself runs -- see build_pass1_capture_graph's own un-mute) cut
-    pass 2's own render time roughly in half, with byte-identical actual
-    output. `mute` is a plain property flip, not a node create/delete, so
-    it doesn't trigger the `use_persistent_data` cache-invalidation this
-    whole optimization pass has been chasing (confirmed directly).
+    """Mute pass 1's File Output nodes so pass 2's render doesn't rewrite
+    their EXRs. Muting doesn't invalidate the persistent-data cache.
     """
     beauty_out = tree.nodes.get(_node_name("Pass1BeautyOut"))
     if beauty_out is not None:
@@ -538,14 +280,10 @@ def _mute_pass1_file_outputs(tree):
 
 
 def _redirect_single_file_output(node, directory):
-    """Repoints an ALREADY-CONFIGURED File Output node (one
-    `_configure_single_file_output` already set up) at a new output
-    directory, without touching its `file_output_items`/`file_slots` --
-    calling `_configure_single_file_output` again would append a DUPLICATE
-    item on the group API. Only the directory ever needs to change frame to
-    frame (each frame gets its own fresh `frame_dir`, see operators.py); the
-    filename template/format were already correct from the first call and
-    never need to change.
+    """Point an already-configured File Output node at a new directory.
+
+    Calling `_configure_single_file_output` again would add a duplicate item
+    on the 5.0+ API.
     """
     if hasattr(node, "file_output_items"):
         node.directory = directory
@@ -554,42 +292,16 @@ def _redirect_single_file_output(node, directory):
 
 
 def build_pass1_capture_graph(scene, output_dir, frame_number):
-    """Pass-1 graph: Render Layers -> File Output (Combined, full-float EXR)
-    and Render Layers -> File Output (Depth/Z, full-float EXR).
+    """Pass-1 graph: Render Layers -> File Output for Combined and Depth
+    (full-float EXRs). Requires `view_layer.use_pass_z = True`.
 
-    This is deliberately the ONLY thing pass 1's compositor does -- no
-    Alpha Over, no volume layers (they don't exist yet; this pass is what
-    produces the Z buffer they need). Requires `view_layer.use_pass_z = True`
-    to already be set by the caller (operators.py), or the "Depth" output
-    socket won't exist on the Render Layers node.
-
-    Returns (beauty_path, depth_path) -- the exact files this frame's Pass 1
-    wrote, for the caller to read back into a DepthBuffer / feed as
-    `build_or_update_graph`'s `beauty_exr_path`.
-
-    Implements spec item 3's requirement to read back passes via a File
-    Output node rather than assuming in-memory access to render results is
-    reliably available.
-
-    Built ONCE, not every frame -- real perf bug found doing an
-    optimization pass on real per-frame timings: this graph's SHAPE never
-    varies at all (always exactly Render Layers -> two File Output nodes ->
-    a sink), yet it was being unconditionally torn down and rebuilt from
-    scratch every single frame. That turned out to invalidate Cycles' own
-    `use_persistent_data` session/BVH cache just as badly as switching
-    render engines did (confirmed directly: rebuilt every frame, ~4.4s
-    steady-state; built once and just repointing the output directory
-    thereafter, ~1.4s -- reassigning properties on EXISTING nodes doesn't
-    trigger this, only creating/deleting nodes does). Only the output
-    directory actually needs to change frame to frame (each frame gets its
-    own fresh temp directory, see operators.py's `frame_dir`), so that's
-    all this does on any call after the first.
+    Returns (beauty_path, depth_path) for this frame. Built once; later calls
+    only repoint the output directory, to avoid invalidating Cycles'
+    persistent-data cache.
     """
     tree = ensure_compositor_tree(scene)
 
-    # One-time cleanup of the obsolete pass-1 output node (see the comment
-    # in the rebuild branch below) in a tree built by an older version of
-    # this function -- e.g. saved into a .blend file.
+    # Remove the obsolete pass-1 output node from trees built by older versions.
     stale_sink = tree.nodes.get(_node_name("Pass1Composite"))
     if stale_sink is not None:
         tree.nodes.remove(stale_sink)
@@ -611,38 +323,19 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
         depth_socket = _configure_single_file_output(depth_out, output_dir, "vo_depth_")
         tree.links.new(render_layers.outputs["Depth"], depth_socket)
 
-        # Deliberately NO final-output node of pass 1's own. There used to
-        # be one (`VO_Pass1Composite`, Render Layers -> group output /
-        # Composite, purely so pass 1's Render Result preview wasn't
-        # blank) -- real bug: once pass 1's nodes stopped being swept by
-        # pass 2 (see _clear_managed_nodes's docstring), BOTH passes'
-        # final-output nodes coexisted in one tree, and Blender used pass
-        # 1's as the active one during pass 2's render too. Every saved
-        # frame was the bare Cycles beauty pass with no volume layer at all
-        # -- confirmed with a constant-color test renderer: 20% of pixels
-        # red in the volume EXR, 0% in the final PNG. Pass 2's own output
-        # node (built by build_or_update_graph) is the only one now.
+        # No final-output node for pass 1: Blender would use it as the active
+        # output during pass 2 too, dropping the volume layers.
 
         _layout_nodes(tree)
     else:
         _redirect_single_file_output(tree.nodes[_node_name("Pass1BeautyOut")], output_dir)
         _redirect_single_file_output(tree.nodes[_node_name("Pass1DepthOut")], output_dir)
 
-    # Unmute -- see build_or_update_graph's own comment for why pass 2 mutes
-    # these before its own render (pass 1's Render Layers node has to stay
-    # in the tree so its Depth/Combined outputs are still available to
-    # `use_pass_z`, but pass 1's own File Output nodes writing their EXRs a
-    # SECOND, redundant time during pass 2's render is pure waste -- muting
-    # a File Output node skips that write; un-muting here every time pass 1
-    # runs is what actually needs its own write to happen).
+    # Pass 2 mutes these; unmute so pass 1 writes its EXRs.
     tree.nodes[_node_name("Pass1BeautyOut")].mute = False
     tree.nodes[_node_name("Pass1DepthOut")].mute = False
 
-    # Compute the exact path each File Output wrote so the caller doesn't
-    # have to glob the output directory. Both APIs zero-pad to the same
-    # width this project has always used (4 digits) -- classic via its own
-    # automatic `####`-equivalent frame-number append, 5.0+ via the explicit
-    # `####` this function put in `file_name` (see `_configure_single_file_output`).
+    # Both APIs write a 4-digit zero-padded frame number.
     frame_suffix = f"{frame_number:04d}"
     beauty_path = os.path.join(output_dir, f"vo_beauty_{frame_suffix}.exr")
     depth_path = os.path.join(output_dir, f"vo_depth_{frame_suffix}.exr")
@@ -650,9 +343,7 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
 
 
 def _layout_nodes(tree):
-    """Cosmetic left-to-right layout for the nodes we manage, purely so the
-    graph is readable if you open the Compositor workspace to inspect it.
-    """
+    """Cosmetic left-to-right layout of the managed nodes."""
     managed = [n for n in tree.nodes if n.name.startswith(NODE_PREFIX)]
     x = 0
     for node in sorted(managed, key=lambda n: n.name):

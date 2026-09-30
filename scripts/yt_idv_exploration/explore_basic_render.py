@@ -1,35 +1,10 @@
-"""First exploration: does yt_idv's offscreen Maximum Intensity Projection
-even work at all, end to end -- real sample dataset, real offscreen OpenGL
-context, real render, real saved image?
+"""Checks that yt_idv's offscreen max-intensity render works end to end, and
+that `scene.camera.update(...)` changes the image.
 
-Run inside the throwaway venv (see setup_ytidv_venv.sh), NOT this repo's own
-dev venv (no `yt`/`yt_idv` there -- see yt_idv_renderer.py's module
-docstring):
+Run inside the throwaway venv (see setup_ytidv_venv.sh):
 
     source /path/to/ytidv-venv/bin/activate
     python scripts/yt_idv_exploration/explore_basic_render.py
-
-Confirmed findings (see images/01_*.png, images/02_*.png):
-  - `rc.add_scene(dd, "density", no_ghost=True)`'s component already
-    defaults to `render_method == "max_intensity"` -- confirmed by printing
-    it below, matching yt_idv/yt_idv/shaders/shaderlist.yaml's
-    `component_shaders.block_rendering.default_value`. This add-on's own
-    `yt_idv_renderer.py` still sets it explicitly rather than relying on
-    that default holding forever.
-  - `scene.camera.update(position=..., focus=..., up=..., fov=...,
-    aspect_ratio=...)` works and produces a genuinely different image --
-    confirmed via `np.allclose`, not just "it didn't crash".
-  - Steady-state render cost at 256x256 on this machine (software OSMesa,
-    no GPU needed): ~0.11s/frame after the first (slower, ~0.44s) call.
-  - The visible image is the domain box's silhouette (a hexagonal/pentagon
-    outline from most viewing angles -- 2-3 visible faces of a cube) filled
-    with a dim, mostly-uniform dark-red/near-black-red tone almost
-    everywhere, plus a bright blue/green/white MIP-colormapped blob at the
-    galaxy's actual density peak. The dim fill across the WHOLE box
-    (not just near the blob) suggests the current colormap gives even very
-    low densities a nonzero floor color/alpha rather than true transparency
-    -- exactly the kind of thing a real transfer function (the documented
-    "next step") would let you control; not investigated further here.
 """
 
 import time

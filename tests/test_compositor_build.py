@@ -14,15 +14,8 @@ def clean_scene():
 
 
 def test_ensure_compositor_tree_creates_group_and_image_output_on_blender_5_api(clean_scene):
-    # Pins the CURRENT behavior on Blender >= 5.0 (which this test suite runs
-    # under, via pip bpy==5.2.0): ensure_compositor_tree() must create the
-    # scene's compositing_node_group datablock (nothing auto-creates it, unlike
-    # classic scene.use_nodes) and make sure it has an "Image" OUTPUT socket
-    # on its interface, since that -- fed by a NodeGroupOutput node -- is what
-    # 5.0+ uses in place of the classic CompositorNodeComposite node. See
-    # module docstring and README "Blender 5.0+ compositor". If you run this
-    # same test suite against a real Blender < 5.0, this test should be
-    # skipped/updated since the premise (>= 5.0 API) no longer holds there.
+    # Blender 5.0+: nothing auto-creates compositing_node_group, and its "Image"
+    # output socket replaces the classic Composite node.
     assert hasattr(clean_scene, "compositing_node_group"), (
         "this test's premise (Blender >= 5.0 API) no longer holds -- "
         "update it for the Blender version actually running it"
@@ -38,8 +31,7 @@ def test_ensure_compositor_tree_creates_group_and_image_output_on_blender_5_api(
     ]
     assert len(image_sockets) == 1
 
-    # Idempotent: calling again on an already-set-up scene doesn't create a
-    # second tree or a duplicate "Image" socket.
+    # Idempotent.
     tree_again = cb.ensure_compositor_tree(clean_scene)
     assert tree_again is tree
     image_sockets_again = [
@@ -85,12 +77,8 @@ def test_configure_single_file_output_on_blender_5_api(clean_scene, tmp_path):
     assert node.file_name == "vo_beauty_####"
     assert len(node.file_output_items) == 1
     item = node.file_output_items[0]
-    # Pins a real bug found on a real Blender 5.x install: a non-empty item
-    # name makes Blender write this file as a NAMED EXR part, which
-    # bpy.data.images.load() (operators.read_depth_buffer's read path)
-    # reproducibly fails to decode -- see this function's docstring and
-    # test_pass1_depth_exr_round_trips_through_bpy_data_images_load below
-    # for the full end-to-end reproduction.
+    # Regression: a named item writes a named EXR part, which
+    # bpy.data.images.load() fails to decode.
     assert item.name == ""
     assert item.override_node_format is True
     assert item.format.file_format == "OPEN_EXR"
@@ -99,14 +87,8 @@ def test_configure_single_file_output_on_blender_5_api(clean_scene, tmp_path):
 
 
 def test_pass1_depth_exr_round_trips_through_bpy_data_images_load(clean_scene, tmp_path):
-    # End-to-end reproduction of a real bug found on a real Blender 5.x
-    # install: operators.read_depth_buffer() crashed with "index 0 is out of
-    # bounds for axis 2 with size 0" because bpy.data.images.load() silently
-    # decoded the depth EXR as 0x0/0-channel. Traced to
-    # _configure_single_file_output writing a NAMED file_output_items entry;
-    # this test exercises the exact same bpy.data.images.load() call
-    # operators.read_depth_buffer() makes, against a real render, and would
-    # fail the same way if that regressed.
+    # Regression: a named file_output_items entry made bpy.data.images.load()
+    # silently decode the depth EXR as 0x0 / 0 channels.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -134,12 +116,8 @@ def test_pass1_depth_exr_round_trips_through_bpy_data_images_load(clean_scene, t
 
 
 def test_set_linear_colorspace_forces_a_genuine_passthrough_tag(clean_scene):
-    # See the comment block above LINEAR_COLORSPACE_CANDIDATES in
-    # compositor_build.py for the full story: `bpy.data.images.new()`'s own
-    # default ("Linear Rec.709") looks like a passthrough tag but actually
-    # bakes an sRGB-shaped encode into the file at `.save()` time -- fixed by
-    # actively forcing "Non-Color" instead, which set_linear_colorspace does
-    # unconditionally now (no longer a no-op).
+    # The .new() default ("Linear Rec.709") bakes an sRGB encode into the file
+    # at .save() time; "Non-Color" is a true passthrough.
     img = bpy.data.images.new("t", width=2, height=2, alpha=True, float_buffer=True)
     assert img.colorspace_settings.name == "Linear Rec.709"  # the buggy default, confirmed unchanged
     cb.set_linear_colorspace(img)
@@ -147,12 +125,8 @@ def test_set_linear_colorspace_forces_a_genuine_passthrough_tag(clean_scene):
 
 
 def test_set_linear_colorspace_prevents_the_save_time_encode_bake(clean_scene, tmp_path):
-    # THE direct regression test for bug 1 (see the comment block above
-    # LINEAR_COLORSPACE_CANDIDATES): saving a `.new()` float image at its own
-    # default colorspace bakes an sRGB-shaped encode into the EXR on disk.
-    # Verified via direct OpenEXR inspection, bypassing Blender's own image
-    # loader entirely, so this doesn't depend on trusting bpy's colorspace
-    # auto-detection on read.
+    # Regression: the default colorspace bakes an sRGB encode into the EXR.
+    # Read back with OpenEXR directly, bypassing Blender's loader.
     import OpenEXR
     import Imath
 
@@ -183,18 +157,8 @@ def test_set_linear_colorspace_prevents_the_save_time_encode_bake(clean_scene, t
 
 
 def test_compositor_image_node_round_trips_a_known_linear_value_correctly(clean_scene, tmp_path):
-    # Beauty-layer semantics: genuinely linear data, written via
-    # set_linear_colorspace (matching write_render_result -- though beauty
-    # itself is actually written natively by Blender's own File Output node,
-    # not this function, this test stands in for "some genuinely-linear EXR"
-    # generically) and read back the same way (the default `colorspace_fn`
-    # on `_make_image_node`, used for the beauty node in build_or_update_graph).
-    # Textbook reference value: linear 0.5 sRGB-encodes to 188/255 -- exactly
-    # ONE real gamma correction (Standard view transform's own, at final
-    # output), which is what genuinely-linear data actually needs to display
-    # correctly. See the comment block above LINEAR_COLORSPACE_CANDIDATES in
-    # compositor_build.py for the two-bugs-stacked story this test used to be
-    # entangled with.
+    # Beauty-layer semantics: linear data gets exactly one gamma correction
+    # (linear 0.5 -> sRGB 188/255).
     scene = clean_scene
     scene.render.resolution_x = 4
     scene.render.resolution_y = 4
@@ -229,17 +193,8 @@ def test_compositor_image_node_round_trips_a_known_linear_value_correctly(clean_
 
 
 def test_compositor_volume_layer_image_node_passes_through_display_ready_value_unchanged(clean_scene, tmp_path):
-    # Volume-layer semantics: already-display-ready colormap data (NOT
-    # scene-linear), written via set_linear_colorspace (matching
-    # write_render_result -- a true passthrough on disk) and read back via
-    # set_display_referred_colorspace (matching build_or_update_graph's
-    # per-object Image node). Standard view transform's one mandatory encode
-    # at final output must come out canceled by the compensating decode this
-    # read-side tag applies, netting to IDENTITY: a genuinely-linear-style
-    # single-gamma-correction test (the one above) would be WRONG here --
-    # colormap bytes must survive unchanged, not get gamma-corrected as if
-    # they were raw light data. See the comment block above
-    # LINEAR_COLORSPACE_CANDIDATES in compositor_build.py.
+    # Volume-layer semantics: display-ready colormap data must survive
+    # unchanged -- the read-side decode cancels the view transform's encode.
     scene = clean_scene
     scene.render.resolution_x = 4
     scene.render.resolution_y = 4
@@ -290,14 +245,8 @@ def _write_exr(path, value, size=2):
 
 
 def test_load_fresh_image_reuses_the_same_datablock_across_calls(clean_scene, tmp_path):
-    # Real perf bug found doing an optimization pass: bpy.data.images.
-    # remove() + .load() on every call (this function's old behavior) was
-    # found to invalidate Cycles' own use_persistent_data cache for the
-    # scene being rendered -- see _load_fresh_image's own docstring, and
-    # operators.read_depth_buffer's for the fuller measured story. This
-    # pins the fix: repeated calls under the same node_label must reuse
-    # ONE Image datablock, not create-then-destroy a new one each time,
-    # while still correctly picking up each call's own on-disk pixels.
+    # Regression (perf): remove() + load() per call invalidated Cycles'
+    # persistent-data cache.
     path_a = str(tmp_path / "a.exr")
     path_b = str(tmp_path / "b.exr")
     _write_exr(path_a, 0.2)
@@ -319,9 +268,6 @@ def test_load_fresh_image_reuses_the_same_datablock_across_calls(clean_scene, tm
 
 
 def test_build_pass1_capture_graph_returns_paths_that_actually_get_written(clean_scene, tmp_path):
-    # End-to-end on the real (5.0+) API: render a trivial scene through the
-    # pass-1 graph and confirm the two paths build_pass1_capture_graph()
-    # predicts are exactly the files Blender wrote -- no globbing needed.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -344,15 +290,8 @@ def test_build_pass1_capture_graph_returns_paths_that_actually_get_written(clean
 
 
 def test_build_or_update_graph_composites_named_part_beauty_and_result_exrs(clean_scene, tmp_path):
-    # End-to-end regression for a real bug found while porting: pass 1's
-    # beauty EXR is written via a named CompositorNodeOutputFile item, which
-    # on Blender 5.0+ makes the Image node that reads it back expose its
-    # output under THAT name instead of the generic "Image" -- while a
-    # per-object result (written the way operators.write_render_result()
-    # actually does, plain Image.save(), no part name) keeps the generic
-    # name. build_or_update_graph must composite both correctly; hardcoding
-    # `.outputs.get("Image")` for the beauty side returns None and crashes
-    # the very next link (this is what _color_output_socket exists to fix).
+    # Regression: an Image node reading a named-part EXR has no "Image"
+    # output, so hardcoding outputs.get("Image") crashed the link.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -394,13 +333,7 @@ def test_build_or_update_graph_composites_named_part_beauty_and_result_exrs(clea
 
 
 # --- reuse-in-place instead of rebuild-every-frame (perf) ---------------------
-# Real perf bug found doing an optimization pass on real per-frame timings:
-# unconditionally tearing down and rebuilding these graphs every frame, even
-# though their SHAPE usually never changes, was found to invalidate Cycles'
-# own use_persistent_data session/BVH cache just as badly as switching render
-# engines did. Both graph builders now reuse existing nodes (just updating
-# properties) when nothing structural actually changed, and only fall back to
-# a real rebuild when it did.
+# Rebuilding the graphs every frame invalidated Cycles' persistent-data cache.
 
 def test_build_pass1_capture_graph_reuses_nodes_across_calls(clean_scene, tmp_path):
     scene = clean_scene
@@ -419,10 +352,7 @@ def test_build_pass1_capture_graph_reuses_nodes_across_calls(clean_scene, tmp_pa
     dir1 = tmp_path / "frame1"
     dir1.mkdir()
     beauty_path1, depth_path1 = cb.build_pass1_capture_graph(scene, str(dir1), 1)
-    # .as_pointer() (the underlying C pointer, stable regardless of Python
-    # wrapper churn) -- bpy's RNA wrapper objects aren't singleton-cached,
-    # so plain `is` on two separate `tree.nodes[name]` lookups is NOT a
-    # reliable identity check even for the exact same underlying node.
+    # Compare .as_pointer(): bpy wrappers aren't cached, so `is` is unreliable.
     rlayers_ptr = tree.nodes[cb._node_name("Pass1RLayers")].as_pointer()
     beauty_ptr = tree.nodes[cb._node_name("Pass1BeautyOut")].as_pointer()
 
@@ -441,22 +371,8 @@ def test_build_pass1_capture_graph_reuses_nodes_across_calls(clean_scene, tmp_pa
 
 
 def test_pass1_and_pass2_graphs_coexist_across_interleaved_frames(clean_scene, tmp_path):
-    # Severe perf bug found doing an optimization pass, only once pass 1 and
-    # pass 2 were profiled TOGETHER in a real per-frame loop -- exactly what
-    # neither this test file's other reuse tests do, each exercising only
-    # ONE of the two builders in isolation, which is exactly why they never
-    # caught this: pass 1's and pass 2's nodes used to share ONE blanket
-    # `NODE_PREFIX` sweep in `_clear_managed_nodes`, so each pass's own "is
-    # my node already there?" check only ever looked for its OWN node --
-    # meaning the moment pass 2 built/updated its graph, it deleted pass 1's
-    # nodes too (and vice versa), forcing a full rebuild of BOTH graphs
-    # every single frame, in a ping-pong that reproduced almost this whole
-    # session's entire original per-frame slowdown. This test pins that
-    # pass 1's nodes and pass 2's nodes BOTH survive node-identity-stable
-    # (`.as_pointer()`-stable, see test_build_pass1_capture_graph_reuses_
-    # nodes_across_calls for why plain `is` doesn't work here) across
-    # multiple frames where BOTH builders get called every frame, the real
-    # per-frame pattern render_current_frame actually uses.
+    # Regression (perf): each pass's rebuild swept the other pass's nodes,
+    # forcing a full rebuild of both graphs every frame.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -503,12 +419,8 @@ def test_pass1_and_pass2_graphs_coexist_across_interleaved_frames(clean_scene, t
 
 
 def test_build_or_update_graph_mutes_pass1_file_outputs_and_pass1_unmutes_them(clean_scene, tmp_path):
-    # See _mute_pass1_file_outputs's own docstring: pass 1's File Output
-    # nodes persisting (correctly, per the fix above) into pass 2's own
-    # render means they'd otherwise redundantly re-write their EXRs a
-    # second time every frame -- muting them for pass 2's render (and
-    # un-muting again the next time pass 1 itself builds/renders) avoids
-    # that waste without touching node identity at all.
+    # Otherwise pass 1's persisting File Output nodes re-write their EXRs
+    # during pass 2's render.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -535,11 +447,8 @@ def test_build_or_update_graph_mutes_pass1_file_outputs_and_pass1_unmutes_them(c
 
 
 def test_pass1_and_pass2_graphs_share_exactly_one_final_output(clean_scene, tmp_path):
-    # Real bug: pass 1 used to add its own final-output node (VO_Pass1Composite,
-    # Render Layers -> output) for a non-blank preview. Once pass 1's nodes
-    # stopped being swept by pass 2, both output nodes coexisted and Blender
-    # used pass 1's during pass 2's render -- every saved frame was the bare
-    # beauty pass, no volume. See build_pass1_capture_graph's own comment.
+    # Regression: pass 1's own output node shadowed pass 2's, so frames
+    # saved without the volume.
     scene = clean_scene
     bpy.ops.mesh.primitive_cube_add()
     bpy.ops.object.camera_add(location=(0, -5, 0), rotation=(1.5708, 0, 0))
@@ -564,9 +473,7 @@ def test_pass1_and_pass2_graphs_share_exactly_one_final_output(clean_scene, tmp_
 
 
 def test_build_pass1_capture_graph_removes_obsolete_pass1_output_node(clean_scene, tmp_path):
-    # A tree built by an older version (e.g. saved in a .blend) still has the
-    # VO_Pass1Composite output node -- it must be cleaned up, not left to
-    # shadow pass 2's own output.
+    # Trees from older versions (e.g. saved .blends) still have this node.
     scene = clean_scene
     bpy.context.view_layer.use_pass_z = True
     tree = cb.ensure_compositor_tree(scene)
@@ -603,8 +510,6 @@ def test_build_or_update_graph_reuses_nodes_when_same_objects_same_order(clean_s
     vol_b_path1 = _build_solid_volume_image(tmp_path, "b1", green=0.4)
 
     cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path1), ("B", vol_b_path1)])
-    # .as_pointer() -- see test_build_pass1_capture_graph_reuses_nodes_across_calls
-    # for why plain `is` doesn't reliably check bpy node identity.
     beauty_ptr = tree.nodes[cb._node_name("Beauty")].as_pointer()
     vol_a_ptr = tree.nodes[cb._node_name("Vol", "A")].as_pointer()
     vol_b_ptr = tree.nodes[cb._node_name("Vol", "B")].as_pointer()
@@ -616,12 +521,10 @@ def test_build_or_update_graph_reuses_nodes_when_same_objects_same_order(clean_s
     vol_b_path2 = _build_solid_volume_image(tmp_path, "b2", green=0.45)
     cb.build_or_update_graph(scene, beauty_path, [("A", vol_a_path2), ("B", vol_b_path2)])
 
-    # Same object names, same order -- nodes reused in place, not recreated.
     assert tree.nodes[cb._node_name("Beauty")].as_pointer() == beauty_ptr
     assert tree.nodes[cb._node_name("Vol", "A")].as_pointer() == vol_a_ptr
     assert tree.nodes[cb._node_name("Vol", "B")].as_pointer() == vol_b_ptr
     assert tree.nodes[cb._node_name("Over", "0", "A")].as_pointer() == over_ptr
-    # But the image CONTENT was refreshed to the new call's paths.
     assert tree.nodes[cb._node_name("Vol", "A")].image.filepath_raw.endswith("a2.exr")
     assert tree.nodes[cb._node_name("Vol", "B")].image.filepath_raw.endswith("b2.exr")
 
@@ -643,10 +546,7 @@ def test_build_or_update_graph_rebuilds_when_object_set_changes(clean_scene, tmp
 
 
 def test_build_or_update_graph_rebuilds_when_order_changes(clean_scene, tmp_path):
-    # Same SET of objects, different order -- e.g. the camera moved such
-    # that two volumes swapped which one is closer. Must NOT be silently
-    # treated as "topology unchanged": the Alpha Over chain's compositing
-    # order has to match, or occlusion comes out wrong.
+    # Depth order changed (e.g. camera moved): Alpha Over chain must follow.
     scene = clean_scene
     tree = cb.ensure_compositor_tree(scene)
     beauty_path = _build_solid_volume_image(tmp_path, "beauty", green=0.1)
@@ -659,7 +559,6 @@ def test_build_or_update_graph_rebuilds_when_order_changes(clean_scene, tmp_path
 
     cb.build_or_update_graph(scene, beauty_path, [("B", vol_b_path), ("A", vol_a_path)])
 
-    # The old A-first chain nodes must be gone, replaced by a B-first chain.
     assert tree.nodes.get(cb._node_name("Over", "0", "A")) is None
     assert tree.nodes.get(cb._node_name("Over", "0", "B")) is not None
     assert tree.nodes.get(cb._node_name("Over", "1", "A")) is not None

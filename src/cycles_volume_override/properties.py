@@ -1,38 +1,15 @@
-"""Marks objects for external volume rendering and holds the parameters that
-get passed straight through as `VolumeObjectParams.custom_params`, plus the
-dataset identity fields consumed by `operators.build_dataset_params()` (see
-change_tracking.py and README "Dataset / change tracking").
+"""Per-object properties: the external-volume flag, shading parameters
+passed through as `VolumeObjectParams.custom_params`, and dataset identity
+and time-mapping fields used by `operators.build_dataset_params()`.
 
-A handful of common volume parameters are exposed as first-class fields (so
-they get a normal, typed UI) plus a free-form string key/value table for
-anything the real renderer needs that we haven't anticipated -- both feed
-into the same `custom_params` dict, so growing the renderer's parameter set
-never requires touching this add-on's Python.
-
-`dataset_path`/`dataset_kind` are deliberately generic, not VDB-specific:
-the end goal is arbitrary scientific datasets (e.g. a yt-loadable simulation
-output), not just Blender-native volumetric formats. `dataset_kind` is a
-free-form label (`"yt"`, `"vdb"`, `"hdf5"`, whatever your renderer's loaders
-recognize) -- Blender doesn't interpret it, it's just carried through to
-`DatasetParams.dataset_kind` for the renderer to dispatch on. Anything a
-specific loader needs beyond a path (a unit system override, an HDF5
-dataset key) goes in `custom_params_extra` below, the same free-form table
-as any other renderer parameter.
-
-`yt_idv_volume_provider` is the one exception that DOES get its own typed
-field despite that "use custom_params_extra" rule -- see its own docstring
-and `yt_idv_renderer.py`'s "Custom volume setup": a plain path/kind string
-can't express real yt dataset setup (field selection, derived fields, cut
-regions), so this points at a Python function you write instead. Still
-just another `custom_params` entry once built (`to_custom_params()` below),
-same as every other field here -- the typed field is purely for UI
-discoverability given how central it is for real yt_idv use.
+Typed fields plus the free-form key/value table all end up in the same
+`custom_params` dict. `dataset_kind` is a free-form label for the renderer
+to dispatch on; Blender doesn't interpret it.
 """
 
 import bpy
 
-CUSTOM_PARAM_KEY_MAXLEN = 63  # bpy.props.StringProperty has no built-in limit;
-#                                keep collection items sane-sized for display.
+CUSTOM_PARAM_KEY_MAXLEN = 63
 
 
 class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
@@ -87,12 +64,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         description="Passed through as custom_params['color'] (RGB)",
         subtype="COLOR",
         size=3,
-        # Loud, obviously-synthetic red by default -- deliberately NOT a
-        # plausible "real" volume color -- so a flagged object's placeholder
-        # output (DEBUG_FLAT / SAMPLE_CONSTANT renderer modes; see
-        # operators.RENDERER_MODES) is unmistakable against Cycles' own
-        # render while debugging the pipeline. Change it once you're past
-        # "is this wired up at all" and into "does this look right".
+        # Obviously-synthetic red so placeholder output stands out.
         default=(1.0, 0.0, 0.0),
         min=0.0,
         max=1.0,
@@ -172,11 +144,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
 
     # --- Blender frame -> dataset time mapping ---
-    # See operators.resolve_requested_time() and README "Dataset / change
-    # tracking" -> "Time mapping". Blender only resolves a single requested
-    # scalar and hands it over as DatasetParams.requested_time -- snapping
-    # that to an actual timestep the dataset has is the renderer's job (it's
-    # the one that knows what timesteps exist), not Blender's.
+    # Blender resolves a single requested time; snapping it to a real
+    # timestep is the renderer's job.
     mapping_policy: bpy.props.EnumProperty(
         name="Time Mapping",
         description="How the current Blender frame maps to DatasetParams.requested_time",
@@ -229,11 +198,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     def to_custom_params(self) -> dict:
         """Build the `VolumeObjectParams.custom_params` dict for this object.
 
-        Deliberately does NOT include dataset_path/dataset_kind -- those are
-        dataset *identity*, handled separately by
-        `operators.build_dataset_params()` -> `DatasetParams`, with their own
-        change-tracking hash. Everything here is a "cheap to recompute,
-        doesn't require reloading the dataset" shading knob.
+        Excludes dataset_path/dataset_kind, which are tracked separately in
+        `DatasetParams`.
         """
         params = {
             "density_scale": self.density_scale,
@@ -250,11 +216,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
 
 
 def ensure_dataset_uuid(obj) -> str:
-    """Generate and persist `dataset_uuid` on first use, then always return
-    it. Called from `operators.build_dataset_params()` -- not eagerly on
-    flagging, so toggling the flag on/off/on before ever rendering doesn't
-    burn through UUIDs for no reason.
-    """
+    """Return `dataset_uuid`, generating and storing it on first use."""
     props = obj.volume_override
     if not props.dataset_uuid:
         import uuid

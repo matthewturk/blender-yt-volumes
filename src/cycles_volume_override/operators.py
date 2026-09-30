@@ -1,55 +1,15 @@
-"""Render orchestration: the two-pass-per-frame pipeline this add-on's F12
-override runs, plus the request-building glue between Blender data and the
-external_render.py contract.
+"""Render orchestration: the two-pass-per-frame pipeline behind the F12
+override, plus the glue that builds RenderRequests from Blender data.
 
-Why two full render passes per frame (not obvious from the spec's lettered
-steps alone -- worth stating explicitly, like the two open questions in
-prompt.md):
+Two passes are needed because Blender's compositor runs inside the same
+`render.render()` call that produces the Z pass, so one call can't both
+produce this frame's depth and composite a volume render made from it.
 
-Blender's compositor executes as part of ONE `render.render()` call, right
-after the 3D engine renders and BEFORE that call returns. That means by the
-time any `render_post` handler could react to "the Z pass is ready," the
-compositor for THIS SAME render has already run -- using whatever was in
-the Image nodes beforehand (stale). There is no handler hook that fires
-between "Z pass exists" and "compositor already consumed it." So a single
-`render.render()` call cannot both produce this frame's Z pass AND composite
-this frame's volume-renderer result from it.
-
-Fix: two passes, explicitly triggered by our own operator (the spec's "or an
-overridden render operator" option) rather than handlers alone:
-
-  Pass 1 (real Cycles): main scene, Z pass on, compositor set to JUST
-  write Combined + Z to full-float EXR via File Output
-  (compositor_build.build_pass1_capture_graph). We throw away whatever
-  pass 1's own Composite output is -- it's built from stale/no volume
-  layers -- we only want the two EXRs it wrote to disk. Flagged objects do
-  NOT need hiding here -- see build_volume_params's own docstring on why
-  they're required to be Empty-Cube objects, which never contribute
-  anything to a Cycles render in the first place (confirmed directly: a
-  scene with vs. without an Empty present, hide_render on or off, renders
-  BYTE-IDENTICAL either way). A real, un-hidden mesh with a real material
-  used to need an explicit hide-for-pass-1/unhide-after dance -- besides
-  the correctness reason (don't let its own material double-render on top
-  of the external volume result), that toggle was ALSO found to invalidate
-  Cycles' own use_persistent_data session/BVH cache every single frame,
-  same as switching render engines or rebuilding the compositor graph did
-  (see compositor_build.py's build_pass1_capture_graph/build_or_update_
-  graph docstrings for those two). Requiring Empty-Cube objects instead
-  sidesteps that whole class of problem structurally, not just for this
-  one call site.
-
-  Between passes: read the Z EXR back into a DepthBuffer, call
-  render_volume() per flagged object, write each RenderResult to its own
-  EXR, then rebuild the compositor as Image(beauty EXR) -> chained Alpha
-  Over per volume -> Composite (compositor_build.build_or_update_graph).
-
-  Pass 2 (cheap): the compositor graph built above reads EVERYTHING from
-  EXRs via Image nodes -- it has no live Render Layers dependency -- so
-  pass 2's own 3D render is thrown away too; it exists purely to make
-  Blender execute the compositor and write the real final output file.
-  Deliberately does NOT switch render engines for this (see render_
-  current_frame's own comment) -- same use_persistent_data reasoning as
-  above.
+  Pass 1: Cycles renders beauty + Z, written to EXR by a File Output graph.
+  Between passes: read Z back, call the renderer per flagged object, write
+  each result to EXR, and build an Image -> Alpha Over -> Composite graph.
+  Pass 2: renders again (same engine) purely to run that compositor graph
+  and write the final output.
 """
 
 import math
@@ -63,16 +23,7 @@ import bpy
 from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
-#
-# Added while diagnosing a reported hang: prints a timestamped line to
-# Blender's system console (Window > Toggle System Console on Windows; just
-# the terminal you launched Blender from on Linux/macOS) before/after every
-# step of the two-pass pipeline that can plausibly block -- both
-# `bpy.ops.render.render()` calls, every per-object `render_volume()` call,
-# and the EXR read/write round-trips -- so a hang shows up as "the last line
-# printed" instead of a silent freeze with no way to tell which step it's in.
-# Gated on `VolumeOverridePreferences.verbose_logging` (default on) so it can
-# be switched off once the pipeline is known-good; see draw() below.
+# Timestamped per-step console logging, gated on the verbose_logging preference.
 _LOG_PREFIX = "[VolumeOverride]"
 _log_start_time = None
 
@@ -86,9 +37,7 @@ def _log(msg):
 
 
 class _StepTimer:
-    """`with _StepTimer("pass 1 render"): ...` -- logs entry immediately (so
-    you see it start even if it never finishes) and exit with elapsed time.
-    """
+    """Context manager logging a step's start and its elapsed time on exit."""
 
     def __init__(self, label):
         self.label = label
@@ -120,22 +69,9 @@ class _NullStepTimer:
         return False
 
 class YtIdvRenderSettings(bpy.types.PropertyGroup):
-    """Live, UI-editable overrides for `yt_idv_renderer.py`'s own hardcoded
-    module constants -- one field per constant, defaults matching those
-    constants exactly, so leaving everything at its default reproduces the
-    old hardcoded behavior precisely. Deliberately does NOT expose dataset
-    selection (`SAMPLE_DATASET_NAME`/`SAMPLE_FIELD` stay hardcoded) --
-    dataset loading/creation is a separate, not-yet-designed problem.
-
-    Reaches the renderer via `VolumeObjectParams.custom_params` (see
-    `_yt_idv_custom_params`/`build_volume_params` below), NOT by
-    `yt_idv_renderer.py` importing `bpy`/reading this directly -- keeps that
-    module's own "no bpy dependency, testable via a hand-built RenderRequest
-    alone" property intact. Values here only ever apply to `YT_IDV_*`
-    `renderer_mode`s (see `VolumeOverridePreferences.draw`'s conditional
-    section); harmless if set while a different renderer_mode is active,
-    since `custom_params` is a passthrough dict every renderer is free to
-    ignore.
+    """UI overrides for `yt_idv_renderer.py`'s module constants (defaults
+    match them). Passed to the renderer via `custom_params`, so
+    `yt_idv_renderer.py` stays bpy-free.
     """
 
     backend: bpy.props.EnumProperty(
@@ -214,11 +150,8 @@ class YtIdvRenderSettings(bpy.types.PropertyGroup):
         default=0.15, min=0.01, max=10.0,
     )
 
-    # --- Curve-driven alpha / image-driven color (Threshold Fog + MIP
-    # Alpha only -- see yt_idv_renderer.py module docstring's "Curve-driven
-    # alpha / image-driven color" section). Shared across both modes
-    # deliberately -- one curve/image setting, not four independent ones --
-    # see `_yt_idv_custom_params`'s own comment for why.
+    # --- Curve-driven alpha / image-driven color (shared by Threshold Fog
+    # and MIP Alpha)
     alpha_source: bpy.props.EnumProperty(
         name="Alpha Source",
         description="How the alpha-vs-position ramp for Threshold Fog / MIP Alpha is shaped",
@@ -237,18 +170,8 @@ class YtIdvRenderSettings(bpy.types.PropertyGroup):
         ],
         default="NAMED",
     )
-    # A NAME, not `PointerProperty(type=bpy.types.Image)` -- confirmed
-    # directly that AddonPreferences (and anything nested inside one, even
-    # a plain PropertyGroup that merely CONTAINS an ID pointer somewhere in
-    # its tree) categorically rejects ID/data-block PointerProperty fields:
-    # `ValueError: ... PointerProperty could not register because this
-    # type doesn't support data-block properties`. Same restriction that
-    # ruled out `PointerProperty(type=bpy.types.CurveMapping)` above, for a
-    # different underlying reason (CurveMapping isn't an ID type at all;
-    # Image IS, but AddonPreferences still can't hold one). Standard
-    # Blender workaround: store the name, look it up in `bpy.data.images`
-    # when needed (`_yt_idv_custom_params`), and use `layout.prop_search`
-    # (not `layout.prop`) for a proper picker UI -- see `draw()`.
+    # A name, not a PointerProperty: AddonPreferences can't hold ID
+    # (data-block) pointers. Looked up in bpy.data.images; UI uses prop_search.
     color_image_name: bpy.props.StringProperty(
         name="Color Image",
         description="Any Blender Image -- averaged across its rows then resampled horizontally into the colormap, so any image works regardless of its native size/aspect (see _sample_image_as_1d_rgba)",
@@ -261,27 +184,9 @@ _ALPHA_CURVE_NODE_NAME = "AlphaCurve"
 
 
 def _get_or_create_alpha_curve_node():
-    """A `ShaderNodeFloatCurve`, tucked away in its own node group purely as
-    a data container for its `.mapping` (a real `bpy.types.CurveMapping`)
-    -- NEVER connected to any real shader output or used for actual
-    shading, never added to any Material. This is the standard workaround
-    for "I want a native curve-editing widget somewhere that isn't a node
-    editor": `CurveMapping` can't be a `PointerProperty` on a plain
-    PropertyGroup (confirmed directly: `TypeError: PointerProperty(...)
-    expected an RNA type derived from ID or ID Property Group`) -- it can
-    only exist as a field Blender's OWN C-defined structs already carry
-    (nodes, brushes, color management settings, ...). A node's own
-    `.mapping` is the most convenient of those to piggyback on:
-    `UILayout.template_curve_mapping(node, "mapping")` draws the SAME
-    widget a Shader Editor's N-panel would show, directly inside this
-    add-on's own Preferences panel -- see `VolumeOverridePreferences.draw`.
-
-    The node group lives in `bpy.data.node_groups` (persisted with the
-    .blend file, same as any other node group) and is created lazily, once,
-    the first time it's needed -- `get`-or-`new` on both the group and the
-    node itself, so calling this repeatedly (once per `draw()` call, once
-    per render) is cheap and always returns the SAME node/mapping, not a
-    fresh one each time.
+    """Get-or-create a hidden `ShaderNodeFloatCurve` used only as a holder
+    for a `CurveMapping`, which can't be a PointerProperty on a
+    PropertyGroup. Drawn in Preferences via `template_curve_mapping`.
     """
     tree = bpy.data.node_groups.get(_ALPHA_CURVE_NODE_GROUP_NAME)
     if tree is None:
@@ -295,21 +200,10 @@ def _get_or_create_alpha_curve_node():
 
 
 def _evaluate_alpha_curve(nbins=256):
-    """The hidden alpha curve (see `_get_or_create_alpha_curve_node`),
-    sampled at `nbins` evenly-spaced positions across its own `[0, 1]`
-    domain -- the plain list of floats that actually crosses `custom_
-    params` as `"yt_idv_alpha_curve"` (see `_yt_idv_custom_params`),
-    resampled again on the `yt_idv_renderer.py` side to whatever bin count
-    the LUT actually needs (`_resample_1d`) -- so `nbins` here doesn't need
-    to match that exactly, it's just "how finely to sample the curve
-    itself", 256 being a reasonable default resolution for a hand-drawn
-    curve either way.
+    """Sample the alpha curve at `nbins` points over [0, 1] as a list of floats.
 
-    `mapping.initialize()` is called every time (confirmed safe/idempotent
-    on an already-initialized, already-edited mapping -- doesn't reset
-    existing points) rather than assumed to have already happened, since
-    `CurveMapping.evaluate()` needs it to have run at least once since the
-    curve's own points were last changed.
+    `initialize()` is required before `evaluate()` after edits; it doesn't
+    reset existing points.
     """
     node = _get_or_create_alpha_curve_node()
     mapping = node.mapping
@@ -319,19 +213,10 @@ def _evaluate_alpha_curve(nbins=256):
 
 
 def _sample_image_as_1d_rgba(image, nbins=256):
-    """Read `image` (a `bpy.types.Image`) back as an `(nbins, 4)` RGBA list
-    of lists, "functionally 1D" per the user's own framing: averaged across
-    ALL rows (collapsing whatever vertical variation exists) then resampled
-    horizontally to `nbins` evenly-spaced positions -- so any image works
-    as a colormap source regardless of its own native resolution/aspect
-    ratio, not just a literal 1-pixel-tall gradient strip. Missing channels
-    (RGB-only or grayscale images) are padded with alpha=1.0 (unused
-    anyway -- alpha always comes from the alpha curve/ramp, never this).
+    """Read `image` as an `(nbins, 4)` RGBA list: averaged across rows, then
+    resampled horizontally. Missing channels are padded with 1.0.
 
-    Raises `ValueError` for a 0x0 image (e.g. one whose source file isn't
-    packed/available) rather than silently producing a degenerate
-    colormap -- a clear, immediate error beats a mysteriously blank/wrong
-    render.
+    Raises `ValueError` for a 0x0 image (e.g. source file not available).
     """
     w, h = image.size[0], image.size[1]
     if w == 0 or h == 0:
@@ -346,7 +231,7 @@ def _sample_image_as_1d_rgba(image, nbins=256):
         padded = np.ones((h, w, 4))
         padded[..., : image.channels] = pixels
         pixels = padded
-    row_avg = pixels.mean(axis=0)  # (w, 4) -- collapse vertical variation, "functionally 1D"
+    row_avg = pixels.mean(axis=0)  # (w, 4)
     src_x = np.linspace(0.0, 1.0, w)
     dst_x = np.linspace(0.0, 1.0, nbins)
     out = np.empty((nbins, 4))
@@ -355,8 +240,7 @@ def _sample_image_as_1d_rgba(image, nbins=256):
     return out.tolist()
 
 
-# Keyed by VolumeOverridePreferences.renderer_mode -- see that enum's items
-# for what each option is for.
+# Keyed by VolumeOverridePreferences.renderer_mode.
 RENDERER_MODES = {
     "STUB": external_render.render_volume,
     "DEBUG_FLAT": external_render.debug_fake_render_volume,
@@ -368,9 +252,8 @@ RENDERER_MODES = {
     "YT_IDV_THRESHOLD_FOG": yt_idv_renderer.yt_idv_threshold_fog_renderer,
 }
 
-# Renderer modes that create their own offscreen EGL context (yt_idv) --
-# see render_current_frame()'s `compositor_device` override for why this
-# set specifically, not all of RENDERER_MODES, needs it.
+# Modes that create their own offscreen EGL context (see compositor_device in
+# render_current_frame).
 YT_IDV_RENDERER_MODES = {
     "YT_IDV_MAX_INTENSITY", "YT_IDV_TRANSFER_FUNCTION", "YT_IDV_PROJECTION",
 }
@@ -417,10 +300,6 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
         self.layout.prop(self, "renderer_mode")
         self.layout.prop(self, "work_dir")
         if self.renderer_mode.startswith("YT_IDV_"):
-            # Only shown for yt_idv renderer_modes -- see YtIdvRenderSettings'
-            # own docstring for why these live in a separate PropertyGroup
-            # rather than flat fields here (keeps this panel uncluttered for
-            # every other renderer_mode, current or future).
             box = self.layout.box()
             box.label(text="yt_idv Renderer Parameters (exploratory)", icon="EXPERIMENTAL")
             box.prop(self.yt_idv, "backend")
@@ -446,13 +325,6 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
                 col.prop(self.yt_idv, "mip_alpha_max")
                 col.prop(self.yt_idv, "mip_alpha_ramp_power")
             if self.renderer_mode in ("YT_IDV_THRESHOLD_FOG", "YT_IDV_MAX_INTENSITY_ALPHA"):
-                # Curve-driven alpha / image-driven color -- shared by both
-                # continuous-ramp modes (one setting, not two independent
-                # copies); NOT offered for YT_IDV_TRANSFER_FUNCTION, whose
-                # isocontour-layers shape doesn't reduce to a single
-                # alpha-vs-position curve the same way -- see
-                # yt_idv_renderer.py module docstring's "Curve-driven alpha
-                # / image-driven color" section.
                 curve_box = box.box()
                 curve_box.label(text="Alpha Source")
                 curve_box.prop(self.yt_idv, "alpha_source", expand=True)
@@ -481,29 +353,9 @@ _FRAME_DIR_PREFIX = "frame_"
 
 
 def _sweep_stale_frame_dirs(work_dir):
-    """Best-effort cleanup of per-frame temp directories left behind by a
-    run that didn't exit cleanly.
-
-    `render_current_frame`'s own `finally` block (below) reliably cleans up
-    its OWN frame directory for an ordinary Python exception -- but a hard
-    crash bypasses `finally` entirely: confirmed real during the GPU-leak
-    investigation, an X11 `BadAccess` GLX error took the whole process down
-    without ever unwinding through Python (Xlib's default error handler
-    calls `exit()` directly at the C level). `kill -9` and a plain segfault
-    have the same problem. Rather than trying to catch every possible hard-
-    crash mode (a losing battle), this instead makes the NEXT run clean up
-    after a previous one: called once at the start of every
-    `render_current_frame`, before that frame's own directory is created,
-    sweeping any leftover `frame_*` directory already in `work_dir`.
-
-    Safe to sweep unconditionally: this add-on's pipeline is always
-    strictly one-frame-at-a-time within a single process, so by the time a
-    NEW `render_current_frame` call starts, any `frame_*` directory already
-    present MUST be from an earlier frame that either already finished
-    (and would have removed its own directory in `finally`) or crashed
-    hard (and left it behind) -- never one still legitimately in use.
-    Matches only our own `frame_*` prefix, so a user's configured `work_dir`
-    (see `AddonPreferences.work_dir`) never loses anything else it holds.
+    """Remove leftover `frame_*` directories in `work_dir` from a previous
+    run that crashed hard (e.g. an X11/GLX error exits without unwinding
+    `finally`). Safe because frames render strictly one at a time.
     """
     try:
         entries = os.listdir(work_dir)
@@ -564,15 +416,8 @@ def build_camera_params(scene, camera_obj):
 
 
 def _panorama_settings_source(cam):
-    """Blender < 5.0 (probable, per the project's own compositor idiom --
-    see README "Blender 5.0+ compositor"): panorama/fisheye fields live under
-    `camera.data.cycles`, a PropertyGroup the Cycles addon registers onto
-    Camera. On the pip `bpy==5.2.0` used to develop this, they were found to
-    be core `Camera` attributes directly (`hasattr(cam, 'cycles')` is False
-    there) -- apparently merged in Blender 5.0's camera/engine unification.
-    Not independently confirmed on a real <5.0 Blender; if this guesses
-    wrong for your version, `hasattr` will just be False when it should be
-    True (or vice versa) and the AttributeError below will say so plainly.
+    """Where panorama/fisheye settings live: `cam.cycles` on older Blender,
+    core `Camera` attributes on 5.x. (The <5.0 case is untested.)
     """
     return cam.cycles if hasattr(cam, "cycles") else cam
 
@@ -622,24 +467,9 @@ def build_dof_params(camera_obj, cam):
 
 
 def _yt_idv_custom_params():
-    """yt_idv-specific rendering knobs from the add-on's own Preferences
-    panel (`VolumeOverridePreferences.yt_idv`, a `YtIdvRenderSettings`),
-    merged into EVERY `VolumeObjectParams.custom_params` dict regardless of
-    which `renderer_mode` is actually active -- harmless for non-yt_idv
-    renderers, which simply never look at `yt_idv_*`-prefixed keys, same as
-    any other `custom_params` entry they don't recognize (see
-    external_render.py's own docstring on why `custom_params` is the
-    correct place to add renderer-specific knobs without touching the
-    frozen dataclass contract). See `yt_idv_renderer.py`'s `_configure_*`
-    functions for what each key controls and its own hardcoded fallback
-    default -- the DEFAULTS on `YtIdvRenderSettings`' fields just need to
-    stay in agreement with those, they're not the single source of truth.
-
-    Falls back to `{}` (not an exception) when the add-on's own preferences
-    aren't registered/reachable -- true in this repo's own lightweight unit
-    tests, which register `properties` but not `operators`/`preferences`
-    (see tests/test_operators.py's `clean_scene_with_props` fixture) --
-    so `build_volume_params(obj)` keeps working unchanged there.
+    """`yt_idv_*` custom_params from the add-on preferences, added for every
+    renderer mode (others ignore them). Returns `{}` when the preferences
+    aren't registered (e.g. in unit tests).
     """
     try:
         prefs = bpy.context.preferences.addons[__package__].preferences
@@ -661,63 +491,23 @@ def _yt_idv_custom_params():
         "yt_idv_mip_alpha_max": s.mip_alpha_max,
         "yt_idv_mip_alpha_ramp_power": s.mip_alpha_ramp_power,
     }
-    # Curve-driven alpha / image-driven color -- only computed (and only
-    # added to custom_params) when actually selected, so the RAMP_POWER/
-    # NAMED-colormap defaults above are completely unaffected by this
-    # feature existing at all -- yt_idv_renderer.py's `_configure_threshold_
-    # fog`/`_configure_max_intensity_alpha` just don't find these keys and
-    # fall back to ramp_power/named-colormap exactly as before. One shared
-    # curve/image, not four independent copies -- see YtIdvRenderSettings'
-    # own `alpha_source`/`color_source` fields' docstrings for why sharing
-    # across Fog/MIP-alpha is the right amount of complexity here.
+    # Only present when selected; the renderer falls back to ramp/named colormap.
     if s.alpha_source == "CURVE":
         params["yt_idv_alpha_curve"] = _evaluate_alpha_curve()
     if s.color_source == "IMAGE" and s.color_image_name:
         image = bpy.data.images.get(s.color_image_name)
-        if image is not None:  # stale name (image renamed/deleted) -- fall back to NAMED silently rather than raise mid-render
+        if image is not None:  # stale name: fall back to NAMED
             params["yt_idv_color_image_rgba"] = _sample_image_as_1d_rgba(image)
     return params
 
 
 def _empty_cube_bounding_box_local(obj):
-    """The 8 local-space corners of a flagged volume object's region --
-    `[-size, +size]` in each of X/Y/Z, `size` being the Empty's own
-    `empty_display_size` -- combined with `matrix_world` (by
-    `yt_idv_renderer._bbox_local_min_extent`/`_registered_camera_kwargs`)
-    the exact same way a mesh's `obj.bound_box` used to be.
+    """The 8 local-space corners `[-size, +size]^3` of a flagged Empty-Cube,
+    `size` being its `empty_display_size`.
 
-    Flagged objects are REQUIRED to be Empty-Cube (`obj.type == "EMPTY"`,
-    `obj.empty_display_type == "CUBE"`), not an arbitrary mesh -- a real,
-    deliberate restriction, not a limitation this function works around.
-    Two independent reasons converged on it: (1) `obj.bound_box`/
-    `obj.dimensions` are always degenerate zeros for a non-mesh object
-    (confirmed directly), so SOME other source of "extent" was needed
-    regardless, and `empty_display_size` is exactly that for a Cube-type
-    Empty; (2) an Empty NEVER contributes anything to a Cycles render, in
-    any visibility state (confirmed directly: with-Empty vs. without-Empty
-    renders came out byte-identical, hide_render True or False) -- so
-    unlike a real mesh with a real material, there's no need to hide it
-    for pass 1 at all, which sidesteps a real perf problem (see operators.
-    py's own module docstring, "Pass 1" -- toggling hide_render every frame
-    was found to invalidate Cycles' own use_persistent_data cache, same as
-    switching render engines or rebuilding the compositor graph did).
-
-    Raises a clear error for anything else, rather than silently computing
-    a degenerate/wrong bounding box from a real mesh's now-unused
-    `bound_box` or a non-Cube Empty's meaningless one.
-
-    NOTE for future readers, not implemented here: this assumes an
-    axis-aligned BOX region specifically -- `_registered_camera_kwargs`'s
-    whole registration transform, and yt_idv's own unitary `[0, 1]^3`
-    domain convention, are built around that shape. A genuinely different
-    region shape (the obvious one: Empty-Sphere, for a spherical volume --
-    `empty_display_size` there is a true radius, not a half-extent) is NOT
-    just "a new branch here computing a sphere's bounding box" -- the
-    REGISTRATION math and yt_idv's own camera/domain conventions would
-    need real new work to make a sphere-shaped region meaningful, not only
-    this function. Flagged here because it's a real, plausible future use
-    case (the person who asked for the Empty-Cube requirement raised it
-    themselves), not because it's close to being supported.
+    Flagged objects must be Empty-Cubes: Empties never appear in a Cycles
+    render, so they needn't be hidden for pass 1 (toggling `hide_render`
+    per frame invalidates Cycles' persistent-data cache). Raises otherwise.
     """
     if obj.type != "EMPTY" or obj.empty_display_type != "CUBE":
         raise RuntimeError(
@@ -755,16 +545,8 @@ def _safe_mtime(filepath):
 def resolve_sequence_frame(frame_start, frame_duration, frame_offset, sequence_mode, scene_frame):
     """Best-effort replica of Blender's Volume-sequence frame remapping
     (start/duration/offset + clip/extend/repeat/ping-pong), used to populate
-    `DatasetParams.resolved_sequence_frame`.
-
-    NOT independently empirically verified against Blender's actual internal
-    resolution the way the Z-pass/camera-projection findings were -- this
-    follows the documented semantics of frame_start/frame_duration/
-    frame_offset/sequence_mode, but hasn't been checked against a real VDB
-    sequence's actual per-frame file selection. Re-verify (same marker-style
-    technique used elsewhere in this repo, adapted: render a sequence with
-    known frame contents and confirm which frame shows at which scene frame)
-    before trusting the exact number for anything precision-sensitive.
+    `DatasetParams.resolved_sequence_frame`. Not verified against a real
+    VDB sequence.
     """
     if not frame_duration:
         return None
@@ -784,16 +566,9 @@ def resolve_sequence_frame(frame_start, frame_duration, frame_offset, sequence_m
 
 
 def build_dataset_params(obj, cache_key):
-    """Dataset identity for `obj`, generic-first (see external_render.py's
-    `DatasetParams` docstring): primarily whatever the user typed into
-    `properties.py`'s `dataset_path`/`dataset_kind` fields, which works for
-    ANY dataset your renderer's loaders understand (a yt-loadable simulation
-    output, an HDF5 file, ...) regardless of what kind of Blender object is
-    carrying the flag.
-
-    If `obj` happens to be a Blender `Volume` object (native VDB support),
-    override path/sequence fields with what Blender itself already knows
-    about it instead of trusting the user to duplicate that by hand.
+    """Dataset identity for `obj`, from its `dataset_path`/`dataset_kind`
+    properties; for a Blender `Volume` object, path/sequence fields come
+    from the Volume itself.
     """
     props = obj.volume_override
     dataset_path = bpy.path.abspath(props.dataset_path) if props.dataset_path else None
@@ -819,12 +594,8 @@ def build_dataset_params(obj, cache_key):
                 bpy.context.scene.frame_current,
             )
 
-    # NOTE: `resolved_frame` (and `requested_time` below) are deliberately
-    # NOT part of `identity` -- they change every frame by design, and
-    # hashing them in would make `version.changed` report True every frame
-    # regardless of whether the renderer would actually need to reload
-    # anything. `identity` covers only what's genuinely expensive to change:
-    # which dataset this object points to, not which moment of it.
+    # Per-frame values (resolved_frame, requested_time) are excluded so
+    # version.changed only reflects which dataset is referenced.
     identity = {
         "dataset_path": dataset_path,
         "dataset_kind": dataset_kind,
@@ -850,20 +621,9 @@ def build_dataset_params(obj, cache_key):
 
 
 def resolve_requested_time(obj):
-    """DIRECT/AFFINE/MANUAL policy resolution -- see properties.py's
-    `mapping_policy` field and README "Dataset / change tracking" -> "Time
-    mapping" for the full design discussion (in particular, why this is a
-    plain Python function and not a Blender Driver: a driver alone can
-    produce this same scalar, but has no way to know what timesteps the
-    dataset actually has -- that snapping step still has to happen
-    somewhere, and it happens on the renderer side, not here).
-
-    MANUAL reads `manual_time` directly -- it doesn't care whether that
-    property got its value from a plain keyframe or a Driver, both work
-    identically from this function's point of view (it just reads the
-    already-evaluated property; by the time this runs, the depsgraph has
-    already been updated for this frame, same requirement `matrix_world`
-    already relies on elsewhere in this module).
+    """Dataset time for the current frame per `mapping_policy`
+    (DIRECT/AFFINE/MANUAL). MANUAL reads `manual_time`, which may be
+    keyframed or driven. Snapping to real timesteps is the renderer's job.
     """
     props = obj.volume_override
     frame = bpy.context.scene.frame_current
@@ -885,32 +645,8 @@ def build_frame_params(scene):
 
 
 # --- Depth read-back --------------------------------------------------------
-#
-# Findings baked in here come from scripts/verify_zpass.py (see README
-# "Z-pass verification findings"):
-#   depth_convention = "PLANAR"   -- empirically measured on Cycles, NOT
-#                                    Euclidean ray distance as commonly
-#                                    assumed; center and off-axis pixels on a
-#                                    plane perpendicular to view axis read
-#                                    the SAME value.
-#   no_hit_value     = 1e10       -- exact sentinel Cycles wrote for
-#                                    background/no-geometry pixels.
-#   row_order        = "BOTTOM_LEFT_ORIGIN" -- this is Blender's documented
-#                                    Image.pixels convention (row 0 =
-#                                    bottom). NOT independently closed-loop
-#                                    verified in this environment because
-#                                    the pip `bpy` wheel used for the
-#                                    verification script has a broken EXR
-#                                    decoder (bpy.data.images.load()
-#                                    returns a 0x0 image); the raw on-disk
-#                                    EXR scanline order WAS confirmed
-#                                    top-first via a direct OpenEXR-library
-#                                    read, which is consistent with (not
-#                                    proof of) this claim about a real
-#                                    Blender's in-memory buffer. Re-run
-#                                    scripts/verify_zpass.py against a real
-#                                    Blender to close this loop -- see
-#                                    README "Verification caveats".
+# Cycles Z is planar (distance along the view axis, not ray length); 1e10
+# marks no-hit pixels; Image.pixels rows start at the bottom.
 
 DEPTH_CONVENTION = "PLANAR"
 DEPTH_NO_HIT_VALUE = 1e10
@@ -920,24 +656,10 @@ _DEPTH_IMAGE_NAME = "vo_depth_tmp"
 
 
 def read_depth_buffer(scene, path):
-    """Read `path` (this frame's Z-pass EXR) back into a DepthBuffer.
+    """Read `path` (this frame's Z-pass EXR) into a DepthBuffer, in meters.
 
-    Reuses a single, stably-named Image datablock across every call
-    (`.filepath = path; .reload()`) instead of `bpy.data.images.load()` +
-    `.remove()` each time -- real perf bug found doing an optimization
-    pass: destroying and recreating this datablock every frame was found
-    to invalidate Cycles' own `use_persistent_data` session/BVH cache for
-    the MAIN scene being rendered, even though nothing about ITS geometry/
-    camera/etc. actually changed. Confirmed directly (real Cycles render,
-    real GPU, not this file's own unit tests): with load+remove every
-    frame, steady-state pass 1 time was ~4.0-4.2s; reusing the datablock
-    brought it back down to ~0.78-0.83s, matching every other already-
-    fixed trigger's best-case numbers (engine switches, compositor node
-    rebuilds, hide_render toggles, same-value Scene.world/.camera
-    reassignment -- see compositor_build.py's build_pass1_capture_graph/
-    build_or_update_graph and scene_sync.sync_scene_state docstrings for
-    those). compositor_build._load_fresh_image got the identical fix for
-    the identical reason.
+    Reuses one Image datablock: load()+remove() every frame invalidates
+    Cycles' persistent-data cache.
     """
     import numpy as np
 
@@ -951,16 +673,7 @@ def read_depth_buffer(scene, path):
     w, h = img.size[0], img.size[1]
     channels = img.channels
     if w == 0 or h == 0 or channels == 0:
-        # Real bug hit once (Blender 5.x, real install, not just the pip
-        # test module): bpy.data.images.load() + .pixels silently
-        # decoded a genuinely-written, non-empty EXR as 0x0/0-channel
-        # instead of raising -- traced to compositor_build.py writing
-        # this file as a NAMED multi-part EXR, which that Python-facing
-        # pixel-buffer path doesn't reliably support (see
-        # _configure_single_file_output's docstring for the fix -- item
-        # names are empty now). Failing loudly here with the actual
-        # on-disk facts is the safety net if that regresses, or if some
-        # other Blender version hits the same failure mode differently.
+        # Blender silently loads a named multi-part EXR as 0x0; fail loudly.
         on_disk = os.path.exists(path)
         size_bytes = os.path.getsize(path) if on_disk else None
         raise RuntimeError(
@@ -970,16 +683,7 @@ def read_depth_buffer(scene, path):
             f"img.file_format={img.file_format!r}. See "
             "_configure_single_file_output's docstring in compositor_build.py."
         )
-    # foreach_get(), NOT `img.pixels[:]` -- real perf bug found doing an
-    # optimization pass on real per-frame timings: `pixels[:]` measured
-    # at ~1.02s for a 1920x1080 image on this bpy build (matching this
-    # function's entire measured per-frame cost almost exactly),
-    # `foreach_get` at ~0.02s for the identical bytes -- a ~55x
-    # difference for what should be a trivial bulk copy. `pixels[:]`
-    # goes through Blender's slow per-element Python-facing sequence
-    # protocol; `foreach_get`/`foreach_set` use the fast bulk-copy path
-    # instead (already used on the WRITE side, `write_render_result`'s
-    # own `foreach_set` call -- this was only ever a read-side gap).
+    # foreach_get, not pixels[:], which is far slower.
     buf = np.empty(h * w * channels, dtype=np.float32)
     img.pixels.foreach_get(buf)
     data = buf.reshape(h, w, channels)
@@ -1000,11 +704,8 @@ _EXR_WRITER_SCENE_NAME = "__VolumeOverrideExrWriter"
 
 
 def _exr_writer_scene():
-    """Internal Scene whose `render.image_settings` exist only to be passed
-    as `Image.save_render(..., scene=)` by `write_render_result` below --
-    never rendered, never linked to any object. Settings are only assigned
-    when not already correct, same same-value-reassignment caution as
-    `scene_sync.sync_scene_state`.
+    """Never-rendered Scene holding 32-bit EXR `image_settings` for
+    `Image.save_render(..., scene=)`.
     """
     scene = bpy.data.scenes.get(_EXR_WRITER_SCENE_NAME)
     if scene is None:
@@ -1020,45 +721,13 @@ def _exr_writer_scene():
 def write_render_result(result, path):
     """Write a RenderResult.rgba (H, W, 4) float32 array to a full-float EXR.
 
-    Assumes `result.rgba` uses the SAME row order as the DepthBuffer it was
-    given (BOTTOM_LEFT_ORIGIN, per above) -- the renderer received that
-    convention via DepthBuffer.row_order and is expected to echo it, since
-    Image.pixels (used both to read depth back and here to write the
-    result) only ever works in that one convention.
+    `result.rgba` must use the DepthBuffer's row order (BOTTOM_LEFT_ORIGIN).
 
-    Reuses a single, stably-named Image datablock across every call (this
-    function runs once per flagged object per frame, all at the same
-    resolution) instead of `bpy.data.images.new()` + `.remove()` each time
-    -- same `use_persistent_data` cache-invalidation fix as
-    `read_depth_buffer`/`compositor_build._load_fresh_image`, see read_
-    depth_buffer's own docstring for the measurements behind it. Safe to
-    reuse across different objects/paths within one frame because each
-    call's pixel-write -> save() is fully synchronous before the next call
-    starts -- there's never a moment where two objects' data are needed
-    from this datablock at once. Only resized (which still requires a
-    remove+recreate -- Image.scale() distorts rather than reallocates) if
-    the resolution genuinely changes between calls, which doesn't happen
-    in the per-frame loop this is actually called from.
-
-    Writes via `Image.save_render()`, NOT `Image.save()` -- real perf bug,
-    the root cause of pass 2's unexplained ~3s/frame: every `Image.save()`
-    call makes Cycles' NEXT render (with `use_persistent_data`) re-sync
-    every mesh object and rebuild its light tree from scratch ("Synchronizing
-    object" + "Updating Lights | Computing tree" in the render stats, ~3s at
-    1080p on test-cycles-override.blend) -- pinned down by bisecting the
-    real per-frame loop step by step: pixel writes (`foreach_set`), the
-    colorspace tag, and `filepath_raw`/`file_format` assignments are each
-    free; `save()` alone is the trigger; `save_render()` of the identical
-    datablock is free. Pass 2 was simply the next render after this write,
-    so it paid the cost -- which is also why hand-assembled repros only
-    reproduced it when this call was present. `save()` also silently flips
-    the datablock to `source == "FILE"` backed by `path` (deleted with the
-    rest of `frame_dir` at the end of each frame), which reads back as
-    `size == (0, 0)` once Blender frees its buffer and defeats the reuse
-    check below (confirmed: remove+recreate on the next call); `save_render()`
-    leaves it GENERATED. Output is bit-identical to `save()`'s (confirmed via
-    direct OpenEXR inspection -- same RGBA float32 channels, max |diff| 0.0,
-    independent of any scene's view transform: EXR is written linear).
+    Reuses one Image datablock (recreated only on resolution change), for
+    the same persistent-data cache reason as `read_depth_buffer`. Uses
+    `save_render()`, not `save()`: `save()` makes Cycles' next render
+    re-sync all objects and rebuild the light tree, and flips the image to
+    a FILE source that breaks reuse.
     """
     h, w = result.rgba.shape[:2]
     img = bpy.data.images.get(_RESULT_IMAGE_NAME)
@@ -1082,35 +751,13 @@ def _sorted_far_to_near(scene, flagged):
 
 
 def _apply_opacity(result, opacity):
-    """`VolumeOverrideProperties.opacity` (a real, keyframable Object-level
-    property -- see that field's own docstring for why it lives there
-    rather than alongside the yt_idv-specific alpha controls in
-    AddonPreferences, which can't be keyframed at all: confirmed directly,
-    `AddonPreferences` instances have no `animation_data`/`id_data`,
-    `keyframe_insert` raises outright) applied uniformly to EVERY
-    renderer's output, here, once -- rather than each `RENDERER_MODES`
-    entry needing to remember to read a `custom_params['opacity']` key
-    itself (which future/third-party renderers could easily forget).
-
-    Multiplying the WHOLE `(H, W, 4)` premultiplied-alpha RGBA array by a
-    single scalar is exact, not an approximation: for premultiplied alpha,
-    `rgb = color * alpha`, so scaling alpha by `f` while keeping the same
-    underlying `color` means the new premultiplied rgb is `color * (alpha *
-    f) = (color * alpha) * f = rgb * f` -- i.e. exactly the same scalar `f`
-    applies to the alpha channel and the premultiplied color channels
-    alike. Relies on `result.alpha_mode == "PREMULTIPLIED"`, already
-    asserted on every `RenderResult` right before this is called.
-
-    `opacity == 1.0` (the default) is a no-op that skips the array copy
-    entirely -- zero cost for every object that never touches this field.
+    """Scale a premultiplied RenderResult by the object's (keyframable)
+    `opacity`, applied to every renderer's output. Scaling all four
+    premultiplied channels by one scalar is exact.
     """
     if opacity == 1.0:
         return result
     return external_render.RenderResult(
-        # .astype(...) rather than a bare `*` -- keeps float32 regardless of
-        # numpy's scalar-promotion rules for `float32_array * python_float`
-        # (no module-level numpy import needed here either way; `result.rgba`
-        # is already an ndarray).
         rgba=(result.rgba * opacity).astype(result.rgba.dtype),
         alpha_mode=result.alpha_mode,
         color_space=result.color_space,
@@ -1121,39 +768,14 @@ _active_render_session = None  # set by render_session.__enter__/__exit__ below
 
 
 class render_session:
-    """Context manager wrapping multiple `render_current_frame` calls (a
-    real multi-frame animation render) so the four scene-level settings it
-    needs during EVERY frame -- `view_layer.use_pass_z`, `scene.render.
-    use_persistent_data`, `scene.render.compositor_device`, `scene.
-    view_settings.view_transform` -- are captured and restored ONCE here,
-    instead of after every individual frame.
+    """Context manager for multi-frame renders: captures the scene settings
+    `render_current_frame` forces (use_pass_z, use_persistent_data,
+    compositor_device, view_transform) and restores them once at the end
+    instead of after every frame. Restoring and re-forcing them each frame,
+    even to the same values, invalidates Cycles' persistent-data cache.
 
-    Real perf bug found doing an optimization pass, on top of the pass2-
-    engine and compositor-graph-rebuild fixes elsewhere in this file:
-    `render_current_frame` already guards each of these four so it only
-    touches a property when it's not already at the value it needs (see
-    its own comment) -- meaning frame 1 of any run pays the real,
-    unavoidable transition cost once, and every property is ALREADY
-    correct on every call after that. The remaining question is only
-    whether "already correct" gets left alone (this class active) or gets
-    restored-then-re-forced back to the same values on every single call
-    anyway (a bare call, the default). Confirmed directly that the latter
-    -- even though every individual reassignment is a same-value no-op --
-    reproduces almost the ENTIRE original per-frame Cycles cache-
-    invalidation cost by itself: a non-additive interaction between the
-    four (each alone contributes much less test-by-test), not four small
-    independent costs.
-
-    Purely additive/opt-in: `render_current_frame` called WITHOUT an
-    active session (a single interactive F12 press, or any standalone
-    call) behaves EXACTLY as it always has, fully self-contained -- forces
-    what it needs, restores it at the end of that same call. Only a caller
-    doing many frames back-to-back (render_headless.py,
-    `VOLUMEOVERRIDE_OT_render`'s own `animation=True` modal loop) needs to
-    opt in.
-
-    Not reentrant/nestable -- this codebase never needs that (exactly one
-    top-level render loop active at a time).
+    Without a session, `render_current_frame` restores after each call.
+    Not reentrant.
 
     Usage::
 
@@ -1177,19 +799,7 @@ class render_session:
         }
         global _active_render_session
         _active_render_session = self
-        # Sweep once here instead of every frame -- see _sweep_stale_frame_
-        # dirs's own docstring for why crash-recovery cleanup is inherently
-        # a once-per-run concern, not a per-frame one (nothing legitimately
-        # crashes mid-loop without stopping the whole process). This was
-        # once believed to be a ~3s/frame pass-2 perf fix; it wasn't -- the
-        # real cause was write_render_result's Image.save() (see its own
-        # docstring), which the hand-assembled repro that implicated the
-        # sweep also ran. Best-effort,
-        # like the sweep itself -- render_session's own restore logic (the
-        # whole rest of this class) is usable standalone, addon-enabled or
-        # not (see its own unit tests), so a session entered before the
-        # addon is registered yet (`_get_prefs` needs it) shouldn't raise;
-        # it just means there's no work_dir to sweep yet either.
+        # Sweep once per run; KeyError means the add-on isn't registered.
         try:
             _sweep_stale_frame_dirs(_work_dir(self._context))
         except KeyError:
@@ -1210,7 +820,7 @@ class render_session:
 
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
-    object visibility even if any step raises.
+    scene settings (unless a `render_session` is active) even if a step raises.
     """
     scene = context.scene
     if scene.camera is None:
@@ -1225,11 +835,6 @@ def render_current_frame(context):
         f"resolution={scene.render.resolution_x}x{scene.render.resolution_y}")
 
     work_dir = _work_dir(context)
-    # Skipped here when a render_session is active -- it already swept once,
-    # up front, in its own __enter__ (see render_session's own comment). A
-    # bare call (no session -- e.g. a single F12 press) still
-    # sweeps every time, same as always: each one is a fully standalone,
-    # non-looping render, so there's no per-frame cost to avoid.
     if _active_render_session is None:
         _sweep_stale_frame_dirs(work_dir)
     frame_dir = tempfile.mkdtemp(prefix=_FRAME_DIR_PREFIX, dir=work_dir)
@@ -1237,37 +842,14 @@ def render_current_frame(context):
     log(f"flagged objects: {[o.name for o in flagged]}, frame_dir={frame_dir}")
     scene_sync.sync_scene_state(scene, flagged)
 
-    # Real perf bug found doing an optimization pass, on TOP of the pass2-
-    # engine/graph-rebuild fixes above: even with those fixed, unconditionally
-    # re-forcing-then-restoring these four scene settings every single frame
-    # -- even back to the exact same value -- was found to reproduce almost
-    # the ENTIRE original per-frame Cycles use_persistent_data cache-
-    # invalidation cost by itself. Confirmed both individually (each on its
-    # own contributes a modest amount) and combined (all together, ~4.5-5.5s
-    # steady-state pass1 -- matching the real pipeline's own unfixed cost
-    # almost exactly) -- a non-additive interaction, not four small
-    # independent costs. Each one below is now guarded to only actually
-    # touch the property when it's not already at the value we need, so a
-    # bare `render_current_frame` call still gets the FULL benefit on its
-    # own (frame 1 of any run pays the real, unavoidable transition cost
-    # once; every property is already correct on every call after that,
-    # guarded call included). The remaining piece -- restoring at the very
-    # end of a whole multi-frame render instead of after every individual
-    # call -- needs the CALLER to opt in via `render_session` below, since
-    # a bare call has no way to know whether more frames are coming; see
-    # that class's own docstring.
+    # Settings are only assigned when they differ: even same-value
+    # reassignment invalidates Cycles' persistent-data cache.
     view_layer = context.view_layer
     prev_use_pass_z = view_layer.use_pass_z
     if not prev_use_pass_z:
         view_layer.use_pass_z = True
 
-    # Real perf finding from the same optimization pass as pass2's engine
-    # fix above: without this, Cycles rebuilds its BVH/geometry cache from
-    # scratch on every single render call regardless of engine, so it's
-    # necessary (not just helpful) for pass2's own fix to actually pay off.
-    # Scoped/restored like every other scene setting this function touches
-    # -- purely a performance knob, doesn't change render OUTPUT, and cheap
-    # to always request even for non-Cycles renderer modes.
+    # Keeps Cycles' BVH/geometry cache between the two passes and across frames.
     prev_use_persistent_data = scene.render.use_persistent_data
     if not prev_use_persistent_data:
         scene.render.use_persistent_data = True
@@ -1276,22 +858,7 @@ def render_current_frame(context):
     prev_view_transform = scene.view_settings.view_transform
     if prefs.renderer_mode in YT_IDV_RENDERER_MODES:
         if prev_view_transform != "Standard":
-            # Real, reproducible finding, not a style preference: Blender's
-            # `AgX` view transform (the default on every new file/scene
-            # since 4.0 -- i.e. this is what a "pretty much exactly
-            # default" scene has, not an unusual choice) applies a filmic
-            # highlight rolloff meant for photographic renders. Applied to
-            # an already-colormapped scientific visualization, it crushes
-            # the real signal into a flat, low-contrast plateau instead of
-            # preserving it. Confirmed directly, same frame/data/camera,
-            # nothing else changed: AgX topped out at 197/255 with ~95% of
-            # pixels packed into ONE narrow brightness band; `Standard`
-            # reached 254/255 with real gradation across the volume's own
-            # visible range. Erring on the side of correct-looking output
-            # by default here -- restored to whatever it was afterward
-            # (below), and only for yt_idv modes (the other renderer modes
-            # don't go through this add-on's own colormapping at all, so
-            # whatever view transform you picked for them is left alone).
+            # The default AgX transform flattens already-colormapped output.
             _log(f"WARNING: scene view_transform was {prev_view_transform!r} -- forcing "
                  f"'Standard' for this yt_idv render (restored to {prev_view_transform!r} "
                  f"afterward). {prev_view_transform!r} applies a filmic highlight rolloff "
@@ -1300,42 +867,14 @@ def render_current_frame(context):
                  f"the direct A/B measurement. Set your scene's View Transform to 'Standard' "
                  f"(or 'Raw') yourself to silence this.")
             scene.view_settings.view_transform = "Standard"
-        # Real, reproducible finding: Blender's own realtime compositor
-        # (the default `compositor_device == "GPU"`) grabs a GPU/EGL context
-        # as soon as ANY render runs through a scene's compositor node tree
-        # -- even a trivial one with no GPU-only nodes at all (confirmed:
-        # reproduces with nothing but a Render Layers -> File Output graph,
-        # i.e. exactly pass 1's own graph below). Once that's happened in
-        # THIS process, yt_idv's own subsequent `yt_idv.render_context("egl",
-        # ...)` call fails with `EGLError(err=EGL_BAD_ACCESS, baseOperation=
-        # eglMakeCurrent, ...)` -- confirmed via a minimal repro isolating
-        # exactly this (Cycles render alone: fine; Cycles render through ANY
-        # compositor tree, then a fresh yt_idv EGL context: fails every
-        # time). Forcing the compositor to `"CPU"` for the duration of a
-        # yt_idv-mode render avoids the GPU/EGL grab entirely and was
-        # confirmed to fix it end to end (see scripts/yt_idv_exploration/
-        # blender_scene/render_real_demo.py, now runs fully in-process with
-        # real bpy + real yt_idv in one interpreter). Scoped to yt_idv modes
-        # only -- the other renderer modes never touch EGL/GL, so there's no
-        # reason to override this scene setting for them.
+        # The GPU compositor grabs an EGL context, after which yt_idv's own
+        # EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
         if prev_compositor_device != "CPU":
             scene.render.compositor_device = "CPU"
-    # This frame's own full-float EXR intermediates (beauty/depth/per-object
-    # volume results) all live in `frame_dir`, a fresh per-frame directory
-    # (see `_sweep_stale_frame_dirs`'s own docstring for the real bug this
-    # replaced: nothing ever deleted these before, so a long run silently
-    # accumulated one full set per frame in `work_dir` forever -- at HD
-    # resolution over a few hundred frames that's easily multiple GB, and it
-    # crashed a real render outright with ENOSPC). One `shutil.rmtree` in
-    # `finally` below cleans up everything this frame created, success or
-    # exception alike -- simpler than tracking individual file paths, and
-    # automatically covers any future file this pipeline starts writing
-    # without needing a matching update here.
+    # All of this frame's EXR intermediates live in frame_dir, removed in
+    # `finally` (they otherwise fill the disk on long runs).
     try:
         # --- Pass 1: real Cycles beauty + Z ---------------------------------
-        # No hide/unhide dance for flagged objects -- they're required to be
-        # Empty-Cube, which never renders in Cycles at all (see this module's
-        # own docstring and build_volume_params's).
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
                 scene, frame_dir, scene.frame_current,
@@ -1374,25 +913,9 @@ def render_current_frame(context):
             volume_layers.append((obj.name, result_path))
 
         # --- Pass 2: compositor-only, writes the real output ---------------
-        # Deliberately does NOT switch scene.render.engine -- real perf bug
-        # found doing an optimization pass: this used to force
-        # "BLENDER_WORKBENCH" here on the theory that pass2 (pure Image-node
-        # compositing, no Render Layers node in the graph at all -- see
-        # compositor_build.build_or_update_graph) needs "the cheapest
-        # engine". Measured directly that switching engines is actually the
-        # single most expensive thing in the whole per-frame pipeline:
-        # Cycles' own `use_persistent_data` session/BVH cache gets
-        # invalidated by ANY intervening render through a DIFFERENT engine
-        # (confirmed even a wholly separate Scene datablock does this, not
-        # just switching scene.render.engine on the same one) -- so pass1's
-        # NEXT frame had to fully reinitialize from scratch every single
-        # time. Keeping the SAME engine active the whole time (whatever
-        # pass1 used) measured 6x faster overall (steady-state pass1: ~4.2s
-        # -> ~0.7s; pass2 itself: ~0.3-0.5s -> ~0.07s) -- Blender doesn't
-        # bother path-tracing anything for pass2 anyway, since nothing in
-        # its compositor graph references Render Layers, confirmed via
-        # direct pixel-diff: identical output either way, only the engine
-        # setting differs.
+        # Same engine as pass 1: rendering with any other engine in between
+        # invalidates Cycles' persistent-data cache. Nothing is path-traced,
+        # since the graph has no Render Layers node.
         with step("pass2 build/update compositor graph"):
             compositor_build.build_or_update_graph(scene, beauty_path, volume_layers)
         with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
@@ -1400,13 +923,7 @@ def render_current_frame(context):
         log(f"pass2 done; final output at {scene.render.frame_path()!r} "
             f"(Render Result image also holds it -- see _show_render_result)")
     finally:
-        # Restored here on a bare call (the default -- e.g. a single
-        # interactive F12 press), same as always. Skipped when a
-        # `render_session` is active around a whole multi-frame render --
-        # THAT restores once, at the true end, instead. See render_session's
-        # own docstring for why (this is the actual perf win: skipping this
-        # means frame 2 onward never touches these properties at all, not
-        # even a same-value reassignment).
+        # An active render_session restores these once at the end instead.
         if _active_render_session is None:
             view_layer.use_pass_z = prev_use_pass_z
             scene.render.compositor_device = prev_compositor_device
@@ -1416,31 +933,11 @@ def render_current_frame(context):
 
 
 def _show_render_result(context):
-    """Pop Blender's own Render Result viewer, same as a normal F12 press.
+    """Pop Blender's Render Result viewer, same as a normal F12 press.
 
-    Our two-pass pipeline calls `bpy.ops.render.render()` in plain
-    EXEC_DEFAULT (no `'INVOKE_DEFAULT'`) so it stays fully synchronous --
-    pass 2 must not start until pass 1 and the per-object renders are done,
-    and the render-engine swap around it (see module docstring) would race
-    against an async invoke. The tradeoff: EXEC_DEFAULT never pops the
-    Render Result window or updates an open Image Editor the way a normal
-    F12 does, even though `bpy.data.images["Render Result"]` genuinely holds
-    our correct composited output afterward (confirmed -- pass 2's own
-    render.render() call always updates it) -- reported as "I don't see it
-    anywhere" even though real EXR files were written correctly.
-    `render.view_show()` only displays whatever's already there; it doesn't
-    re-render, so calling it after the fact is safe regardless of how the
-    pipeline above ran.
-
-    Skipped entirely in `--background`/headless runs (`bpy.app.background`)
-    -- there's no window capable of showing an image there, and calling it
-    anyway doesn't raise a catchable Python exception (confirmed directly):
-    `RENDER_OT_view_show`'s own poll failure is reported straight to
-    Blender's console/log as an `ERROR`, bypassing the `try/except
-    RuntimeError` below entirely, so that guard alone never actually
-    silenced it. The render itself already succeeded and wrote real output
-    files either way -- this is purely about not printing a scary-looking
-    (but harmless) ERROR line on every single headless frame.
+    Needed because the pipeline's synchronous (EXEC_DEFAULT) renders never
+    open it. Skipped in background mode, where the poll failure logs an
+    ERROR that the try/except below can't catch.
     """
     if bpy.app.background:
         _log("background mode -- not attempting to show Render Result (output was still written to disk/Render Result)")
@@ -1448,16 +945,13 @@ def _show_render_result(context):
     try:
         bpy.ops.render.view_show("INVOKE_DEFAULT")
     except RuntimeError as exc:
-        # Not fatal -- the render itself already succeeded and wrote real
-        # output files; failing to pop the viewer (e.g. no valid window
-        # context) shouldn't be reported as a render failure.
+        # Not fatal: the render already succeeded.
         _log(f"could not show Render Result ({exc}) -- output was still written to disk/Render Result")
 
 
 class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
-    """Single F12 press: Cycles+Z pass -> external volume renderer -> depth-
-    clipped Alpha Over composite -> saved output. See operators.py module
-    docstring for why this is two internal render passes.
+    """Render with volume override: Cycles + Z pass -> external volume
+    renderer -> depth-clipped Alpha Over composite -> saved output.
     """
 
     bl_idname = "render.volume_override"
@@ -1471,16 +965,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
 
     def execute(self, context):
         if not properties.flagged_objects(context.scene):
-            # Nothing in this scene opts into the override -- delegate
-            # straight to Blender's own render operator instead of running
-            # the two-pass pipeline (which forces the Z pass on, rebuilds
-            # the compositor graph, and swaps the engine to Workbench for
-            # the final write). Without this, enabling the add-on breaks
-            # ordinary Cycles rendering for every scene, even ones that
-            # never use the override -- F12/Ctrl+F12 are unconditionally
-            # remapped to this operator (see handlers.py), so this check is
-            # what keeps that remap a no-op until a volume is actually
-            # flagged.
+            # F12 is always remapped here; fall back to a normal render.
             return bpy.ops.render.render("INVOKE_DEFAULT", animation=self.animation)
 
         if not self.animation:
@@ -1497,12 +982,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.01, window=context.window)
         wm.modal_handler_add(self)
-        # See render_session's own docstring -- this is what actually makes
-        # a real animation render fast: entered here (once, before the
-        # modal loop starts), exited in _finish (once, however the loop
-        # ends -- normal completion, ESC, or an error) instead of every
-        # individual render_current_frame call restoring-then-re-forcing
-        # the same four scene settings on every single frame.
+        # Exited in _finish, however the loop ends.
         self._session = render_session(context)
         self._session.__enter__()
         return {"RUNNING_MODAL"}
@@ -1551,17 +1031,9 @@ def draw_render_menu(self, context):
 
 
 class VOLUMEOVERRIDE_OT_reset_change_tracking(bpy.types.Operator):
-    """Force every flagged object's next RenderRequest to report
-    params_version.changed / dataset.version.changed = True, regardless of
-    whether anything actually changed. Use this when you know the
-    renderer's own cache was invalidated independently of Blender (e.g. you
-    restarted a subprocess renderer, or manually cleared its cache) and want
-    Blender's convenience flag to stop reporting False for things it thinks
-    are unchanged but the renderer no longer has cached.
-
-    Does NOT affect `.hash` -- that's a pure content hash of the current
-    state either way. Only resets the "last hash I sent" bookkeeping this
-    flag is compared against.
+    """Make every flagged object's next render report params/dataset as
+    changed, e.g. after the renderer's own cache was cleared. Content
+    hashes are unaffected.
     """
 
     bl_idname = "volume_override.reset_change_tracking"
