@@ -1,21 +1,9 @@
-"""Unit tests for yt_idv_renderer.py's pure-Python helpers ONLY -- the parts
-that don't need `yt`/`yt_idv` importable at all. The actual yt_idv-dependent
-render path (`_load_sample_source`, `_get_render_context`,
-`yt_idv_max_intensity_renderer` end to end) is instead verified by actually
-running the real scripts in `scripts/yt_idv_exploration/blender_scene/`
-(`render_real_demo.py`, `verify_overlap.py`) -- see yt_idv_renderer.py's
-module docstring and README "yt_idv integration" for the full story.
+"""Unit tests for yt_idv_renderer.py's pure-Python helpers.
 
-This suite's own venv (this repo's `dev` dependency group: `bpy`/`pytest`)
-does NOT need `yt`/`matplotlib`/`yt_idv` to run -- and historically COULDN'T
-have them, since PyPI's `yt_idv` pulled in `imgui`, which had no Python
-3.13 wheel. That's fixed upstream now (yt-project/yt_idv#268), so `bpy` and
-real `yt_idv` genuinely coexist in one Python 3.13 venv (the optional
-`ytidv` group, on top of `dev`, in the SAME `.venv` this suite runs in) --
-meaning `yt`/`matplotlib` MAY be importable here too, depending on whether
-that group has also been synced. Tests below that rely on the colormap
-path failing (`import yt`/`import matplotlib`) force that failure via
-`sys.modules` rather than assuming the ambient venv lacks them.
+These don't need yt/yt_idv; the real render path is exercised by the scripts in
+scripts/yt_idv_exploration/blender_scene/. yt/matplotlib may or may not be
+installed (optional `ytidv` group), so tests needing them absent force it via
+sys.modules.
 """
 
 import math
@@ -69,27 +57,18 @@ def _persp_camera(**overrides):
 
 
 class _FakeDataset:
-    """Trivial stand-in for a real yt Dataset -- just enough surface for
-    _camera_update_kwargs/_domain_array_unitary (`.domain_center`/
-    `.domain_width` as plain arrays, no `.in_units`, per
-    _domain_array_unitary's docstring on why that's supported).
-    """
+    """Stand-in for a yt Dataset with plain-array domain_center/domain_width."""
 
     domain_center = np.array([0.5, 0.5, 0.5])
     domain_width = np.array([1.0, 1.0, 1.0])
 
 
 class _FakeYTArray(np.ndarray):
-    """Stand-in for a real yt YTArray -- has `.in_units(...)` returning
-    something with a `.d` attribute, like the real thing, but in
-    non-unitary units so _domain_array_unitary's conversion is actually
-    exercised (not just a no-op pass-through).
-    """
+    """Stand-in for a YTArray whose in_units("unitary") actually converts."""
 
     def in_units(self, name):
         assert name == "unitary"
-        # Simulate a dataset whose domain is 2 code_length wide -- "unitary"
-        # (fraction of domain width) is this array's own values / 2.
+        # Domain is 2 code_length wide.
         converted = (np.asarray(self) / 2.0).view(np.ndarray)
         return type("Converted", (), {"d": converted})()
 
@@ -121,10 +100,7 @@ def _cube_bbox(half_extent=1.0):
 
 
 def _identity_volume(bounding_box_local=None, matrix_world=None):
-    """A flagged object registered to yt_idv's unitary domain -- default is
-    a 2x2x2 cube at the origin (Blender's own default cube), identity
-    transform.
-    """
+    """A flagged object; defaults to a 2x2x2 cube at the origin."""
     version = VersionInfo(hash="x", changed=True)
     dataset = DatasetParams(
         dataset_id="obj", dataset_kind="", dataset_path=None,
@@ -161,9 +137,7 @@ def test_registered_camera_kwargs_rejects_non_persp():
 
 
 def test_registered_camera_kwargs_maps_position_through_object_bbox_registration():
-    # Camera at world (0, 0, 5), identity rotation (looks down -Z, up +Y).
-    # Object: default 2x2x2 cube at the world origin -- unitary (0.5, 0.5,
-    # 0.5) is the object's own center, by construction.
+    # Camera at world (0, 0, 5) looking down -Z; 2x2x2 cube at the origin.
     camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]])
     volume = _identity_volume()
     ds = _FakeDataset()  # domain_center == (0.5, 0.5, 0.5), matches the object's own unitary center
@@ -172,21 +146,13 @@ def test_registered_camera_kwargs_maps_position_through_object_bbox_registration
 
     # position = (cam_pos_local - bbox_min) / bbox_extent = ((0,0,5)-(-1,-1,-1))/(2,2,2)
     np.testing.assert_allclose(kwargs["position"], [0.5, 0.5, 3.0], atol=1e-6)
-    # Camera sits exactly on the ray from the object's center along -Z, so
-    # looking through the (real, transformed) forward direction lands
-    # exactly back on the domain center -- not a coincidence of this
-    # particular symmetric test case, but confirms the two aren't
-    # independently wrong in a way that happens to cancel out either.
     np.testing.assert_allclose(kwargs["focus"], [0.5, 0.5, 0.5], atol=1e-6)
     np.testing.assert_allclose(kwargs["up"], [0, 1, 0], atol=1e-6)
     assert kwargs["aspect_ratio"] == pytest.approx(2.0)
 
 
 def test_registered_camera_kwargs_position_scales_with_object_size():
-    # SAME camera/object placement as above, but the object is HALF the
-    # size (bbox half_extent=0.5 instead of 1.0) -- the object now occupies
-    # a smaller fraction of unitary space, so the same real-world distance
-    # from camera to object maps to a LARGER unitary distance.
+    # Half-size object: same world distance maps to a larger unitary distance.
     camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]])
     volume = _identity_volume(bounding_box_local=_cube_bbox(half_extent=0.5))
     ds = _FakeDataset()
@@ -198,8 +164,6 @@ def test_registered_camera_kwargs_position_scales_with_object_size():
 
 
 def test_near_far_planes_bounds_the_unit_cube_with_margin():
-    # Camera well outside the unit cube on the diagonal -- nearest corner
-    # (1,1,1), farthest corner (0,0,0).
     position = np.array([2.0, 2.0, 2.0])
     planes = yir._near_far_planes(position, margin=0.1)
     nearest = np.linalg.norm(np.array([1.0, 1.0, 1.0]) - position)
@@ -209,23 +173,14 @@ def test_near_far_planes_bounds_the_unit_cube_with_margin():
 
 
 def test_near_far_planes_floors_near_plane_when_camera_is_inside_the_cube():
-    # Camera at the cube's own center -- nearest corner distance minus
-    # margin would go negative; must floor to the documented 1e-5, not a
-    # negative or zero near plane (real yt_idv cameras reject non-positive
-    # near planes).
+    # yt_idv cameras reject non-positive near planes.
     position = np.array([0.5, 0.5, 0.5])
     planes = yir._near_far_planes(position, margin=1.0)
     assert planes["near_plane"] == pytest.approx(1e-5)
 
 
 def test_near_far_planes_ratio_does_not_blow_up_with_camera_distance():
-    # The bug this replaced (`near = 0.01 * look_ahead`, `far = look_ahead *
-    # 4.0`) had a CONSTANT 400:1 ratio no matter how far the camera sat from
-    # the domain -- the whole point of the fix is that the ratio now tracks
-    # the domain's own (small, fixed) angular size instead of blowing up
-    # with distance. A camera far away should see a near/far ratio close to
-    # 1.0 (near and far corners of a small cube look almost equidistant from
-    # very far away), nowhere near the old formula's fixed 400.
+    # Regression: the old formula had a fixed 400:1 far/near ratio at any distance.
     position = np.array([100.0, 100.0, 100.0])
     planes = yir._near_far_planes(position, margin=0.1)
     ratio = planes["far_plane"] / planes["near_plane"]
@@ -244,26 +199,11 @@ def test_domain_array_unitary_passes_through_plain_arrays():
 
 
 # --- Custom volume setup harness (yt_idv_volume_provider) -------------------
-#
-# `_resolve_volume_provider`/`_default_volume_provider`/`_get_volume_scene`/
-# `_render_signature*` are all pure Python (or take fakes standing in for a
-# real yt_idv render_context/scene) -- no real yt/yt_idv/GL context needed,
-# same testability discipline as everything else in this file. The actual
-# `_render_with_yt_idv` skip-render behavior IS covered here too (with a
-# fully faked render_context/scene/camera) since it's pure orchestration
-# logic, not a real GL render -- only `rc.run()`/`set_external_depth_clip`'s
-# OWN internals stay verified manually against real yt_idv (see module
-# docstring "Custom volume setup").
+# Uses fake render contexts/scenes; no GL context needed.
 
 @pytest.fixture
 def _clean_yir_state():
-    """Every test below shares yt_idv_renderer.py's module-level caches AND
-    change_tracking's global `_last_hashes` (the same store operators.py's
-    own params/dataset version tracking uses, just a different category) --
-    without resetting both before AND after, an earlier test's leftover
-    state (e.g. a `dataset_id="obj"` entry) would make a later test's
-    "first call" no longer actually be first.
-    """
+    """Reset yt_idv_renderer's module caches and change_tracking around each test."""
     def _clear():
         yir._volume_scene_cache.clear()
         yir._render_result_cache.clear()
@@ -276,10 +216,7 @@ def _clean_yir_state():
 
 
 class _FakeRenderContext:
-    """Stand-in for a real yt_idv render context -- just enough surface for
-    `_default_volume_provider`/a custom provider to call `.add_scene(...)`
-    and for tests to confirm how many times/with what arguments it was.
-    """
+    """Stand-in for a yt_idv render context that records add_scene calls."""
 
     def __init__(self):
         self.add_scene_calls = []
@@ -290,11 +227,7 @@ class _FakeRenderContext:
 
 
 def _request_with(custom_params=None, dataset_id="obj", camera_overrides=None, render_size=4):
-    """A full, real `RenderRequest` -- real (small) numpy depth data, a real
-    `CameraParams`/`VolumeObjectParams` -- for exercising `_render_signature`/
-    `_render_signature_changed`/`_render_with_yt_idv` end to end without any
-    real yt/yt_idv/bpy involved.
-    """
+    """A small but complete RenderRequest, no yt/yt_idv/bpy needed."""
     volume = _identity_volume()
     volume.dataset.dataset_id = dataset_id
     volume.custom_params = custom_params if custom_params is not None else {}
@@ -415,11 +348,7 @@ def test_get_volume_scene_passes_previous_scene_through_on_unchanged_context(mon
 
 
 def test_get_volume_scene_invalidates_previous_scene_when_render_size_changes(monkeypatch, _clean_yir_state):
-    # A resolution change means a DIFFERENT render context (yt_idv contexts
-    # are fixed-size at creation) -- any scene built against the old one is
-    # unusable regardless of whether the provider's own dataset state is
-    # still perfectly fine, so previous_scene must come back None even
-    # though this is still the same dataset_id as the first call.
+    # yt_idv contexts are fixed-size, so a new size means the old scene is unusable.
     seen_previous_scenes = []
 
     def my_provider(ctx):
@@ -458,9 +387,7 @@ def test_render_signature_changed_true_when_camera_moves(_clean_yir_state):
 
 
 def test_render_signature_changed_true_when_depth_buffer_content_differs(_clean_yir_state):
-    # Same camera, different depth CONTENT -- e.g. an unrelated occluder
-    # moved elsewhere in the Cycles scene -- must still count as "changed",
-    # not just camera motion (see _render_signature's own docstring).
+    # e.g. an occluder moved while the camera stayed put.
     request = _request_with()
     yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
     request.depth.data[0, 0] = 1.0
@@ -468,9 +395,6 @@ def test_render_signature_changed_true_when_depth_buffer_content_differs(_clean_
 
 
 def test_render_signature_changed_forced_true_when_volume_provider_reports_changed(_clean_yir_state):
-    # Identical signature both times, but volume_changed=True on the second
-    # call must still force a re-render -- the provider's own data changing
-    # is independent of (and not visible in) camera/depth/params.
     request = _request_with()
     yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
     assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=True) is True
@@ -505,19 +429,14 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
 
         def run(self):
             self.run_calls += 1
-            # A distinct image each real render, so accidentally-identical
-            # pixel data can't hide a real vs. cached-result mixup.
+            # Distinct image per real render, so cached vs. fresh is detectable.
             return np.full((render_size, render_size, 4), fill_value=float(self.run_calls), dtype=np.float32)
 
     fake_rc = _FakeRc()
 
     def fake_get_volume_scene(request, rsize):
         call_count["n"] += 1
-        # Only the very first call reports real data-side change; every
-        # later call says "nothing changed on the volume side" -- so any
-        # re-render that DOES happen after that must be because
-        # _render_signature_changed's own camera/depth signal fired, not
-        # because the (fake) provider asked for one.
+        # Only the first call reports a volume-side change.
         return fake_rc, fake_scene, _FakeDataset(), call_count["n"] == 1
 
     monkeypatch.setattr(yir, "_get_volume_scene", fake_get_volume_scene)
@@ -544,13 +463,8 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
 
 
 def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monkeypatch, _clean_yir_state):
-    # Real yt_idv detail this pins down (see module docstring "Custom volume
-    # setup"): a render_context only ever tracks ONE "current" scene
-    # (`rc.scene`, set by `add_scene`) -- `rc.run()` renders THAT, not
-    # whatever `scene` reference this module happens to be holding. Two
-    # objects sharing one `rc` (the common case -- resolution is scene-wide)
-    # must each force `rc.scene` back to their OWN scene before rendering,
-    # even when neither object's own cached scene needed rebuilding.
+    # rc.run() renders rc.scene (the last add_scene), so objects sharing a
+    # context must each reassert their own scene.
     render_size = 4
 
     class _FakeRcWithScene:
@@ -582,19 +496,8 @@ def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monk
 
 
 def test_set_external_depth_clip_reuses_existing_texture_instead_of_leaking_gpu_memory(monkeypatch):
-    # Real GPU-memory leak found running a full HD animation: a fresh
-    # Texture2D(data=...) every frame (this function runs once per frame
-    # from _render_with_yt_idv) allocates a NEW OpenGL texture via
-    # glGenTextures every time (yt_idv.opengl_support.Texture has no
-    # __del__/glDeleteTextures), so the previous frame's GPU texture is
-    # never freed. Confirmed via an isolated repro (nothing but this
-    # function + rc.run() in a loop): a rock-solid ~20MB/iteration linear
-    # climb -- and this is exactly what crashed a real 250-frame HD render
-    # with "System is out of GPU memory" at frame 183. Fix: reuse the same
-    # Texture2D instance and reassign its `.data` trait instead of
-    # constructing a new one every call -- verified here via a fake
-    # Texture2D that just counts how many times it's actually constructed,
-    # no real GL context needed.
+    # Regression: yt_idv Textures are never freed, so a new Texture2D per
+    # frame leaked GPU memory until long renders crashed.
     created = []
 
     class FakeTexture2D:
@@ -631,8 +534,7 @@ def test_fix_yt_idv_axis_order_passes_through_already_correct_shape():
 
 
 def test_fix_yt_idv_axis_order_transposes_yt_idv_bug_1_shape():
-    # Pins yt_idv bug #1 (see module docstring): a non-square render comes
-    # back as (width, height, 4) instead of (height, width, 4).
+    # yt_idv bug 1: non-square renders come back as (width, height, 4).
     image = np.arange(100 * 200 * 4, dtype=np.float32).reshape(200, 100, 4)
     fixed = yir._fix_yt_idv_axis_order(image, expected_height=100, expected_width=200)
     assert fixed.shape == (100, 200, 4)
@@ -663,12 +565,10 @@ def test_to_row_order_rejects_unknown_convention():
 
 
 def test_center_crop_recovers_requested_non_square_shape_from_a_square_render():
-    # Pins the workaround for yt_idv bug 3 (see module docstring): render
-    # square, then crop back down to the actually-requested shape.
+    # Workaround for yt_idv bug 3: render square, then crop.
     square = np.arange(10 * 10 * 4, dtype=np.float32).reshape(10, 10, 4)
     cropped = yir._center_crop(square, expected_height=4, expected_width=8)
     assert cropped.shape == (4, 8, 4)
-    # Centered: 1 row of margin top/bottom (10-4=6, 6//2=3... use exact offsets)
     y0 = (10 - 4) // 2
     x0 = (10 - 8) // 2
     np.testing.assert_array_equal(cropped, square[y0:y0 + 4, x0:x0 + 8, :])
@@ -680,10 +580,7 @@ class _FakeTransferFunctionTexture:
 
 
 class _FakeComponent:
-    """Stand-in for a real yt_idv `block_rendering` component -- just
-    enough surface for `_configure_max_intensity`/`_configure_transfer_function`
-    to exercise without needing yt_idv importable.
-    """
+    """Stand-in for a yt_idv block_rendering component."""
 
     def __init__(self):
         self.render_method = None
@@ -701,14 +598,6 @@ def test_configure_max_intensity_only_sets_render_method():
 
 
 def test_mip_alpha_constants_produce_a_transparent_to_opaque_ramp():
-    # `_configure_max_intensity_alpha` itself needs yt/matplotlib to actually
-    # build the colormap via `_get_mip_alpha_colormap_data`/`_build_mip_alpha_
-    # colormap_data` -- rather than depend on whether those happen to be
-    # importable in this venv, this instead pins the actual MIP_ALPHA_MAX/
-    # RAMP_POWER constants that function feeds into the already-tested
-    # `_threshold_fog_alpha_ramp`, so a change to either constant that breaks
-    # the "transparent low, opaque high" guarantee shows up here without
-    # needing yt at all.
     ramp = yir._threshold_fog_alpha_ramp(yir.MIP_ALPHA_NBINS, yir.MIP_ALPHA_MAX, yir.MIP_ALPHA_RAMP_POWER)
     assert ramp[0] == pytest.approx(0.0)
     assert ramp[-1] == pytest.approx(yir.MIP_ALPHA_MAX)
@@ -716,14 +605,7 @@ def test_mip_alpha_constants_produce_a_transparent_to_opaque_ramp():
 
 
 # --- Preferences-panel override mechanism (custom_params -> _configure_*) --
-#
-# The actual `_get_*_data`/`_build_*_data` functions these `_configure_*`
-# functions call still need yt/matplotlib -- rather than depend on whether
-# those happen to be importable in this venv, these tests monkeypatch that
-# ONE call out with a spy, so what's actually under test is the "does
-# custom_params correctly override the module constant, and does an EMPTY
-# custom_params correctly fall back to it" logic, which is this add-on's
-# own code, not yt_idv/matplotlib's.
+# The yt/matplotlib-dependent _get_*_data calls are replaced with spies.
 
 def test_configure_transfer_function_empty_custom_params_uses_module_constants(monkeypatch):
     component = _FakeComponent()
@@ -771,11 +653,6 @@ def test_configure_threshold_fog_custom_params_override_module_constants(monkeyp
 
 
 def test_configure_threshold_fog_passes_through_alpha_curve_and_color_rgba(monkeypatch):
-    # Curve-driven alpha / image-driven color -- see yt_idv_renderer.py
-    # module docstring's "Curve-driven alpha / image-driven color" section:
-    # operators.py evaluates these into plain lists and passes them through
-    # custom_params under these exact keys; _configure_threshold_fog just
-    # needs to forward them unchanged.
     component = _FakeComponent()
     calls = []
     monkeypatch.setattr(
@@ -834,9 +711,6 @@ def test_configure_max_intensity_alpha_passes_through_alpha_curve_and_color_rgba
 
 
 def test_apply_transfer_function_settings_sets_tf_fields_not_render_method():
-    # The pure-Python half of _configure_transfer_function -- see that
-    # function's docstring for why it's split out (the other half needs
-    # `yt` importable to actually build tf_data, this doesn't).
     component = _FakeComponent()
     fake_tf_data = np.zeros((256, 1, 4), dtype="u1")
 
@@ -850,9 +724,7 @@ def test_apply_transfer_function_settings_sets_tf_fields_not_render_method():
 
 
 def test_render_method_mode_switch_is_idempotent_on_the_same_component():
-    # Pins that _get_context's caching (real context reused across calls) is
-    # safe to combine with EITHER renderer mode -- each call reconfigures the
-    # component fresh rather than relying on whatever was set last time.
+    # Cached contexts are reused across modes, so each mode must reconfigure.
     component = _FakeComponent()
     yir._apply_transfer_function_settings(component, tf_min=1e-5, tf_max=3e-3, tf_data=np.zeros((256, 1, 4), dtype="u1"))
     component.render_method = "transfer_function"
@@ -860,9 +732,7 @@ def test_render_method_mode_switch_is_idempotent_on_the_same_component():
 
     yir._configure_max_intensity(component, custom_params={})
     assert component.render_method == "max_intensity"
-    # tf_min/tf_max/tf_log/transfer_function.data are left as whatever
-    # transfer_function mode set them to -- harmless, since max_intensity's
-    # own shader combo doesn't read them at all (see shaders/shaderlist.yaml).
+    # Leftover tf_* fields are harmless; max_intensity doesn't read them.
     assert component.tf_min == 1e-5
 
 
@@ -879,10 +749,6 @@ def test_threshold_fog_alpha_ramp_is_monotonically_nondecreasing():
 
 
 def test_threshold_fog_alpha_ramp_power_above_one_stays_below_the_linear_ramp():
-    # power > 1.0 is documented as "ramps up slowly at first" -- pin that
-    # down numerically, not just by description: at the ramp's own midpoint,
-    # a power=2.0 ramp must sit strictly below what a plain linear
-    # (power=1.0) ramp would give at that same point.
     linear = yir._threshold_fog_alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=1.0)
     slow = yir._threshold_fog_alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=2.0)
     midpoint = 50
@@ -895,9 +761,6 @@ def test_resample_1d_returns_input_unchanged_when_already_the_right_length():
 
 
 def test_resample_1d_linearly_interpolates_to_a_different_length():
-    # 3 samples spanning [0, 1] -> 5 evenly-spaced positions should hit the
-    # exact original values at the endpoints and midpoint, with linear
-    # interpolation in between.
     resampled = yir._resample_1d([0.0, 0.5, 1.0], nbins=5)
     assert resampled == pytest.approx([0.0, 0.25, 0.5, 0.75, 1.0])
 
@@ -912,11 +775,7 @@ def test_resample_rgb_interpolates_each_channel_independently():
 
 
 def test_build_threshold_fog_transfer_function_data_with_curve_and_color_overrides():
-    # Both `alpha_curve`/`color_rgba` given -- takes neither the named-
-    # colormap nor `yt`/matplotlib code path at all, so this is exercisable
-    # in this bpy-only venv (see module docstring's "NOT wired into this
-    # repo's own pytest suite" section on why `yt`/matplotlib aren't
-    # installed here).
+    # With both overrides given, no yt/matplotlib is needed.
     alpha_curve = [0.0, 1.0]  # a plain linear ramp 0 -> 1
     color_rgba = [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]  # red -> blue
 
@@ -929,24 +788,14 @@ def test_build_threshold_fog_transfer_function_data_with_curve_and_color_overrid
     assert data.dtype == np.dtype("u1")
     # alpha: curve resampled to 4 bins (0, 1/3, 2/3, 1) * alpha_max=0.5
     assert list(data[:, 0, 3]) == pytest.approx([0, 42, 85, 127], abs=1)
-    # color: red at bin 0, blue at bin 3 (resampled color_rgba), alpha
-    # column from color_rgba is ignored (it's all 1.0 there, alpha above
-    # came from alpha_curve*alpha_max instead, which is NOT 255 anywhere)
+    # color: red -> blue; color_rgba's own alpha column is ignored
     assert int(data[0, 0, 0]) == 255 and int(data[0, 0, 2]) == 0
     assert int(data[-1, 0, 0]) == 0 and int(data[-1, 0, 2]) == 255
 
 
 def test_build_threshold_fog_transfer_function_data_alpha_curve_only_keeps_named_color_path(monkeypatch):
-    # alpha_curve given, color_rgba NOT -- still needs the colormap path
-    # (`import yt`/`import matplotlib`), confirming the two overrides are
-    # independent switches, by checking the failure mode itself (ImportError
-    # from the colormap path, not e.g. a TypeError from mixing up the two).
-    # Forces the import to fail via sys.modules rather than relying on
-    # yt/matplotlib being genuinely absent from this venv -- they're an
-    # *optional* `ytidv` dependency group on top of this suite's own `dev`
-    # group (see README "yt_idv integration"), so whether they're actually
-    # importable here depends on what else has been `uv sync`'d into the
-    # same venv, not on anything this test controls.
+    # Without color_rgba the named-colormap path (yt/matplotlib) still runs;
+    # force those imports to fail since they may be installed.
     monkeypatch.setitem(sys.modules, "yt", None)
     monkeypatch.setitem(sys.modules, "matplotlib", None)
     with pytest.raises(ImportError):
@@ -989,15 +838,6 @@ def test_build_mip_alpha_colormap_data_with_curve_and_color_overrides():
 
 
 def test_apply_transfer_function_settings_works_with_fog_bounds_and_a_fake_ramp():
-    # `_configure_threshold_fog` itself isn't called here -- it needs `yt`/
-    # matplotlib (not installed in this bpy-only test venv, see module
-    # docstring's "NOT wired into this repo's own pytest suite" section) to
-    # actually build the fog LUT via `_build_threshold_fog_transfer_
-    # function_data`. This instead exercises the exact same pure-Python
-    # `_apply_transfer_function_settings` call `_configure_threshold_fog`
-    # makes, with TF_FOG_VALUE_MIN/MAX and a hand-built LUT whose bin 0 is
-    # fully transparent -- pinning down the "fully transparent below
-    # threshold" guarantee without needing yt.
     component = _FakeComponent()
     fake_fog_data = np.zeros((256, 1, 4), dtype="u1")
     fake_fog_data[:, 0, 3] = np.linspace(0, 255, 256).astype("u1")  # alpha ramps 0 -> 255
@@ -1024,12 +864,7 @@ def test_pad_to_square_centers_the_array_and_fills_the_margin():
 
 
 # --- _cycles_depth_to_yt_idv_window_depth ------------------------------------
-#
-# Uses a REAL bpy camera (real projection_matrix, not hand-rolled) --
-# reusing the exact fixture pattern tests/test_sample_renderers.py already
-# established, plus the SAME box (2x2x2 at world (0, 0, 5)) that project
-# already uses for its own depth-clip tests, so this is checked against
-# real, working Blender camera math, not just internally-consistent numbers.
+# Uses a real bpy camera, same setup as tests/test_sample_renderers.py.
 
 RES_X, RES_Y = 33, 25  # odd dims -> a pixel sits exactly on the optical axis
 CENTER_COL, CENTER_ROW = 16, 12
@@ -1056,11 +891,7 @@ def persp_camera_params():
 
 
 def _boxed_volume_at_5():
-    """2x2x2 box centered at world (0, 0, 5) -- along the camera's
-    straight-down-the-axis ray (camera at world z=10), the box spans
-    PLANAR depth [4, 6]: near face at world z=6 -> depth 4, far face at
-    world z=4 -> depth 6, center at world z=5 -> depth 5.
-    """
+    """2x2x2 box at world (0, 0, 5): planar depth [4, 6] from the camera at z=10."""
     return _identity_volume(
         bounding_box_local=_cube_bbox(),
         matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]],
@@ -1078,26 +909,15 @@ def _uniform_depth_buffer(fill_value, no_hit_mask=None, row_order="BOTTOM_LEFT_O
 
 
 class _IdentityYtIdvCamera:
-    """Stand-in for yt_idv's own (already-positioned) camera -- an identity
-    projection*view means the sampled window_depth directly reflects the
-    reconstructed point's own unitary Z coordinate (`0.5*z + 0.5`), which
-    makes the expected values in these tests trivial to predict by hand
-    rather than needing to replicate yt_idv's actual perspective matrix.
-    """
+    """Identity-matrix yt_idv camera, so window_depth = 0.5 * unitary_z + 0.5."""
 
     projection_matrix = np.eye(4)
     view_matrix = np.eye(4)
 
 
 def test_cycles_depth_to_yt_idv_window_depth_is_uniform_across_a_planar_hit(persp_camera_params):
-    # PLANAR depth is view-space Z -- constant across the whole
-    # perpendicular-to-view plane regardless of x/y offset (the
-    # empirically-confirmed convention this whole add-on relies on, see
-    # README "Z-pass verification findings"). A uniform depth=5.0 fill
-    # should therefore reconstruct to world Z=5 EVERYWHERE, which is
-    # unitary Z=0.5 for this box (local Z=(5-5)=0, bbox -1..1 -> unitary
-    # 0.5) -- so window_depth should be uniformly 0.5*0.5+0.5=0.75 across
-    # the ENTIRE array, not just the center pixel.
+    # PLANAR depth is view-space Z, so depth 5 is world z=5 (unitary 0.5)
+    # everywhere -> window_depth 0.75 across the whole array.
     request = RenderRequest(
         camera=persp_camera_params,
         depth=_uniform_depth_buffer(5.0),
@@ -1112,11 +932,7 @@ def test_cycles_depth_to_yt_idv_window_depth_is_uniform_across_a_planar_hit(pers
 
 
 def test_cycles_depth_to_yt_idv_window_depth_masks_no_hit_pixels_to_far(persp_camera_params):
-    # TOP_LEFT_ORIGIN here specifically, so array position [0, 0] maps
-    # directly (no row-order flip to account for) -- keeps the assertion
-    # simple; the flip itself is separately covered by the uniform-fill
-    # test above (flip-invariant, since every value is identical) and by
-    # test_to_row_order_* elsewhere in this file.
+    # TOP_LEFT_ORIGIN so [0, 0] needs no row flip.
     no_hit_mask = np.zeros((RES_Y, RES_X), dtype=bool)
     no_hit_mask[0, 0] = True  # one corner pixel is background/sky
     request = RenderRequest(

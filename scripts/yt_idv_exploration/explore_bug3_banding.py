@@ -1,29 +1,11 @@
-"""Fourth exploration: chasing the period-4 banding artifact found while
-testing camera motion (scripts/yt_idv_exploration/blender_scene/) at
-non-square resolutions, even through EGL (bug 1 already fixed).
+"""Investigates the period-4 banding artifact in non-square EGL renders.
 
 Run inside the throwaway venv (see setup_ytidv_venv.sh).
 
-Investigation, in order:
-
-1. Dump a raw scanline (not just look at the picture) -- reveals an EXACT
-   period-4 pattern: `[value, 0, 0, value]` repeating. Not proportional to
-   scene content, not random noise.
-2. Hypothesis: ray-marching under-sampling (`component.sample_factor`,
-   default 1.0, documented up to 20.0 in the component's own GUI slider).
-   Tested at 1.0, 4.0, 10.0 -- **pixel-identical output every time**
-   (images/10_*.png, images/11_*.png). This DISPROVES the under-sampling
-   explanation; don't reach for it again without new evidence.
-3. Confirm it's specifically tied to non-square dimensions: same
-   camera/dataset, SQUARE resolution -- scanline is smooth and continuous,
-   no dropout pattern at all (images/12_*.png).
-
-Root cause still open at the end of this script -- being investigated
-independently (candidates: EGL surface/multisample config, a width/height
-mixup in yt_idv's own viewport or grid-expansion geometry shader
-specifically for non-square viewports). Worked around in the real add-on
-module (`yt_idv_renderer.yt_idv_max_intensity_renderer`) by rendering
-square and center-cropping -- see that function's docstring.
+Shows that changing `sample_factor` has no effect (so it is not
+under-sampling) and that square renders are clean. Worked around in
+`yt_idv_renderer.yt_idv_max_intensity_renderer` by rendering square and
+center-cropping.
 """
 
 import numpy as np

@@ -1,54 +1,20 @@
-"""Verifies -- empirically, not just by design -- the `yt_idv_volume_provider`
-harness in `yt_idv_renderer.py` (module docstring "Custom volume setup"):
-a real, user-defined Python function standing in for the hardcoded
-`IsolatedGalaxy` sample, called through the exact `custom_params
-["yt_idv_volume_provider"]` mechanism a real add-on user would configure via
-`obj.volume_override.yt_idv_volume_provider`.
-
-No real Cycles render needed here -- `yt_idv_renderer.yt_idv_projection_
-renderer` takes a hand-built `RenderRequest`, same style as this repo's own
-`tests/test_yt_idv_renderer.py`, just against REAL `yt`/`yt_idv` instead of
-fakes. `bpy` IS used, but only to get a real, correctly-computed
-`CameraParams.projection_matrix` (`operators.build_camera_params`,
-`Object.calc_matrix_camera` under the hood) -- the depth-clip path needs a
-real one, not `None` -- never for an actual Cycles render. Run with:
+"""Checks the `yt_idv_volume_provider` hook in `yt_idv_renderer.py` against
+real yt/yt_idv (no Cycles render; `bpy` is only used to build a real camera
+projection matrix). Run with:
 
     env -u LD_PRELOAD uv run --group ytidv python \\
         scripts/yt_idv_exploration/blender_scene/custom_volume_provider_demo.py
 
-Three claims checked, matching the module docstring's own "Verified
-directly" paragraph exactly:
+Claims checked:
 
-  1. A custom provider that explicitly loads the SAME `IsolatedGalaxy`
-     sample (through this mechanism, not the hardcoded default path)
-     produces the IDENTICAL rendered image to the default provider --
-     confirmed via `np.array_equal`, not just "looks similar". Proves the
-     harness doesn't itself alter what gets rendered, only HOW the volume
-     gets set up.
-  2. Calling `yt_idv_projection_renderer` a second time with an unchanged
-     request calls the provider function again (every frame, per the
-     module docstring) but with `ctx.previous_scene` NOT `None` -- i.e. the
-     provider was told about, and chose to reuse, the scene it built last
-     time, rather than being silently bypassed OR silently rebuilt.
-  3. The skip-render cache: an unchanged second call returns the EXACT
-     SAME `RenderResult` object (`is`, not just equal) as the first, proving
-     `rc.run()` was genuinely skipped, not just re-run to the same result;
-     a THIRD call with only the camera moved (provider still reports
-     `changed=False`) returns a DIFFERENT object with different pixel
-     content, proving the skip-cache correctly does NOT over-cache across a
-     real visual change.
-  4. `rc.scene` re-assertion (see `_render_with_yt_idv`'s own comment on
-     this): the default and custom providers above share ONE real yt_idv
-     render_context (same backend/render_size) but each cache their OWN
-     scene -- yt_idv's own `BaseContext.add_scene` only ever tracks one
-     `self.scene`, replaced by whichever object called `add_scene` most
-     recently, which by this point is the CUSTOM object's. Forcing a real
-     re-render of the DEFAULT object (a camera move, so the skip-render
-     cache above doesn't just return its own cached result) and inspecting
-     `rc.scene` immediately after confirms it's the DEFAULT object's own
-     scene, not the custom one left over from rendering it in between --
-     proving `_render_with_yt_idv` re-points the shared context back to
-     each object's own scene on every call, not just an object's first one.
+  1. A custom provider loading the same `IsolatedGalaxy` sample renders a
+     pixel-identical image to the default provider.
+  2. A second, unchanged call invokes the provider again with
+     `ctx.previous_scene` set.
+  3. An unchanged call returns the exact cached `RenderResult` (render
+     skipped); a camera move forces a real re-render.
+  4. With two objects sharing one render_context, `rc.scene` is re-pointed
+     at each object's own scene on every render.
 """
 
 import os
@@ -84,15 +50,8 @@ _CAMERA_OBJ = bpy.context.active_object
 
 
 def _camera(matrix_world):
-    """A real `CameraParams`, `projection_matrix` included --
-    `_cycles_depth_to_yt_idv_window_depth`'s ray computation needs a real
-    one, unlike the pure-registration-math tests in
-    `tests/test_yt_idv_renderer.py` which never touch it.
-    """
-    # A plain nested list here is silently ignored by bpy (matrix_world
-    # resets to identity, confirmed directly) -- it needs a real
-    # mathutils.Matrix, unlike e.g. .location, which does accept a plain
-    # tuple.
+    """Real `CameraParams`, including the projection matrix the depth clip needs."""
+    # bpy silently ignores a plain nested list for matrix_world; needs a Matrix.
     _CAMERA_OBJ.matrix_world = mathutils.Matrix(matrix_world)
     bpy.context.view_layer.update()
     return operators.build_camera_params(bpy.context.scene, _CAMERA_OBJ)
@@ -187,11 +146,8 @@ def main():
     print("[custom_volume_provider_demo] claim 3b OK: camera-only change "
           "still forced a real, different re-render")
 
-    # --- Claim 4: rc.scene correctly re-pointed at the DEFAULT object's own
-    #              scene, not left over from the CUSTOM object's render in
-    #              between (both share this render_context) -- forcing a
-    #              real re-render (camera move) so the skip-render cache
-    #              above doesn't just short-circuit this check trivially.
+    # --- Claim 4: rc.scene re-pointed at the default object's scene -------
+    #              (camera move so the skip-render cache doesn't short-circuit)
     default_moved_request = _request("default-obj", CAMERA_MOVED, custom_params_default)
     yir.yt_idv_projection_renderer(default_moved_request)
     rc_now, cached_default_scene, _ds, _changed = yir._get_volume_scene(default_moved_request, RENDER_SIZE)

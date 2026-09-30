@@ -50,16 +50,8 @@ def test_sync_scene_state_unlinks_objects_no_longer_flagged(clean_scene):
 
 
 def test_sync_scene_state_stays_correct_across_repeated_calls_with_unchanged_state(clean_scene):
-    # Real perf bug found doing an optimization pass: sync_scene.world/
-    # .camera used to be unconditionally reassigned on every single call,
-    # even when already correct -- confirmed directly (a real Cycles
-    # render, not this unit test, which has no GPU) that even a same-value
-    # Scene.world reassignment invalidates Cycles' own use_persistent_data
-    # cache for a COMPLETELY DIFFERENT scene than the one being modified.
-    # This test pins the CORRECTNESS half (repeated calls with nothing
-    # actually changed must still leave the sync scene in the right state)
-    # -- see sync_scene_state's own docstring for the measured performance
-    # numbers this guards.
+    # world/camera are now only reassigned when they differ (a same-value
+    # reassignment invalidates Cycles' persistent-data cache); pins correctness.
     scene = clean_scene
     cam = _add_camera(scene)
     bpy.ops.object.empty_add(type="CUBE")

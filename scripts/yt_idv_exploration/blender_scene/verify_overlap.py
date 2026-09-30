@@ -1,52 +1,20 @@
-"""Verifies -- empirically, not just by describing it -- that the sphere
-(real Cycles geometry) and the real yt_idv volume in render_real_demo.py's
-scene genuinely co-exist and interact: renders the SAME real end-to-end
-scene (`render_real_demo.build_scene()`) through the add-on's actual
-two-pass pipeline TWICE per renderer mode -- once with the real external
-depth clip wired up (the normal path) and once with it forced off -- and
-diffs the two.
+"""Checks that the depth clip actually occludes the yt_idv volume behind
+render_real_demo.py's sphere.
 
-Why this is an actual test of "do they overlap", not just "does it look
-plausible": the sphere's own Cycles beauty render (pass 1) never touches
-the depth clip at all -- it's rendered once, before the volume renderer
-even runs -- so it must come out identical between the two runs regardless
-(sanity-checked below, not assumed). Only the VOLUME layer's own EXR
-(`vo_result_FlaggedVolumeBox_*.exr`, read directly, before compositing) can
-differ, and only the depth clip can make it differ. So: if disabling the
-clip measurably raises the volume layer's own alpha specifically INSIDE
-the sphere's on-screen silhouette (read straight from the beauty pass's own
-alpha channel -- the sphere is the only opaque geometry in the scene), and
-leaves it alone OUTSIDE that silhouette, that is direct evidence that (a)
-the sphere and the volume genuinely occupy the same region of 3D space
-along those rays -- there is something there to clip -- and (b) the clip is
-doing real, spatially-localized work, not a global no-op or a uniform
-effect that would show up everywhere.
-
-Renderer mode matters here. `max_intensity` (MIP) keeps only the SINGLE
-BRIGHTEST sample along each ray and discards where along the ray it came
-from -- if that peak sample happens to already lie in front of the sphere,
-clipping the ray behind it changes nothing about the pixel, so MIP can show
-little or no measurable difference even where the geometry genuinely
-overlaps. Not a bug -- an inherent property of what MIP even measures (see
-yt_idv_renderer.py's own module docstring). `projection` (unweighted,
-additive integration across the WHOLE ray) has no such blind spot: cutting
-the ray off early necessarily removes some of the accumulated total, so a
-measurable difference is expected wherever the geometry truly overlaps.
-This script runs BOTH and reports the difference for each, so that
-asymmetry is measured here, not just assumed.
+Renders `render_real_demo.build_scene()` through the two-pass pipeline twice
+per renderer mode, with the depth clip on and forced off, and compares the
+volume layer's alpha inside vs. outside the sphere's silhouette. The clip
+should reduce alpha only inside the silhouette. MIP (`max_intensity`) may
+show little difference, since the brightest sample can lie in front of the
+sphere; `projection` should always show a drop.
 
 Run with:
 
     env -u LD_PRELOAD uv run --group ytidv python \\
         scripts/yt_idv_exploration/blender_scene/verify_overlap.py
 
-Output:
-  - Printed per-mode numbers: mean volume-layer alpha inside vs. outside
-    the sphere's silhouette, clipped vs. unclipped, and the resulting drop.
-  - `images/29_verify_overlap_diff_<mode>.png` per mode -- red channel is
-    how much alpha the depth clip removed at each pixel (should light up
-    inside the sphere's silhouette, traced in faint green for registration,
-    and stay dark everywhere else).
+Output: per-mode alpha numbers, and `images/29_verify_overlap_diff_<mode>.png`
+(red = alpha removed by the clip, faint green = sphere silhouette).
 """
 
 import os
@@ -68,9 +36,9 @@ sys.path.insert(0, HERE)  # sibling module below
 
 from cycles_volume_override import operators, properties, yt_idv_renderer  # noqa: E402
 
-import render_real_demo  # noqa: E402 -- reuses build_scene()/_write_png()
+import render_real_demo  # noqa: E402
 
-RENDERER_MODES = ["projection", "max_intensity"]  # per the brief: MIP may show ~no difference
+RENDERER_MODES = ["projection", "max_intensity"]
 MODE_KEY_BY_NAME = render_real_demo.MODE_KEY_BY_NAME
 
 
@@ -91,20 +59,15 @@ def _load_exr_rgba(path):
 
 
 def _render_once(renderer_mode, disable_depth_clip):
-    """Runs the real two-pass pipeline once and returns (beauty_rgba,
-    volume_rgba) as in-memory arrays -- read back immediately, before the
-    NEXT call overwrites the same on-disk EXR paths (compositor_build.py
-    writes fixed per-frame filenames, reused across calls in this loop).
+    """Run the two-pass pipeline once; return (beauty_rgba, volume_rgba).
+
+    Read back immediately, since the next call overwrites the same EXR paths.
     """
     real_set_external_depth_clip = yt_idv_renderer.set_external_depth_clip
     if disable_depth_clip:
         def _forced_off(scene, depth=None):
-            # Real, documented contract (see set_external_depth_clip's own
-            # docstring): depth=None disables clipping and restores the
-            # unclipped baseline. Forcing it here, rather than skipping the
-            # call outright, also correctly clears any clip state left over
-            # from a PREVIOUS call against this same cached yt_idv context
-            # (see yt_idv_renderer._get_volume_scene's own module-level caching).
+            # depth=None disables clipping and clears clip state left on the
+            # cached yt_idv context by a previous call.
             return real_set_external_depth_clip(scene, None)
         yt_idv_renderer.set_external_depth_clip = _forced_off
     try:
@@ -140,13 +103,11 @@ def _report_and_visualize(renderer_mode, mask, clipped_vol, unclipped_vol):
     print(f"  mean volume alpha OUTSIDE sphere silhouette: unclipped={_safe_mean(out_unclipped):.4f} "
           f"clipped={_safe_mean(out_clipped):.4f}  drop={out_drop:.4f}")
 
-    # Visual diff: how much alpha the depth clip removed, per pixel -- for
-    # a genuinely working, spatially-localized clip, this should light up
-    # (mostly) inside the sphere's silhouette and stay dark elsewhere.
+    # Per-pixel alpha removed by the depth clip.
     diff = np.clip(unclipped_alpha - clipped_alpha, 0.0, 1.0)
     heat = np.zeros((*diff.shape, 4), dtype=np.float32)
     heat[..., 0] = diff  # red = alpha the clip removed
-    heat[..., 1] = mask.astype(np.float32) * 0.15  # faint green outline = sphere silhouette, for registration
+    heat[..., 1] = mask.astype(np.float32) * 0.15  # faint green = sphere silhouette
     heat[..., 3] = 1.0
     heat_path = os.path.join(IMAGES_DIR, f"29_verify_overlap_diff_{renderer_mode}.png")
     render_real_demo._write_png(heat_path, heat)
@@ -175,10 +136,7 @@ def main():
         beauty_unclipped, unclipped_vol = _render_once(mode, disable_depth_clip=True)
         beauty_clipped, clipped_vol = _render_once(mode, disable_depth_clip=False)
 
-        # Sanity check this script's own premise: pass 1's Cycles beauty
-        # render never touches the depth clip, so it MUST be the same
-        # either way -- if it isn't, something is wrong with this script's
-        # comparison, not with the add-on.
+        # Pass 1 (Cycles) doesn't use the depth clip, so it must match.
         max_beauty_diff = float(np.abs(beauty_unclipped - beauty_clipped).max())
         print(f"  max |beauty_unclipped - beauty_clipped| = {max_beauty_diff:.6f} (expect ~0 -- sanity check)")
         assert max_beauty_diff < 1e-4, (

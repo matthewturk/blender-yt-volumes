@@ -27,8 +27,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     assert params["density_scale"] == 2.5
     assert params["field_name"] == "density"
     assert len(params["absorption"]) == 3
-    # dataset identity is NOT part of custom_params -- it's handled
-    # separately by build_dataset_params() with its own change tracking.
+    # dataset identity is tracked separately by build_dataset_params().
     assert "dataset_path" not in params
     assert "dataset_kind" not in params
 

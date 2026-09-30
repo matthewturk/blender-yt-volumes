@@ -1,21 +1,11 @@
-"""Two things that must work even if someone bypasses our operator:
+"""Handlers and keymaps.
 
-1. A `render_cancel` safety-net handler. `operators.render_current_frame()`
-   already restores `hide_render` in a `finally`/context-manager, which
-   covers cancellation *through our own operator*. This handler covers the
-   remaining case: someone calls `bpy.ops.render.render()` directly (Python
-   console, a different add-on, a script) while our objects happen to be
-   hidden mid-pipeline and Blender kills the render before our operator's
-   own cleanup runs. It is a backstop, not the primary mechanism -- documented
-   in the README as "if you bypass render.volume_override, you get plain
-   Cycles with volume objects hidden and no compositing, but you will not
-   get permanently-hidden objects."
+1. A `render_cancel` handler restoring `hide_render` on flagged objects, as
+   a backstop for renders started outside our operator.
 
-2. Taking over F12 / Ctrl+F12 so a normal render keypress runs our operator
-   instead of Blender's built-in `render.render`. Blender has no "override
-   this operator" mechanism -- the standard add-on technique is to disable
-   the default keymap item(s) bound to `render.render` on those keys and add
-   our own in the add-on keyconfig layer. Reversible on unregister.
+2. F12 / Ctrl+F12 bound to `render.volume_override`: Blender can't override
+   an operator, so the default `render.render` keymap items are disabled
+   and ours added to the add-on keyconfig (restored on unregister).
 """
 
 import bpy

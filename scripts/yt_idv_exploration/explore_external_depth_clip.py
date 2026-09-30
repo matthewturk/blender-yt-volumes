@@ -1,102 +1,21 @@
-"""Sixth exploration: "the rays don't stop" -- yt_idv's ray-marching shader
-(`ray_tracing.frag.glsl`) had no way to stop a ray's integration early at an
-externally-supplied depth (e.g. an opaque occluder like the marker sphere
-from scripts/yt_idv_exploration/blender_scene/). It always integrated all
-the way out to `t1`, the ray's exit point from the CURRENT BLOCK's own
-bounding box -- there was no per-pixel "max distance" concept to plug an
-external occluder's depth into.
+"""Demonstrates the external depth clip added to yt_idv's ray-marching shader
+(`external_depth_tex`/`use_external_depth_clip`; see
+`yt_idv_external_depth_clip.patch`), which stops rays at a per-pixel depth.
 
-This is a REAL yt_idv modification, not a workaround on this add-on's side
--- GLSL shader source can't be monkeypatched the way Python can. Minimal and
-additive: a new uniform pair (`external_depth_tex`, `use_external_depth_clip`)
-that defaults to a complete no-op when unused. See
-`yt_idv_external_depth_clip.patch` for the exact diff against the checkout
-in `../../yt_idv/`, and `ray_tracing.frag.glsl`'s own comment for the
-shader-side rationale.
+Run inside the throwaway venv (see setup_ytidv_venv.sh), against the patched
+yt_idv checkout.
 
-Run inside the throwaway venv (see setup_ytidv_venv.sh), against the
-patched yt_idv checkout (already applied there, not a separate step).
+Gotchas:
+  - Import `yt_idv.opengl_support` only after `yt_idv.render_context(...)`,
+    which sets PYOPENGL_PLATFORM; importing earlier leaves newer GL functions
+    (e.g. `glTexStorage3D`) undefined.
+  - The `viewport` uniform is raw `(x, y, width, height)` pixels, not the
+    `1 / screen` documented in `known_uniforms.inc.glsl`; divide by `.zw`.
+  - `Texture2D` needs `depth[::-1, :].T` for a top-down (H, W) array; this is
+    handled by `yt_idv_renderer.set_external_depth_clip`.
 
-Two real bugs found and fixed while building/verifying this, both the hard
-way (empirically, not by reading source and assuming):
-
-1. **Import-order gotcha (this script's bug, not yt_idv's).**
-   `from yt_idv.opengl_support import Texture2D` (or anything under
-   `yt_idv.opengl_support`) MUST come AFTER `yt_idv.render_context(...)`,
-   not before -- that call is what sets `PYOPENGL_PLATFORM`, and
-   `opengl_support.py` does `from OpenGL import GL` at module level.
-   Importing it too early binds PyOpenGL to the wrong platform before EGL
-   is selected, manifesting as `glTexStorage3D` (and presumably other
-   newer-GL functions) being undefined. Looked like GPU/driver flakiness
-   at first (it intermittently "worked" depending on unrelated timing); it
-   wasn't -- fixing just the import order made it 100% reliable.
-2. **The `viewport` uniform's own doc comment is wrong (yt_idv's bug, not
-   fixed here -- just discovered and worked around).**
-   `known_uniforms.inc.glsl` documents `viewport` as `(offset_x, offset_y,
-   1 / screen_x, 1 / screen_y)` -- implying you MULTIPLY by `.zw` to get a
-   normalized UV. `yt_idv.cameras.base_camera.BaseCamera._set_uniforms`
-   actually sets it to the RAW `GL.glGetIntegerv(GL_VIEWPORT)`, i.e.
-   `(x, y, width, height)` in pixels -- you must DIVIDE by `.zw`, not
-   multiply. Multiplying (what the comment implies, and what this shader's
-   first draft did) sends `screen_uv` far outside `[0, 1]`; combined with
-   the texture's default "clamp" boundary, EVERY fragment then samples the
-   same corner texel regardless of its real screen position. This
-   "accidentally worked" for a spatially-UNIFORM test depth (a uniform
-   array's value is the same at any texel, so the bug was invisible) but a
-   spatially-VARYING depth had ZERO effect anywhere on screen -- confirmed
-   directly: an aggressive `depth=0.0` clip across an entire HALF of the
-   frame produced a `np.allclose`-identical render to the unclipped
-   baseline. Fixed by dividing instead of multiplying (see
-   `ray_tracing.frag.glsl`'s own comment for the exact reasoning).
-
-A THIRD thing, not a yt_idv bug, but a real gotcha in USING this feature
-from Python: `yt_idv.opengl_support.Texture2D` uploads `data.swapaxes(0, 1)`
-internally, and combined with `gl_FragCoord`'s OpenGL-native
-bottom-left-origin Y axis (the opposite of a normal top-down image), a
-plain `(height, width)` depth array in ordinary top-down convention needs
-`depth[::-1, :].T` before `Texture2D(data=...)` samples it where you'd
-expect. Confirmed empirically with a marked top-left quadrant (see
-`verify_axis_convention` below) -- this exact transform is now baked into
-`yt_idv_renderer._to_texture2d_axis_convention` / `set_external_depth_clip`,
-so callers of the production module never need to think about it; this
-script demonstrates it explicitly for anyone extending the mechanism
-further.
-
-Findings, using `yt_idv_renderer.set_external_depth_clip` (the production
-function, not a hand-rolled equivalent):
-
-  - A uniform (spatially-constant) depth plane at progressively closer
-    distances shows graduated, all-or-nothing-per-ray occlusion (full
-    render -> a thin sliver of the domain box's near face -> nothing at
-    all) -- proves rays genuinely stop mid-integration, not a hard
-    per-frame cutoff (`images/16_*.png` - `images/18_*.png`).
-  - A REAL per-pixel, sphere-shaped depth (analytic ray/sphere
-    intersection, positioned to only partly overlap the rendered
-    isocontour structure) shows a genuine, clean partial "bite" taken out
-    of the nebula -- exactly the "sphere partly in front of it, with gas
-    still visible around it" result originally asked for, and NOT
-    achievable with the flat alpha-over composite from
-    scripts/yt_idv_exploration/blender_scene/ (which can only ever produce
-    an all-or-nothing cutout, since MIP has no per-pixel depth of its own
-    to composite against -- see that directory's README). This is real
-    depth-AWARE integration: gas outside the sphere's silhouette renders
-    completely normally, only the overlapping portion is clipped
-    (`images/19_final_baseline.png`, `images/20_final_sphere_clipped.png`).
-  - Disabling the clip (`set_external_depth_clip(scene, None)`) exactly
-    reproduces the unclipped baseline in every test above (`np.allclose`,
-    not just "looks the same") -- confirms zero regression when this
-    feature isn't used.
-
-NOT YET wired into `yt_idv_renderer.py`'s production render functions
-against Blender's REAL Cycles Z-buffer: doing that needs the
-dataset-to-object spatial registration problem solved first (yt_idv's
-camera has no metric correspondence to Blender's camera -- see
-yt_idv_renderer.py's module docstring on the orbit-mapping-only camera).
-What IS available now, and demonstrated here, is depth clipping against
-anything already in yt_idv's OWN window-space-depth convention -- e.g. an
-analytically-computed occluder (this script) or a marker object rendered
-within the SAME yt_idv scene/camera, fully self-consistent, no
-cross-coordinate-system conversion needed.
+Renders a uniform depth wall at decreasing distances and a sphere-shaped
+per-pixel clip, and checks that disabling the clip restores the baseline.
 """
 
 import numpy as np
@@ -115,10 +34,7 @@ comp = scene.components[0]
 
 
 def window_depth_at_distance(cam, dist):
-    """The window-space depth (0..1, same convention `gl_FragDepth` already
-    uses in ray_tracing.frag.glsl) of a point `dist` along the camera's own
-    view direction.
-    """
+    """Window-space depth (0..1) of a point `dist` along the camera's view direction."""
     forward = np.array(cam.focus) - np.array(cam.position)
     forward = forward / np.linalg.norm(forward)
     world_pt = np.array(cam.position) + forward * dist
@@ -128,11 +44,7 @@ def window_depth_at_distance(cam, dist):
 
 
 def verify_axis_convention():
-    """Confirms the `depth[::-1, :].T` transform (see module docstring) --
-    a normal top-down "top-left quadrant clipped" array should show the
-    clipped notch in the top-left of the ACTUAL render, not some other
-    corner.
-    """
+    """Check that `depth[::-1, :].T` puts a top-left clip in the top-left of the render."""
     comp.render_method = "max_intensity"
     scene.camera.update(position=[1.6, 1.1, 2.0], focus=[0.5, 0.5, 0.5], up=[0, 1, 0])
     depth = np.ones((H, W), dtype="f4")
@@ -173,13 +85,7 @@ def uniform_wall_test():
 
 
 def sphere_shaped_clip_test():
-    """The real deliverable: a per-pixel, sphere-shaped depth clip that
-    partially occludes the rendered isocontour structure -- gas outside the
-    sphere's silhouette stays fully rendered, only the overlapping portion
-    disappears. This is what a flat alpha-over composite (see
-    scripts/yt_idv_exploration/blender_scene/) can NEVER produce, since MIP
-    has no per-pixel depth of its own to composite against.
-    """
+    """Clip with a sphere-shaped per-pixel depth that partly overlaps the gas."""
     comp.render_method = "transfer_function"
     comp.tf_min, comp.tf_max, comp.tf_log = 1e-6, 2e-3, True
     tf = yt.ColorTransferFunction((np.log(1e-6), np.log(2e-3)))
@@ -218,9 +124,7 @@ def sphere_shaped_clip_test():
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 
     dist_to_focus = np.linalg.norm(focus - position)
-    # Small, off-center sphere -- partly overlapping the blob, not
-    # swallowing it whole (an earlier, larger/centered attempt did that;
-    # see git history / the module docstring's tuning note).
+    # Small, off-center sphere so it only partly overlaps the blob.
     sphere_center = position + forward * dist_to_focus * 0.6 + right * 0.13
     sphere_radius = 0.13
 
@@ -245,8 +149,6 @@ def sphere_shaped_clip_test():
 
     import sys
     sys.path.insert(0, "/home/mturk/yt/cycles-yt/src")
-    # Exercise the REAL production helper (handles the axis-convention
-    # transform internally), not a hand-rolled equivalent.
     try:
         from cycles_volume_override import yt_idv_renderer as yir
         yir.set_external_depth_clip(scene, window_depth)

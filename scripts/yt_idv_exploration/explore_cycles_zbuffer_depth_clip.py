@@ -1,33 +1,8 @@
-"""Seventh exploration: wiring the external depth clip (see
-explore_external_depth_clip.py) up to a REAL Cycles-shaped Z-buffer, using
-the flagged object's own `bounding_box_local`/`matrix_world` as the
-registration between Blender world space and yt_idv's unitary domain space
--- no new yt_idv Camera subclass needed, just feeding
-`BaseCamera.update(position=..., focus=..., up=..., ...)` genuinely
-transformed values instead of the old orbit-at-a-fixed-distance heuristic.
+"""Drives the real yt_idv renderers with a simulated Cycles Z pass (a solid
+disc occluder in front of the volume) to check the depth clip end to end.
 
-Run inside the throwaway venv (see setup_ytidv_venv.sh). Exercises the REAL
-`yt_idv_max_intensity_renderer`/`yt_idv_transfer_function_renderer`
-functions -- not a hand-rolled equivalent -- with a hand-built
-`RenderRequest` whose `depth.data` simulates what Cycles' own Z pass would
-produce for a solid disc occluder sitting between the camera and the
-flagged object: a per-pixel PLANAR depth array with a disc of near values
-surrounded by the `no_hit_value` sentinel everywhere else, exactly the
-shape `operators.read_depth_buffer()` would hand this renderer for a real
-solid partially occluding a flagged volume.
-
-The math itself (`_registered_camera_kwargs`, `_cycles_depth_to_yt_idv_
-window_depth`) is separately verified against a REAL bpy-computed
-`projection_matrix` in `tests/test_yt_idv_renderer.py` -- this script is
-about confirming the whole thing produces a sensible, real, disc-shaped
-occlusion when driven by realistic depth data end to end, not re-deriving
-the math by hand again.
-
-Result: `images/22_cycles_zbuffer_disc_occlusion.png` -- the domain box's
-silhouette with a genuine, clean DISC-shaped hole cut exactly where the
-fabricated occluder sits between the camera and the object. This is the
-real depth-clip working against depth data shaped like what Cycles would
-actually produce, not a same-yt_idv-session synthetic sphere test.
+Run inside the throwaway venv (see setup_ytidv_venv.sh). Output
+(images/22_*.png, images/23_*.png) shows a clean disc-shaped hole in the volume.
 """
 
 import math
@@ -58,12 +33,7 @@ def _load_addon_modules():
 
 
 def _perspective_matrix(fovy_deg, aspect, near, far):
-    """Standard OpenGL-style perspective matrix -- stands in for what
-    Blender's own `Object.calc_matrix_camera()` would produce (that exact
-    round-trip is what `tests/test_yt_idv_renderer.py` verifies against
-    real bpy; this script just needs A plausible, self-consistent
-    projection matrix to drive the exploration, not Blender's own).
-    """
+    """OpenGL-style perspective matrix, standing in for `Object.calc_matrix_camera()`."""
     f = 1.0 / math.tan(math.radians(fovy_deg) / 2.0)
     return [
         [f / aspect, 0, 0, 0],
@@ -92,10 +62,7 @@ def main():
         ),
     )
 
-    # Simulated Cycles Z pass: a solid disc occluder at depth=1.5 (world
-    # z = 3 - 1.5 = 1.5), everything else background (no_hit_value).
-    # Flagged object below spans world z in [-1, 1] -- entirely BEHIND the
-    # disc from the camera's point of view (camera at z=3).
+    # Simulated Z pass: disc at depth 1.5, in front of the volume (z in [-1, 1]).
     no_hit = 1e10
     depth_data = np.full((height, width), no_hit, dtype=np.float32)
     cy, cx = height // 2, width // 2
@@ -128,14 +95,7 @@ def main():
     print("MIP result shape:", result.rgba.shape)
     yt.write_bitmap(result.rgba[:, :, :3], "22_cycles_zbuffer_disc_occlusion.png")
 
-    # MIP's per-ray "keep only the single brightest sample" reads noisy/
-    # speckled for this scene -- tried yt_idv's "projection" render_method
-    # (unweighted line-of-sight integration, additive not max) on the exact
-    # same request: noticeably smoother/more coherent fill. The disc clip
-    # boundary itself still shows some jaggedness in both -- looks like an
-    # AMR block-boundary artifact (different refinement levels contributing
-    # their own edge near the clip), not a MIP-vs-projection difference;
-    # not chased further here.
+    # Projection gives a smoother fill than MIP for this scene.
     result_proj = yir.yt_idv_projection_renderer(request)
     print("projection result shape:", result_proj.rgba.shape)
     yt.write_bitmap(result_proj.rgba[:, :, :3], "23_cycles_zbuffer_disc_occlusion_projection.png")

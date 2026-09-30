@@ -1,38 +1,19 @@
-"""Blender-side half of the yt_idv camera-motion exploration: build a real
-Blender scene (camera + a flagged cube + reference AMR grid-box wireframes
-+ a bold marker sphere), orbit the camera across several frames, get a real
-`yt_idv_max_intensity_renderer()` render via the subprocess bridge to the
-throwaway yt_idv venv (`ytidv_worker.py` -- see that file's docstring and
-../README.md for why a subprocess bridge is needed here at all: bpy and
-yt_idv can't share one Python in this sandbox), and COMPOSITE the sphere
-(rendered separately, transparent background) on top of the yt_idv frame --
-so there's one image per frame where you can SEE the sphere sitting in
-front of real yt_idv content, not two disconnected PNGs you have to
-mentally line up yourself. The grid-box wireframes turned out too thin to
-read at a glance (see ../README.md); the sphere is the obvious, unmissable
-marker requested instead.
+"""Camera-motion exploration: orbit a camera around a flagged cube over
+several frames, render each frame with yt_idv via the subprocess bridge
+(`ytidv_worker.py`; bpy and yt_idv can't share one Python in this sandbox),
+and alpha-over a separately rendered marker sphere on top so alignment is
+visible in one image per frame.
 
-Run with THIS REPO's OWN dev venv (has bpy, not yt_idv):
+Run with this repo's dev venv (has bpy, not yt_idv):
 
     env -u LD_PRELOAD uv run python \
         scripts/yt_idv_exploration/blender_scene/render_frames_in_blender.py \
         /path/to/ytidv-venv/bin/python
 
-Uses `operators.build_camera_params()` -- the add-on's REAL function, not a
-hand-rolled stand-in -- to build each frame's `CameraParams`.
-
-Grid-box mapping (ARBITRARY, for visual reference only -- there is no real
-dataset-to-object spatial registration yet, see yt_idv_renderer.py's module
-docstring): the dataset's own [0, 1]^3 "unitary" domain is linearly mapped
-onto the flagged cube's local bounding box.
-
-The composite is ILLUSTRATIVE, not the real add-on's compositing pipeline:
-it's a plain alpha-over of the sphere (Blender's own render, real alpha)
-onto the yt_idv frame, done here with bpy image loads + numpy, so the
-sphere always wins wherever it's opaque -- there's no real per-pixel depth
-comparison against yt_idv content (which doesn't have its own per-pixel
-depth to compare against -- see yt_idv_renderer.py's module docstring on
-why this add-on's yt_idv integration doesn't depth-clip at all yet).
+The AMR grid-box wireframes map the dataset's [0, 1]^3 domain onto the
+cube's bounding box for visual reference only. The composite is a plain
+alpha-over (the sphere always wins where opaque), not the add-on's real
+depth-aware compositing pipeline.
 """
 
 import json
@@ -55,30 +36,15 @@ N_FRAMES = 6
 ORBIT_RADIUS_BLENDER = 6.0
 ORBIT_HEIGHT_BLENDER = 2.0
 RESOLUTION = (320, 240)
-MAX_GRID_BOXES = 15  # keep the scene legible -- IsolatedGalaxy has 173 grids total
+MAX_GRID_BOXES = 15  # IsolatedGalaxy has 173 grids; keep the scene legible
 
-SPHERE_RADIUS = 0.35  # deliberately SMALLER than the cube's own half-extent (1.0)
-#                        -- an earlier 0.7 nearly matched the cube's whole
-#                        projected width (see blender_view_0001.png) and
-#                        swallowed the entire visible blob, making the
-#                        composite look like a flat sticker with no gas
-#                        left showing anywhere. Small enough here to only
-#                        partly cover it, with SPHERE_SIDE_OFFSET below.
+SPHERE_RADIUS = 0.35  # small enough to only partly cover the volume
 SPHERE_FRACTION_TOWARD_CAMERA = 0.45  # 0 = at cube center, 1 = at the camera
-SPHERE_SIDE_OFFSET = 0.5  # shifted along the camera's own local +X ("right")
-#                            so it sits off-center over the blob rather than
-#                            dead-centered on top of it -- "partly in front
-#                            of it", not "directly covering all of it"
-SPHERE_COLOR = (0.05, 0.9, 0.15, 1.0)  # bold green -- unmistakable against the yt_idv render's reds/blues
+SPHERE_SIDE_OFFSET = 0.5  # offset along the camera's local +X, so it sits off-center
+SPHERE_COLOR = (0.05, 0.9, 0.15, 1.0)
 
-# Demo-only choice, NOT a claim about the production add-on's row-order
-# handling (that's separately tested in tests/test_yt_idv_renderer.py):
-# these PNGs are written by yt.write_bitmap() and read back by
-# bpy.data.images.load(), both of which use the ordinary "row 0 = top of
-# image" PNG convention -- TOP_LEFT_ORIGIN is what makes the sphere render
-# and the yt_idv render line up pixel-for-pixel when composited below.
-# BOTTOM_LEFT_ORIGIN (what operators.read_depth_buffer actually wants) would
-# vertically flip the yt_idv frame relative to Blender's own PNG here.
+# Demo-only: these PNGs use row 0 = top, so TOP_LEFT_ORIGIN lines the two
+# renders up. (The add-on itself uses BOTTOM_LEFT_ORIGIN for depth buffers.)
 ROW_ORDER_FOR_THIS_DEMO = "TOP_LEFT_ORIGIN"
 
 
@@ -87,21 +53,14 @@ def build_scene():
     scene = bpy.context.scene
     scene.render.resolution_x, scene.render.resolution_y = RESOLUTION
     scene.render.engine = "BLENDER_WORKBENCH"
-    # Flat, unlit object colors -- makes SPHERE_COLOR render exactly as
-    # specified regardless of the light rig, so it reads as an unmistakable
-    # solid marker rather than a shaded gray blob.
+    # Flat, unlit object colors, so SPHERE_COLOR renders as given.
     scene.display.shading.color_type = "OBJECT"
 
     bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0, 0, 0))
     cube = bpy.context.active_object
     cube.name = "FlaggedVolumeCube"
-    # hide_render (NOT display_type='WIRE' -- tried that first, confirmed it
-    # does NOT affect bpy.ops.render.render() output for Workbench in this
-    # Blender, only the viewport, despite looking like a render-affecting
-    # per-object property) so it doesn't visually occlude the grid-box
-    # wireframes nested inside it. Also matches the real add-on's own
-    # semantics: a flagged object gets hidden from the main render pass --
-    # see scene_sync.hidden_from_main_render.
+    # hide_render, not display_type='WIRE' (which only affects the viewport),
+    # so the cube doesn't occlude the grid-box wireframes inside it.
     cube.hide_render = True
     properties.register()
     cube.volume_override.is_volume_override = True
@@ -120,14 +79,7 @@ def build_scene():
 
 
 def add_marker_sphere():
-    """A bold, solid, unmistakably-colored sphere -- the "does this
-    actually line up with yt_idv content" marker requested after the
-    AMR grid-box wireframes turned out too thin to read at a glance. Its
-    position gets updated every frame in the main loop (see
-    `position_sphere_toward_camera`) to sit partway between the cube's
-    center and the camera, so it visibly overlaps the yt_idv content in
-    every frame regardless of orbit angle.
-    """
+    """Add the solid-colored marker sphere; repositioned every frame."""
     bpy.ops.mesh.primitive_uv_sphere_add(radius=SPHERE_RADIUS, location=(0, 0, 0))
     sphere = bpy.context.active_object
     sphere.name = "MarkerSphere"
@@ -136,36 +88,16 @@ def add_marker_sphere():
 
 
 def position_sphere_toward_camera(sphere, cube, cam_obj):
-    """Move `sphere` to `SPHERE_FRACTION_TOWARD_CAMERA` of the way from the
-    cube's center to the camera (so it sits between the camera and the
-    yt_idv content, whose apparent center is roughly the cube's own
-    location -- see yt_idv_renderer.py's module docstring on the orbit
-    mapping), then nudge it sideways along the camera's own local +X ("right")
-    axis by `SPHERE_SIDE_OFFSET` -- so from the camera's point of view it
-    reads as PARTLY in front of the blob, not squarely on top of all of it.
-    Using the camera's OWN right axis (not a fixed world direction) keeps
-    the offset visually consistent -- always "to the right of center" from
-    the camera's perspective -- as it orbits.
-    """
+    """Place `sphere` between the cube and camera, offset to the camera's right."""
     toward_camera = cube.location.lerp(cam_obj.location, SPHERE_FRACTION_TOWARD_CAMERA)
     camera_right = cam_obj.matrix_world.to_3x3() @ Vector((1.0, 0.0, 0.0))
     sphere.location = toward_camera + camera_right.normalized() * SPHERE_SIDE_OFFSET
 
 
 def add_grid_box_wireframes(cube, grids_info):
-    """One wireframe box per grid, mapped from the dataset's unitary
-    [0, 1]^3 domain onto `cube`'s own local bounding box. Purely a visual
-    reference -- see module docstring.
+    """One wireframe box per grid, mapped from [0, 1]^3 onto `cube`'s bounds.
 
-    Deliberately mesh + Wireframe modifier, NOT an Empty: Empties
-    (`empty_display_type='CUBE'`) are viewport-only gizmos with no
-    geometry -- they never appear in an actual render (Cycles, Workbench,
-    doesn't matter), confirmed the hard way (first attempt used Empties;
-    `blender_view_*.png` showed only the plain flagged cube, no grid boxes
-    at all, in every frame). A cube mesh with a Wireframe modifier turns its
-    edges into real renderable geometry instead -- though even this turned
-    out subtle enough at normal viewing size that a bolder marker (the
-    sphere above) was requested to actually confirm alignment at a glance.
+    Uses mesh + Wireframe modifier, since Empties never appear in renders.
     """
     half_extent = max(cube.dimensions) / 2.0
     center = cube.location.copy()
@@ -206,11 +138,7 @@ def orbit_camera_to_frame(cam_obj, cube, frame_index, n_frames):
 
 
 def render_sphere_only_transparent(scene, sphere, everything_else, path):
-    """A second render pass: JUST the marker sphere, transparent background
-    -- used as the foreground layer for `composite_with_yt_idv_frame`. Not
-    how the real add-on composites (see module docstring); this is a plain
-    illustrative alpha-over for this demo only.
-    """
+    """Render only the marker sphere on a transparent background."""
     prev_hide = {obj.name: obj.hide_render for obj in everything_else}
     prev_transparent = scene.render.film_transparent
     prev_color_mode = scene.render.image_settings.color_mode
@@ -251,10 +179,7 @@ def _save_array_as_png(array, path):
 
 
 def composite_with_yt_idv_frame(yt_idv_frame_path, sphere_only_path, out_path):
-    """Plain straight-alpha "over": sphere (opaque where it is, transparent
-    everywhere else) drawn on top of the yt_idv frame. See module
-    docstring's "ILLUSTRATIVE, not the real add-on's compositing pipeline".
-    """
+    """Straight-alpha "over" of the sphere render onto the yt_idv frame."""
     import numpy as np
 
     background = _load_png_as_array(yt_idv_frame_path)
@@ -319,14 +244,11 @@ def main(ytidv_python):
             frame_number=frame_number,
         ))
 
-        # Full-scene Blender view (opaque background, grid boxes + sphere
-        # visible) for reference.
+        # Full-scene Blender view, for reference.
         blender_view_path = os.path.join(OUTPUT_DIR, f"blender_view_{frame_number:04d}.png")
         scene.render.filepath = blender_view_path
         bpy.ops.render.render(write_still=True)
 
-        # Sphere-only, transparent background -- the foreground layer for
-        # the composite below.
         sphere_only_path = os.path.join(OUTPUT_DIR, f"sphere_only_{frame_number:04d}.png")
         render_sphere_only_transparent(scene, sphere, [cube] + grid_boxes, sphere_only_path)
 

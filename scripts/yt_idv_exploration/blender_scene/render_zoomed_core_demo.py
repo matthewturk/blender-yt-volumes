@@ -1,86 +1,28 @@
-"""Real, end-to-end demonstration of `YT_IDV_MAX_INTENSITY_ALPHA` (see
-`yt_idv_renderer.py`): a genuine Cycles render of a small marker sphere
-(diameter `SPHERE_DIAMETER_KPC` -- real physical scale, default 35 kpc, see
-below) sitting at the galaxy's own density peak / the domain's own center,
-camera zoomed in close, volume rendered with the NEW value-driven-alpha
-Maximum Intensity mode -- transparent at the low end of what's visible,
-opaque at the high end -- so the diffuse outer halo fades away and the
-dense core reads as solid, with the marker sphere giving a real sense of
-physical scale relative to it.
+"""Demo of `YT_IDV_MAX_INTENSITY_ALPHA`: a small Cycles marker sphere
+(`SPHERE_DIAMETER_KPC`) at IsolatedGalaxy's density peak (the domain
+center), with value-driven alpha so the diffuse halo fades and the dense
+core reads as solid.
 
-First real run used a 10 kpc, bright yellow sphere and came back "I can't
-quite see it" -- addressed three ways, all in `build_scene()`'s own
-comments: (1) yellow sat too close to the "dusk" colormap's own warm
-core color, so the sphere blended in instead of contrasting -- switched to
-a saturated green; (2) `MIP_ALPHA_MAX` (`yt_idv_renderer.py`) was 1.0,
-letting the volume's own near-camera material build up to FULL opacity in
-front of the sphere, hiding it completely via Alpha-Over regardless of its
-own real depth-clip visibility -- lowered to 0.7; (3) the sphere itself was
-also made a few times bigger (10 -> 35 kpc), still tiny relative to the
-~500 kpc frame. The camera-distance investigation below was done against
-the ORIGINAL 10 kpc size and is kept as-is for the record -- it's about
-where AMR block-boundary artifacts start dominating the frame, a question
-that doesn't change with the marker's own size.
+Run with real Blender and the yt_idv subprocess bridge (`ytidv_worker.py`,
+venv from YTIDV_VENV_PYTHON):
 
-Same overall pipeline/subprocess-bridge structure as `render_real_demo.py`
--- see that script's own docstring for why the bridge exists at all
-(yt_idv still can't import into Blender 5.3's bundled Python 3.13) -- this
-one just uses different scene geometry and the new render mode.
+    /data/SteamLibrary/steamapps/common/Blender/blender --background \\
+        --python scripts/yt_idv_exploration/blender_scene/render_zoomed_core_demo.py
 
-Geometry: `IsolatedGalaxy`'s domain is ~1000 kpc wide (confirmed via
-`ds.domain_width.in_units("kpc")`) and its density peak sits at unitary
-(0.504, 0.500, 0.500) -- essentially the domain's own center (see
-`render_partial_occlusion_demo.py`'s own docstring for how this was found).
-With this script's usual box convention (edge length 2, world [-1, 1] <->
-unitary [0, 1]), 10 kpc is `10/1000.1 * 2 ≈ 0.02` world units end to end --
-genuinely tiny relative to the box.
+Env knobs: VOLUME_OVERRIDE_MODE, SPHERE_DIAMETER_KPC, CAMERA_DISTANCE,
+CAMERA_LENS_MM.
 
-**Zoom distance, tuned empirically, and why it's NOT close to the marker
-sphere's own 10 kpc scale.** First instinct: put the camera a few multiples
-of 10 kpc away (a genuine telephoto framing of the marker sphere itself).
-Tried `CAMERA_DISTANCE` from 2 to 60 kpc (`sweep_camera_distance` below,
-run against a fast synthetic camera first, then confirmed with real Cycles
-renders at 15/30/50 kpc): every one of these showed a bizarre, sharp
-TRIANGULAR silhouette instead of an organic gas cloud, and the per-view
-auto-computed colormap range collapsed to a near-single value (`e.g.
-4.4e-8` at both ends). Root cause: `yt_idv` renders the AMR hierarchy
-block-by-block, each block a real triangulated cube mesh -- at 10-60 kpc
-from the domain center, the camera is close enough to be effectively
-pressed up against (or inside) a SINGLE grid block's own bounding cube, so
-what's on screen is that one block's own flat rasterized face/corner, not
-resolved gas structure (real density values scale color across that face,
-but the SHAPE is geometric, not organic). Backing off to distances of
-300-500 kpc (30-50x farther than the naive "a few sphere-diameters away"
-instinct) lets the frame span MANY nested blocks at once, at which point
-the AMR block edges blend smoothly and real structure (a compact bright
-core, softer surrounding halo) becomes visible -- confirmed by comparing
-renders at 300/400/500/650 kpc (`CAMERA_DISTANCE` 0.6/0.8/1.0/1.3): 500 kpc
-(1.0) gave the cleanest result with no visible block-edge artifacts at all.
-The marker sphere is still there at this distance -- genuinely tiny (a
-handful of pixels at 512x512, confirmed directly against the real Cycles
-beauty pass) -- which is itself the honest answer to "zoom in on a 10 kpc
-sphere": at the distance where the SURROUNDING GAS STRUCTURE actually
-resolves cleanly, a 10 kpc marker is necessarily a small dot, not a
-frame-filling object; the two length scales (block granularity vs. desired
-marker size) don't cooperate at this dataset's resolution.
+Scale: the domain is ~1000 kpc wide and maps onto a box spanning world
+[-1, 1], so CAMERA_DISTANCE=1.0 is ~500 kpc from the center.
 
-Colormap/ramp tuning for `MAX_INTENSITY_ALPHA`'s own transparent-low/
-opaque-high behavior (`MIP_ALPHA_COLORMAP`/`MAX`/`RAMP_POWER` in
-`yt_idv_renderer.py`) is swept SEPARATELY and cheaply against this script's
-own cached real-Cycles depth data, per the same "modify the transfer
-function repeatedly and force a redraw in between snapshotting, no need to
-reload/re-execute" technique already used for the threshold-fog tuning --
-see `sweep_mip_alpha_params` below, run directly in the yt_idv venv against
-`_zoomed_core_demo_work`'s cached `bridge_request.json`/`bridge_depth.npy`
-from a real run of this script, NOT by re-running Cycles per candidate.
-Swept 5 colormaps x 4 ramp powers (0.15/0.3/0.6/1.0): `MIP_ALPHA_RAMP_POWER`
-lower than 1.0 keeps the diffuse halo faintly visible instead of vanishing
-to fully transparent everywhere except the very core (mean alpha ranged
-0.029 at power=1.0 up to 0.318 at power=0.15, same underlying data); 0.15
-looked best. Colormap choice (tried dusk/viridis/arbre/inferno/algae) is a
-matter of taste, not correctness -- `dusk` (blue halo -> orange/white core)
-was picked for visual contrast between the transparent-low and opaque-high
-ends, matching the transparency effect being demonstrated.
+Gotcha: with the camera much closer (tens of kpc), it sits against or
+inside a single AMR block and the frame shows that block's flat, triangular
+geometry instead of gas structure. ~500 kpc resolves cleanly, at the cost of
+the marker being only a few pixels across.
+
+`MIP_ALPHA_*` in `yt_idv_renderer.py` controls the ramp; see
+`sweep_mip_alpha_params` to tune it against cached depth data without
+re-running Cycles.
 """
 
 import json
@@ -113,13 +55,12 @@ MODE_KEY_BY_NAME = {
     "threshold_fog": "YT_IDV_THRESHOLD_FOG",
 }
 
-# See module docstring's "Geometry" section for the derivation.
-DOMAIN_WIDTH_KPC = 1000.1  # IsolatedGalaxy's own domain_width.in_units("kpc")
-SPHERE_DIAMETER_KPC = float(os.environ.get("SPHERE_DIAMETER_KPC", "35.0"))  # was 10.0 -- see build_scene()'s own comment on why this alone wasn't (and isn't) the main legibility fix
-BOX_EDGE_WORLD = 2.0  # this project's usual convention: world [-1, 1] <-> unitary [0, 1]
+DOMAIN_WIDTH_KPC = 1000.1  # IsolatedGalaxy domain_width.in_units("kpc")
+SPHERE_DIAMETER_KPC = float(os.environ.get("SPHERE_DIAMETER_KPC", "35.0"))
+BOX_EDGE_WORLD = 2.0  # world [-1, 1] <-> unitary [0, 1]
 SPHERE_RADIUS_WORLD = (SPHERE_DIAMETER_KPC / 2.0 / DOMAIN_WIDTH_KPC) * BOX_EDGE_WORLD
 
-CAMERA_DISTANCE = float(os.environ.get("CAMERA_DISTANCE", "1.0"))  # world units from origin -- see module docstring's "Zoom distance, tuned empirically" section for why this is ~500 kpc, not something closer to the marker sphere's own 10 kpc scale
+CAMERA_DISTANCE = float(os.environ.get("CAMERA_DISTANCE", "1.0"))  # world units from origin (1.0 ~ 500 kpc)
 CAMERA_LENS_MM = float(os.environ.get("CAMERA_LENS_MM", "35.0"))
 
 os.makedirs(WORK_DIR, exist_ok=True)
@@ -130,11 +71,7 @@ from cycles_volume_override import external_render, operators, properties  # noq
 
 
 def _bridge_render(request):
-    """Drop-in replacement for a yt_idv_renderer.yt_idv_*_renderer function
-    -- same RenderRequest -> RenderResult signature `operators.
-    RENDERER_MODES` expects -- that shells out to the yt_idv/Python-3.12 venv
-    instead of calling yt_idv in-process. See module docstring for why.
-    """
+    """Stand-in for a yt_idv_*_renderer that shells out to the yt_idv venv."""
     req_json = {
         "camera": {
             "matrix_world": request.camera.matrix_world,
@@ -196,35 +133,15 @@ def build_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
 
-    # The flagged "volume box": edge length 2 (spans -1..1 on each axis).
-    # yt_idv_renderer's registration transform uses this object's own
-    # bounding_box_local/matrix_world directly as the Blender-world <->
-    # yt_idv-unitary mapping (see its module docstring, "Cycles Z-buffer
-    # wiring") -- no special setup needed beyond flagging it.
+    # Flagged volume box spanning -1..1; its bounds map to yt_idv's domain.
     bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0.0, 0.0, 0.0))
     box = bpy.context.active_object
     box.name = "FlaggedVolumeBox"
     box.volume_override.is_volume_override = True
 
-    # Marker sphere at the box's own center -- matching the dataset's real
-    # density peak (unitary (0.504, 0.500, 0.500), see module docstring),
-    # radius = SPHERE_DIAMETER_KPC converted to this box's world units.
-    #
-    # First version of this demo used a small (10 kpc), bright YELLOW
-    # sphere -- reported back as "I can't quite see it". Two real causes,
-    # both fixed here, not just "make it bigger": (1) yellow sits too close
-    # to the "dusk" colormap's own warm orange/white core color, so the
-    # sphere visually blended into the gas around it instead of contrasting
-    # against it -- switched to a saturated GREEN, a hue "dusk" never
-    # produces. (2) `MIP_ALPHA_MAX` (yt_idv_renderer.py) was 1.0, meaning
-    # the volume's own near-camera material could build up to FULL opacity
-    # before the ray ever reached the sphere -- via Alpha-Over that hides
-    # anything behind it completely, regardless of the sphere's own real
-    # depth-clip visibility. Lowered to 0.7 so something behind the densest
-    # visible gas always shows through. `SPHERE_DIAMETER_KPC` was also
-    # bumped up (still tiny relative to the ~500 kpc frame, but a few times
-    # larger) as a third, complementary fix -- see that constant's own
-    # default.
+    # Marker sphere at the density peak (box center). Green contrasts with
+    # the "dusk" colormap; MIP_ALPHA_MAX < 1 keeps dense gas in front of it
+    # from hiding it completely.
     bpy.ops.mesh.primitive_uv_sphere_add(
         radius=SPHERE_RADIUS_WORLD, location=(0.0, 0.0, 0.0), segments=64, ring_count=32,
     )
@@ -235,20 +152,16 @@ def build_scene():
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf is not None:
-        bsdf.inputs["Base Color"].default_value = (0.1, 1.0, 0.25, 1.0)  # saturated green -- see comment above
+        bsdf.inputs["Base Color"].default_value = (0.1, 1.0, 0.25, 1.0)
         if "Roughness" in bsdf.inputs:
             bsdf.inputs["Roughness"].default_value = 0.35
         if "Emission Color" in bsdf.inputs:
             bsdf.inputs["Emission Color"].default_value = (0.1, 1.0, 0.25, 1.0)
         if "Emission Strength" in bsdf.inputs:
-            bsdf.inputs["Emission Strength"].default_value = 0.6  # raised from 0.15 -- needs to read clearly even partly behind translucent gas now
+            bsdf.inputs["Emission Strength"].default_value = 0.6  # reads through translucent gas
     sphere.data.materials.append(mat)
 
-    # Camera: see module docstring's "Zoom distance" section for why this
-    # is ~500 kpc (CAMERA_DISTANCE default 1.0 world unit), not a close-in
-    # telephoto shot of the marker sphere itself -- closer distances put the
-    # camera against/inside a single AMR block's own geometry instead of
-    # resolving real gas structure.
+    # Camera distance: see the module docstring's AMR-block gotcha.
     cam_pos = mathutils.Vector((-0.7, -0.8, 0.55)).normalized() * CAMERA_DISTANCE
     bpy.ops.object.camera_add(location=cam_pos)
     cam = bpy.context.active_object
@@ -261,23 +174,16 @@ def build_scene():
 
     bpy.ops.object.light_add(type="SUN", location=(4.0, -3.0, 6.0))
     sun = bpy.context.active_object
-    # Was 3.0 -- blew the specular highlight's linear R channel out past 1.0
-    # (measured ~1.5) while G/B stayed under it, so this script's own
-    # tonemap-free `_srgb_encode` clipped R first and left a warm/pink-white
-    # highlight instead of a clean white one (see conversation: confirmed via
-    # direct EXR inspection that the yt_idv volume layer was genuinely
-    # (0,0,0,0) there -- this was a real Cycles specular highlight, not a
-    # compositing artifact). Lowered so the highlight's linear peak stays
-    # under 1.0 and all three channels clip together (or not at all).
+    # Kept low so the specular highlight stays under 1.0 and doesn't clip to
+    # pink in the tonemap-free `_srgb_encode`.
     sun.data.energy = 1.2
 
     scene.render.engine = "CYCLES"
     scene.cycles.samples = 64
     scene.cycles.use_denoising = True
     scene.render.resolution_x = 512
-    scene.render.resolution_y = 512  # square -- see yt_idv_renderer's own
-    #                                   documented non-square-aspect caveat
-    scene.render.film_transparent = True  # see module docstring, point 1
+    scene.render.resolution_y = 512
+    scene.render.film_transparent = True
     scene.render.image_settings.color_mode = "RGBA"
     scene.render.image_settings.file_format = "OPEN_EXR"
     scene.render.image_settings.color_depth = "32"
@@ -296,10 +202,7 @@ def _srgb_encode(linear):
 
 
 def _write_png(path, rgba_float):
-    """Write an (H, W, 4) float array straight to PNG via Blender's own
-    image API (no external PNG library needed) -- caller is responsible for
-    already having values in a sane 0..1-ish display range.
-    """
+    """Write an (H, W, 4) float array (display range 0..1) to PNG via bpy."""
     h, w = rgba_float.shape[:2]
     img = bpy.data.images.new("tmp_png_out", width=w, height=h, alpha=True)
     img.pixels.foreach_set(np.clip(rgba_float, 0.0, 1.0).astype("float32").ravel())
@@ -310,21 +213,14 @@ def _write_png(path, rgba_float):
 
 
 def _verify_and_export(scene):
-    """Read pass 2's real final EXR back from disk (NOT the in-memory
-    "Render Result" datablock -- in `--background` mode its `.pixels`
-    buffer reads back as size (0, 0) after `write_still=True`, a background-
-    mode quirk unrelated to whether the render itself is correct; the file
-    Pass 2 actually wrote to disk is the authoritative output), verify the
-    background is genuinely transparent (not opaque black), and write both
-    a plain display-ready PNG and a checkerboard-composited PNG that makes
-    transparency visually obvious.
+    """Read pass 2's final EXR, check background alpha, and write PNGs.
+
+    Reads the file on disk: headless, the "Render Result" image's `.pixels`
+    is empty after `write_still=True`.
     """
     final_path = scene.render.frame_path()
     if not os.path.exists(final_path):
-        # Real Blender didn't append a frame-number suffix for this single-
-        # frame still (frame_path()'s prediction and the file `render.render`
-        # actually wrote disagreed by that suffix alone) -- fall back to
-        # whatever actually landed on disk next to it.
+        # frame_path() may predict a frame-number suffix that wasn't written.
         import glob
         candidates = sorted(glob.glob(scene.render.filepath + "*"))
         if not candidates:
@@ -337,8 +233,7 @@ def _verify_and_export(scene):
     finally:
         bpy.data.images.remove(img)
 
-    # Background-alpha check: a corner pixel should have neither the
-    # sphere nor the box's volume silhouette anywhere near it.
+    # A corner pixel should be empty background.
     corner_alpha = float(pixels[2, 2, 3])
     print(f"[render_zoomed_core_demo] background corner pixel alpha = {corner_alpha:.4f} "
           f"(expect ~0.0)")
@@ -353,10 +248,7 @@ def _verify_and_export(scene):
     _write_png(plain_path, display)
     print(f"[render_zoomed_core_demo] wrote {plain_path}")
 
-    # Checkerboard-composited PNG: proves the alpha is really being used --
-    # premultiplied-alpha-over onto a two-tone checker background. If the
-    # background were actually opaque black, the checker would NOT show
-    # through here.
+    # Premultiplied alpha-over onto a checkerboard, to show transparency.
     square = 32
     yy, xx = np.mgrid[0:h, 0:w]
     checker = (((yy // square) + (xx // square)) % 2).astype(np.float32)
@@ -386,19 +278,11 @@ def main():
 
 
 def sweep_camera_distance(candidates_kpc=(2.0, 5.0, 10.0, 20.0, 40.0, 60.0, 95.0)):
-    """Documents the technique used during development rather than being a
-    maintained, always-runnable utility from THIS file: `main()`'s own
-    `bpy`/`mathutils` imports at module level mean this file can only be
-    imported inside real Blender, but the actual sweep needs to run in the
-    SEPARATE yt_idv venv (a fast, pure-yt_idv hand-built camera aimed at the
-    domain center from `candidates_kpc` away, no bpy/Cycles at all -- no
-    `_registered_camera_kwargs`/real Blender camera needed for JUST this
-    "where does the block-boundary triangulation artifact stop dominating
-    the frame" question, see module docstring's "Zoom distance" section).
-    Run as a standalone throwaway script in the yt_idv venv instead, loading
-    `cycles_volume_override.external_render`/`yt_idv_renderer` via
-    `importlib.util.spec_from_file_location` (the same pattern `ytidv_
-    worker.py` uses) -- not by importing this file directly there.
+    """Placeholder documenting the camera-distance sweep; not runnable here.
+
+    Do it as a standalone script in the yt_idv venv: a hand-built camera at
+    each distance, rendered with yt_idv_max_intensity_renderer(), loading the
+    add-on modules the way `ytidv_worker.py` does.
     """
     raise NotImplementedError(
         f"see this function's own docstring -- run as a standalone script in "
@@ -409,22 +293,12 @@ def sweep_camera_distance(candidates_kpc=(2.0, 5.0, 10.0, 20.0, 40.0, 60.0, 95.0
 
 
 def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arbre", "inferno", "algae"), ramp_powers=(0.15, 0.3, 0.6, 1.0)):
-    """NOT run by `main()` -- run directly in the yt_idv venv AFTER a real
-    run of this script has populated `work_dir` with `bridge_request.json`/
-    `bridge_depth.npy` (i.e. run `main()` via real Blender first). Re-renders
-    the SAME real Cycles request repeatedly with different `MIP_ALPHA_
-    COLORMAP`/`RAMP_POWER` values -- no Cycles re-render, no dataset
-    reload, just `yir.MIP_ALPHA_COLORMAP = ...; yir._mip_alpha_colormap_
-    cache.clear(); yir.yt_idv_max_intensity_alpha_renderer(request)` per
-    candidate (the "modify repeatedly, force a redraw in between
-    snapshotting" technique) -- writes one PNG per (colormap, ramp_power)
-    combination and prints each one's mean/max alpha.
+    """Re-render the cached request over MIP_ALPHA colormaps/ramp powers.
 
-    Must be run with THIS repo's `cycles_volume_override` package importable
-    (e.g. via the same `importlib.util.spec_from_file_location` pattern
-    `ytidv_worker.py` uses, since bpy isn't installed in the yt_idv venv and
-    this file itself imports `bpy` at module level) -- not directly callable
-    by importing this module in the yt_idv venv as-is.
+    Not run by `main()`. Run in the yt_idv venv after a real run has written
+    `bridge_request.json`/`bridge_depth.npy` to `work_dir`, with
+    `cycles_volume_override` importable (as in `ytidv_worker.py`; this file
+    imports bpy at module level). Writes one PNG per combination.
     """
     import json
 

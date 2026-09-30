@@ -1,30 +1,10 @@
-"""A minimal, deliberately non-physical `render_volume()` implementation
-that exercises the FULL `RenderRequest` contract -- camera rays, the
-volume's actual position, depth-clipped integration -- without doing any
-real integration:
+"""Minimal, non-physical `render_volume()` for testing the pipeline:
 
-    output = (ray's path length through the volume, clipped at the solid
-              surface behind it) * a constant
+    output = (ray path length through the volume's box, clipped at the
+              solid surface behind it) * a constant
 
-That's it. No density sampling, no marching, no scattering. It exists to
-prove the wiring end to end (ray generation from `CameraParams`, ray/volume
-intersection from `VolumeObjectParams`, depth-clipping from `DepthBuffer`)
-and to give you something visibly volume-shaped and correctly occluded to
-look at before the real renderer exists -- NOT as a stand-in for one.
-
-Pure numpy, no `bpy` import -- this module doesn't know it's running inside
-Blender, on purpose: everything it needs comes through `RenderRequest`. That
-also means it's fully unit-testable without a Blender/`bpy` fixture.
-
-Drop-in: point `external_render.render_volume` at
-`constant_density_renderer` (see `operators.py`'s `renderer_mode`
-preference, option `SAMPLE_CONSTANT`).
-
-Supported cameras: PERSP/ORTHO (via `CameraParams.projection_matrix`) and
-PANO with `panorama_type == "EQUIRECTANGULAR"` (via the empirically-
-confirmed formula documented on `PanoramicLensParams`, scripts/
-verify_pano_equirect.py). Anything else raises `NotImplementedError` rather
-than silently rendering the wrong thing.
+Pure numpy, no `bpy`. Selected by the `SAMPLE_CONSTANT` renderer mode.
+Supports PERSP/ORTHO and EQUIRECTANGULAR PANO cameras.
 """
 
 import numpy as np
@@ -38,11 +18,7 @@ def constant_density_renderer(request: RenderRequest) -> RenderResult:
     volume = request.volume
 
     if depth.depth_convention != "PLANAR":
-        # See README "Z-pass verification findings" -- this is the
-        # empirically-confirmed convention for a real Cycles Z pass. If a
-        # future Blender version (or a different depth source) hands us
-        # something else, fail loudly rather than silently clip against the
-        # wrong quantity.
+        # Cycles' Z pass is planar depth.
         raise NotImplementedError(
             "constant_density_renderer assumes DepthBuffer.depth_convention "
             f"== 'PLANAR'; got {depth.depth_convention!r}."
@@ -58,11 +34,7 @@ def constant_density_renderer(request: RenderRequest) -> RenderResult:
     depth_near = _planar_depth(p_near, matrix_world_inv)
     depth_far = _planar_depth(p_far, matrix_world_inv)
 
-    # The whole depth-clip: don't let the volume contribute past whatever
-    # solid surface is at this pixel. `depth.no_hit_value` (background/sky
-    # pixels) is astronomically large by construction (see verify_zpass.py
-    # findings, ~1e10) so it never actually clips anything here -- no
-    # special-casing needed, `minimum()` already does the right thing.
+    # no_hit_value (~1e10) never clips, so no special case is needed.
     clipped_far = np.minimum(depth_far, depth.data)
     path_length = np.maximum(clipped_far - depth_near, 0.0)
     path_length = np.where(hit, path_length, 0.0)
@@ -83,14 +55,8 @@ def constant_density_renderer(request: RenderRequest) -> RenderResult:
 # ---------------------------------------------------------------------------
 
 def _pixel_grid_fractions(row_order, shape):
-    """(col_frac, row_frac_from_bottom), each 1-D, in [0, 1] -- pixel-center
-    fractions across the image, with `row_frac_from_bottom` always meaning
-    "0 at the bottom row, 1 at the top row" regardless of how `data` is
-    actually laid out in memory -- callers combine this with `row_order` to
-    know which array index that corresponds to. Respecting `row_order` here
-    (rather than assuming one convention) is the same discipline as the
-    rest of this add-on: the field exists precisely so code doesn't have to
-    guess.
+    """Pixel-center fractions (col_frac, row_frac_from_bottom) in [0, 1];
+    `row_frac_from_bottom` is 0 at the bottom row whatever `row_order` is.
     """
     h, w = shape
     col_frac = (np.arange(w) + 0.5) / w
@@ -105,11 +71,8 @@ def _pixel_grid_fractions(row_order, shape):
 
 
 def _pixel_rays(camera, row_order, shape):
-    """(origins, directions), each (H, W, 3) float64, world space.
-    `directions` is NOT normalized -- see `constant_density_renderer`, which
-    only ever uses it to re-derive actual 3D points (`origin + t*direction`)
-    and re-measure THOSE against the depth buffer's own convention, so the
-    scale of `direction` never needs to mean anything on its own.
+    """(origins, directions), each (H, W, 3) world space; directions are not
+    normalized.
     """
     if camera.projection in ("PERSP", "ORTHO"):
         return _persp_ortho_rays(camera, row_order, shape)
@@ -149,19 +112,14 @@ def _persp_ortho_rays(camera, row_order, shape):
         world = world_h @ matrix_world.T
         return world[..., :3]
 
-    # Any two distinct ndc_z planes define the same ray through a pixel --
-    # see README "Camera projection": empirically confirmed round-trip, not
-    # dependent on knowing Blender's exact near/far clip-space convention.
+    # Any two distinct ndc_z planes define the pixel's ray.
     p_a = unproject(0.0)
     p_b = unproject(1.0)
     return p_a, (p_b - p_a)
 
 
 def _equirect_rays(camera, row_order, shape):
-    """Empirically-confirmed formula (scripts/verify_pano_equirect.py, see
-    README "Camera projection"): camera-local forward = -Z, up = +Y,
-    right = +X.
-    """
+    """Equirectangular rays; camera-local forward = -Z, up = +Y, right = +X."""
     h, w = shape
     col_frac, row_frac_from_bottom = _pixel_grid_fractions(row_order, shape)
     u_grid, v_from_bottom_grid = np.meshgrid(col_frac, row_frac_from_bottom)
@@ -185,11 +143,7 @@ def _equirect_rays(camera, row_order, shape):
 # ---------------------------------------------------------------------------
 
 def _world_aabb(matrix_world_list, bbox_local):
-    """Loose axis-aligned world-space bounding box from the object's local
-    (possibly rotated) 8-corner bounding box -- deliberately loose, not a
-    tight oriented box: "nothing fancy" per the brief, and an AABB is all a
-    depth*constant placeholder needs.
-    """
+    """World-space AABB of the object's 8 local bounding-box corners."""
     matrix_world = np.array(matrix_world_list, dtype=np.float64)
     corners = np.asarray(bbox_local, dtype=np.float64)  # (8, 3)
     corners_h = np.concatenate([corners, np.ones((8, 1))], axis=-1)
@@ -199,10 +153,8 @@ def _world_aabb(matrix_world_list, bbox_local):
 
 
 def _ray_aabb_intersect(origins, directions, box_min, box_max):
-    """Standard slab test, vectorized over all pixels. Returns (t_near,
-    t_far, hit) -- `t_near` clamped to >= 0 (a volume behind the ray's
-    origin doesn't count), `hit` False wherever the ray misses the box
-    entirely or the box is entirely behind the origin.
+    """Vectorized slab test. Returns (t_near, t_far, hit), with t_near
+    clamped to >= 0.
     """
     with np.errstate(divide="ignore", invalid="ignore"):
         inv_dir = 1.0 / directions
@@ -218,10 +170,7 @@ def _ray_aabb_intersect(origins, directions, box_min, box_max):
 
 
 def _planar_depth(world_points, matrix_world_inv):
-    """PLANAR depth (see README) of `world_points` w.r.t. the camera whose
-    inverted world matrix is `matrix_world_inv`: negative camera-space Z,
-    since Blender cameras look down local -Z.
-    """
+    """Planar depth (negative camera-space Z) of `world_points`."""
     h, w = world_points.shape[:2]
     points_h = np.concatenate([world_points, np.ones((h, w, 1))], axis=-1)
     cam_space = points_h @ matrix_world_inv.T
