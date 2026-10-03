@@ -276,3 +276,14 @@ def test_saved_scene_excludes_other_sources_and_subsets(tmp_path, blend, extra):
     text = '[blender]\nfile = "scene.blend"\nvolume = "V"\n[data]\nscene = "saved.zip"\n' + extra
     with pytest.raises(rv.ConfigError, match="data.s"):
         rv.load_config(_write(tmp_path, text))
+
+
+def test_time_varying_needs_a_loader(tmp_path, blend):
+    with pytest.raises(rv.ConfigError, match="time_varying needs data.loader"):
+        rv.load_config(_write(tmp_path, _minimal()), [("data.time_varying", True)])
+
+
+def test_file_loaders_resolve_against_the_config(tmp_path, blend):
+    text = '[data]\nloader = "gen.py:load"\ntime_varying = true\n[blender]\nfile = "scene.blend"\nvolume = "V"\n'
+    config = rv.load_config(_write(tmp_path, text))
+    assert config["data"]["loader"] == f"{tmp_path / 'gen.py'}:load"

@@ -27,6 +27,7 @@ DEFAULTS = {
         "path": None,  # yt.load path; exactly one of sample/path/scene
         "scene": None,  # a yt_idv scene saved with SceneGraph.save
         "loader": None,  # "module:function" or "file.py:function" returning a yt dataset
+        "time_varying": False,  # call the loader with frame=N every frame
         "series": None,  # glob or list of paths; render_series only
         "simulation": None,  # {parameter_file, code, ...}; render_series only
         "load_kwargs": {},
@@ -256,6 +257,8 @@ def validate(config, series=False):
             raise ConfigError("data.series/data.simulation are rendered with render_series")
         if sum(data[key] is not None for key in ("sample", "path", "scene", "loader")) != 1:
             raise ConfigError("set exactly one of data.sample, data.path, data.scene or data.loader")
+        if data["time_varying"] and data["loader"] is None:
+            raise ConfigError("data.time_varying needs data.loader")
         if data["scene"] is not None and data["subset"] is not None:
             raise ConfigError("data.subset can't be applied to a saved data.scene")
     for key in ("file", "volume"):
@@ -379,6 +382,18 @@ def volume_provider(ctx):
     global _active_scene, _applied_cmap_range
     config = _active_config
     render = config["render"]
+    if ctx.previous_scene is not None and config["data"]["time_varying"]:
+        from .yt_idv_renderer import replace_volume_data
+
+        data = config["data"]
+        ds = _resolve_loader(data["loader"])(frame=ctx.frame.frame_number, **data["load_kwargs"])
+        replace_volume_data(ctx.previous_scene, build_data_source(ds, data), _field(data), data["no_ghost"])
+        # fixed_cmap_min/max stay on the components and win over the rescan
+        for component in ctx.previous_scene.components:
+            component._cmap_bounds_invalid = True
+        if is_cmap_curve(render["cmap_range"]) and not render["reset_cmap_each_frame"]:
+            _apply_cmap_range(ctx.previous_scene, cmap_range_at(render, ctx.frame.frame_number))
+        return VolumeSetupResult(scene=ctx.previous_scene, ds=ds, changed=True)
     if ctx.previous_scene is not None:
         changed = False
         if render["reset_cmap_each_frame"]:
@@ -411,7 +426,8 @@ def _build_scene(ctx, data):
     from .yt_idv_renderer import scale_scene_to_subset
 
     if data["loader"]:
-        ds = _resolve_loader(data["loader"])(**data["load_kwargs"])
+        kwargs = dict(data["load_kwargs"], frame=ctx.frame.frame_number) if data["time_varying"] else data["load_kwargs"]
+        ds = _resolve_loader(data["loader"])(**kwargs)
     elif data["path"]:
         ds = yt.load(data["path"], **data["load_kwargs"])
     else:

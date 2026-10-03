@@ -386,6 +386,24 @@ def apply_zoom(scene, custom_params, volume=None, camera_world=None):
     return anchor, scale
 
 
+def replace_volume_data(scene, data_source, field, no_ghost=True):
+    """Swap each block_rendering component's data for blocks built from
+    `data_source`, keeping the scene, its camera and its shading settings, and
+    free the old blocks' GPU memory.
+    """
+    from yt_idv.scene_data.block_collection import BlockCollection
+
+    for component in scene.components:
+        if getattr(component, "name", None) != "block_rendering":
+            continue
+        old = component.data
+        new = BlockCollection(data_source=data_source)
+        new.add_data(field, no_ghost=no_ghost)
+        component.data = new
+        scene.data_objects[scene.data_objects.index(old)] = new
+        old.release()
+
+
 def _get_volume_scene(request: RenderRequest, render_size: int):
     """Call this object's volume provider and cache its scene.
 
