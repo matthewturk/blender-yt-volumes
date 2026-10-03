@@ -132,6 +132,24 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         ),
         default="",
     )
+    # A string so the target keeps float64 precision; FloatVectorProperty is float32.
+    zoom_target: bpy.props.StringProperty(
+        name="Zoom Target",
+        description=(
+            "yt_idv modes: the point to zoom into, as 'x, y, z' in the "
+            "dataset's unitary coordinates or 'max' for the field's maximum. "
+            "Empty turns zooming off"
+        ),
+        default="",
+    )
+    zoom_level: bpy.props.FloatProperty(
+        name="Zoom Level",
+        description=(
+            "Magnification about the Zoom Target as a power of 10 (3 = 1000x). "
+            "Animate it linearly for a steady fly-in"
+        ),
+        default=0.0,
+    )
     dataset_uuid: bpy.props.StringProperty(
         name="Dataset ID",
         description=(
@@ -209,6 +227,9 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         }
         if self.yt_idv_volume_provider:
             params["yt_idv_volume_provider"] = self.yt_idv_volume_provider
+        if self.zoom_target:
+            params["yt_idv_zoom_target"] = self.zoom_target
+            params["yt_idv_zoom_level"] = self.zoom_level
         for item in self.custom_params_extra:
             if item.key:
                 params[item.key] = item.value
@@ -286,6 +307,10 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")
         col.prop(props, "yt_idv_volume_provider")
+        col.prop(props, "zoom_target")
+        row = col.row()
+        row.enabled = bool(props.zoom_target)
+        row.prop(props, "zoom_level")
         if props.dataset_uuid:
             row = col.row()
             row.enabled = False

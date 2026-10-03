@@ -27,7 +27,7 @@ dev = [
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
 # real yt_idv, installed alongside `bpy` in this same Python-3.13 venv from a
 # local checkout at ./yt_idv (gitignored; resolved via `[tool.uv.sources]`).
-# yt_idv `main` has the depth clip (#247); subset scaling needs
+# yt_idv `main` has the depth clip (#247); subset scaling and deep zooms need
 # the scene transforms of yt-project/yt_idv#287, and #285 (bindless textures)
 # is much faster. Until they merge, merge the open PRs onto main:
 #

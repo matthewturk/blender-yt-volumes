@@ -11,6 +11,14 @@ depth for the external depth clip. A subset scene rescaled by
 `scale_scene_to_subset` fills that cube along its longest axis, starting at
 the origin corner; shorter axes leave empty space at their high end.
 
+Zoom: `custom_params["yt_idv_zoom_target"]` (`"max"` or `"x, y, z"` unitary)
+and `"yt_idv_zoom_level"` (log10 magnification) expand the data about the
+target inside that cube, in float64. yt_idv's model space is then the cube's
+coordinates around the target, rescaled each frame so the camera is about one
+unit away; that keeps the GPU's float32 precise however deep the zoom, whether
+the zoom comes from the level or from the Blender camera flying in. A camera
+flying in needs the target near the world origin, where float32 is precise.
+
 Volume source: the `IsolatedGalaxy` sample by default.
 `custom_params["yt_idv_volume_provider"]` (`"module.submodule:function"`)
 names a callable `provider(ctx: VolumeSetupContext) -> VolumeSetupResult`,
@@ -247,6 +255,110 @@ def scale_scene_to_subset(scene):
         if collection.scale or _fills_unit_cube(*_collection_bounds(collection)):
             continue
         collection.scale = True
+
+
+def _set_model_transform(collection, offset, ratio):
+    """Make yt_idv model coordinates `(unitary - offset) / ratio`, replacing
+    whatever transform the collection has now.
+    """
+    # BlockCollection only composes transforms, and `scale = False` is a no-op
+    # when scale is already False, so compose the difference.
+    current_offset = np.asarray(collection.applied_scale_offset, dtype=np.float64)
+    current_ratio = collection.applied_scale_ratio
+    if np.array_equal(current_offset, offset) and current_ratio == ratio:
+        return
+    collection.apply_scale((offset - current_offset) / current_ratio, ratio / current_ratio)
+
+
+def _base_transform(collection):
+    """The `(offset, ratio)` that maps the collection into the volume cube,
+    recorded the first time a zoom changes it.
+    """
+    base = getattr(collection, "_cycles_yt_base_transform", None)
+    if base is None:
+        base = (np.asarray(collection.applied_scale_offset, dtype=np.float64), float(collection.applied_scale_ratio))
+        collection._cycles_yt_base_transform = base
+    return base
+
+
+def _densest_cell_unitary(collection):
+    """Center of the densest cell the bitmaps keep, from the block textures, as
+    a float64 (3,) unitary position; for scenes loaded without their dataset.
+    """
+    # textures are vertex-centered: a cell's value is the mean of its 8 corners
+    left_edges = _vertex_attribute(collection, "in_left_edge")
+    widths = _vertex_attribute(collection, "in_dx")
+    best_value, best_center = -np.inf, None
+    for vbo_i, texture in collection.texture_objects.items():
+        v = np.asarray(texture.data)
+        if min(v.shape) < 2:
+            continue
+        cells = sum(
+            v[i : v.shape[0] - 1 + i, j : v.shape[1] - 1 + j, k : v.shape[2] - 1 + k]
+            for i in (0, 1) for j in (0, 1) for k in (0, 1)
+        ) / 8.0
+        cells = np.where(np.asarray(collection.bitmap_objects[vbo_i].data) > 0, cells, -np.inf)
+        index = np.unravel_index(np.argmax(cells), cells.shape)
+        if cells[index] > best_value:
+            best_value = cells[index]
+            best_center = left_edges[vbo_i] + (np.array(index) + 0.5) * widths[vbo_i]
+    if best_center is None:
+        raise ValueError("zoom target 'max': the scene has no cells")
+    offset = np.asarray(collection.applied_scale_offset, dtype=np.float64)
+    return best_center * collection.applied_scale_ratio + offset
+
+
+def _zoom_target_unitary(spec, collection):
+    """`"max"` or `"x, y, z"` as a float64 (3,) unitary position."""
+    if spec.strip().lower() == "max":
+        cached = getattr(collection, "_cycles_yt_zoom_max", None)
+        if cached is None:
+            if collection.data_source is None:
+                cached = _densest_cell_unitary(collection)
+            else:
+                position = collection.data_source.argmax(collection.field)
+                cached = np.array([float(p.to("unitary")) for p in position])
+            collection._cycles_yt_zoom_max = cached
+        return cached
+    values = spec.replace(",", " ").split()
+    if len(values) != 3:
+        raise ValueError(f"zoom target {spec!r} is not 'max' or 'x, y, z'")
+    return np.array([float(v) for v in values])
+
+
+def apply_zoom(scene, custom_params, volume=None, camera_world=None):
+    """Set each block collection's transform for the zoom in `custom_params`.
+
+    Returns the model frame `(anchor, scale)`: model = (cube - anchor) * scale,
+    with `anchor` the zoom target in volume-cube coordinates. Given the volume
+    and the camera's world position, `scale` puts the camera about one unit
+    from the target, which only changes the numbers, not the image. Returns
+    None without a zoom.
+    """
+    spec = custom_params.get("yt_idv_zoom_target")
+    if not spec:
+        for collection in _block_collections(scene):
+            base = getattr(collection, "_cycles_yt_base_transform", None)
+            if base is not None:
+                _set_model_transform(collection, *base)
+        return None
+    magnification = 10.0 ** float(custom_params.get("yt_idv_zoom_level", 0.0))
+    collections = _block_collections(scene)
+    if not collections:
+        return None
+    base_offset, base_ratio = _base_transform(collections[0])
+    target = _zoom_target_unitary(spec, collections[0])
+    anchor = (target - base_offset) / base_ratio
+    scale = 1.0
+    if volume is not None and camera_world is not None:
+        A, b = _world_to_model(volume, (anchor, 1.0))
+        distance = float(np.linalg.norm(A @ (np.asarray(camera_world, dtype=np.float64) - b)))
+        scale = 1.0 / max(distance, 1e-300) if distance < 1.0 else 1.0
+    for collection in collections:
+        base_offset, base_ratio = _base_transform(collection)
+        target = _zoom_target_unitary(spec, collection)
+        _set_model_transform(collection, target, base_ratio / (magnification * scale))
+    return anchor, scale
 
 
 def _get_volume_scene(request: RenderRequest, render_size: int):
@@ -562,13 +674,33 @@ def _bbox_local_min_extent(bounding_box_local):
     return local_min, np.where(extent == 0.0, 1.0, extent)
 
 
-def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=None, frame_aspect=None):
+def _world_to_model(volume, model_frame=None):
+    """`(A, b)` with yt_idv model coordinates `A @ (world - b)`.
+
+    Without `model_frame` the model space is the volume cube's unitary
+    coordinates. With `(anchor, scale)` it is `(cube - anchor) * scale`, and
+    `b` is the anchor's world position, so points near it keep their float64
+    precision however small their offsets are.
+    """
+    matrix = np.array(volume.matrix_world, dtype=np.float64)
+    linear = matrix[:3, :3]
+    local_min, local_extent = _bbox_local_min_extent(volume.bounding_box_local)
+    anchor, scale = (np.zeros(3), 1.0) if model_frame is None else model_frame
+    b = linear @ (local_min + np.asarray(anchor, dtype=np.float64) * local_extent) + matrix[:3, 3]
+    A = (scale / local_extent)[:, None] * np.linalg.inv(linear)
+    return A, b
+
+
+def _registered_camera_kwargs(
+    camera, volume, ds, width, height, model_bounds=None, model_frame=None, frame_aspect=None,
+):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
-    object bounding-box registration into unitary space, for a `width` x
+    object bounding-box registration into yt_idv model space, for a `width` x
     `height` canvas covering a Blender frame of `frame_aspect` (default the
     canvas's).
 
-    `model_bounds` (`(low, high)`, default the unit cube) sets the near/far planes.
+    `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
+    planes. `model_frame` is `apply_zoom`'s; see `_world_to_model`.
     """
     if camera.projection != "PERSP":
         raise NotImplementedError(
@@ -583,35 +715,32 @@ def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=No
     cam_forward_world = -cam_matrix_world[:3, 2]
     cam_up_world = cam_matrix_world[:3, 1]
 
-    obj_matrix_world = np.array(volume.matrix_world, dtype=np.float64)
-    obj_matrix_world_inv = np.linalg.inv(obj_matrix_world)
-    local_min, local_extent = _bbox_local_min_extent(volume.bounding_box_local)
-
-    cam_pos_local_h = obj_matrix_world_inv @ np.array([*cam_pos_world, 1.0])
-    cam_pos_local = cam_pos_local_h[:3] / cam_pos_local_h[3]
-    position = (cam_pos_local - local_min) / local_extent
+    A, b = _world_to_model(volume, model_frame)
+    position = A @ (cam_pos_world - b)
 
     # Directions use only the linear part of the transform.
-    forward_local = obj_matrix_world_inv[:3, :3] @ cam_forward_world
-    forward_unitary = forward_local / local_extent
-    forward_norm = np.linalg.norm(forward_unitary)
+    forward = A @ cam_forward_world
+    forward_norm = np.linalg.norm(forward)
     if forward_norm == 0.0:
         raise ValueError(
             "camera forward direction vanished after the registration transform -- "
             "check VolumeObjectParams.matrix_world/bounding_box_local for degeneracy."
         )
-    forward_unitary = forward_unitary / forward_norm
+    forward = forward / forward_norm
 
-    up_local = obj_matrix_world_inv[:3, :3] @ cam_up_world
-    up_unitary = up_local / local_extent
+    up = A @ cam_up_world
     # Non-uniform extent can skew up vs. forward; re-orthogonalize.
-    up_unitary = up_unitary - np.dot(up_unitary, forward_unitary) * forward_unitary
-    up_norm = np.linalg.norm(up_unitary)
-    up_unitary = (up_unitary / up_norm) if up_norm > 0.0 else np.array([0.0, 1.0, 0.0])
+    up = up - np.dot(up, forward) * forward
+    up_norm = np.linalg.norm(up)
+    up = (up / up_norm) if up_norm > 0.0 else np.array([0.0, 1.0, 0.0])
 
-    domain_center = _domain_array_unitary(ds.domain_center).astype(np.float64)
-    look_ahead = max(float(np.linalg.norm(position - domain_center)), 1e-3)
-    focus = position + forward_unitary * look_ahead
+    if model_frame is None:
+        domain_center = _domain_array_unitary(ds.domain_center).astype(np.float64)
+        look_ahead = max(float(np.linalg.norm(position - domain_center)), 1e-3)
+    else:
+        # the distance to the zoom target, which is the model origin
+        look_ahead = max(float(np.linalg.norm(position)), 1e-3)
+    focus = position + forward * look_ahead
 
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
@@ -620,7 +749,7 @@ def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=No
     return {
         "position": position.astype("f4"),
         "focus": focus.astype("f4"),
-        "up": up_unitary.astype("f4"),
+        "up": up.astype("f4"),
         "fov": fov_deg,
         "aspect_ratio": aspect_ratio,
         **_near_far_planes(position, corners=corners),
@@ -653,11 +782,11 @@ def _near_far_planes(position, margin=0.1, corners=_UNIT_CUBE_CORNERS):
     }
 
 
-def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera):
+def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=None):
     """Convert Cycles' PLANAR `request.depth` to yt_idv window-space depth.
 
     Reconstructs world hit points from the Blender camera rays, maps them into
-    unitary space via the object registration, and projects them through
+    model space via the object registration, and projects them through
     `yt_idv_camera` (already positioned for this frame). No-hit pixels get 1.0.
 
     Returns a top-down `(height, width)` float32 array.
@@ -682,21 +811,16 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera):
         t = (-depth_data - cam_z_origin) / cam_z_direction
     world_points = origins + t[..., None] * directions
 
-    obj_matrix_world_inv = np.linalg.inv(np.array(volume.matrix_world, dtype=np.float64))
-    local_min, local_extent = _bbox_local_min_extent(volume.bounding_box_local)
-
+    A, b = _world_to_model(volume, model_frame)
     h, w = world_points.shape[:2]
-    world_points_h = np.concatenate([world_points, np.ones((h, w, 1))], axis=-1)
-    local_points = world_points_h @ obj_matrix_world_inv.T
-    local_points = local_points[..., :3] / local_points[..., 3:4]
-    unitary_points = (local_points - local_min) / local_extent
+    model_points = (world_points - b) @ A.T
 
     proj_view = np.array(yt_idv_camera.projection_matrix, dtype=np.float64) @ np.array(
         yt_idv_camera.view_matrix, dtype=np.float64
     )
-    unitary_points_h = np.concatenate([unitary_points, np.ones((h, w, 1))], axis=-1)
+    model_points_h = np.concatenate([model_points, np.ones((h, w, 1))], axis=-1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        clip = unitary_points_h @ proj_view.T
+        clip = model_points_h @ proj_view.T
         ndc_z = clip[..., 2] / clip[..., 3]
     window_depth = 0.5 * ndc_z + 0.5
     window_depth = np.where(no_hit_mask, 1.0, window_depth)
@@ -785,15 +909,17 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     custom_params = request.volume.custom_params or {}
     for component in scene.components:
         configure_component(component, custom_params)
+    camera_world = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
+    model_frame = apply_zoom(scene, custom_params, request.volume, camera_world)
     scene.camera.update(
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
-            model_bounds=_scene_model_bounds(scene),
+            model_bounds=_scene_model_bounds(scene), model_frame=model_frame,
             frame_aspect=width / height,
         )
     )
 
-    window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera)
+    window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera, model_frame)
     set_external_depth_clip(scene, _pad_to_square(window_depth, render_size))
 
     image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]

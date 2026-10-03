@@ -622,7 +622,7 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
         return fake_rc, fake_scene, _FakeDataset(), call_count["n"] == 1
 
     monkeypatch.setattr(yir, "_get_volume_scene", fake_get_volume_scene)
-    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera, model_shift=None: np.zeros((render_size, render_size), dtype=np.float32))
     monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
 
     configure_calls = []
@@ -666,7 +666,7 @@ def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monk
         return shared_rc, scene, _FakeDataset(), True  # always "changed" -- force a real render every call
 
     monkeypatch.setattr(yir, "_get_volume_scene", fake_get_volume_scene)
-    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera, model_shift=None: np.zeros((render_size, render_size), dtype=np.float32))
     monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
     configure = lambda component, custom_params: None
 
@@ -1126,3 +1126,140 @@ def test_cycles_depth_to_yt_idv_window_depth_masks_no_hit_pixels_to_far(persp_ca
     window_depth = yir._cycles_depth_to_yt_idv_window_depth(request, _IdentityYtIdvCamera())
     assert window_depth[0, 0] == pytest.approx(1.0)  # no-hit -> no clip
     assert window_depth[CENTER_ROW, CENTER_COL] == pytest.approx(0.75)  # everywhere else, unaffected
+
+
+# --- zoom ---------------------------------------------------------------------
+
+
+def test_zoom_target_parses_float64_coordinates():
+    target = yir._zoom_target_unitary("0.4915073296178, 0.505260534, 0.49058056", None)
+    assert target.dtype == np.float64
+    assert target[0] == 0.4915073296178
+
+
+def test_zoom_target_rejects_malformed_spec():
+    with pytest.raises(ValueError, match="zoom target"):
+        yir._zoom_target_unitary("0.5, 0.5", None)
+
+
+def test_apply_zoom_without_target_leaves_transform_alone():
+    collection = _subset_collection()
+    yir.scale_scene_to_subset(_block_scene(collection))
+    before = (collection.applied_scale_offset, collection.applied_scale_ratio)
+    assert yir.apply_zoom(_block_scene(collection), {}) is None
+    assert (collection.applied_scale_offset, collection.applied_scale_ratio) == before
+
+
+def test_apply_zoom_puts_target_at_model_origin_magnified():
+    collection = _full_domain_collection()
+    scene = _block_scene(collection)
+    target = np.array([0.25, 0.5, 0.75])
+    anchor, scale = yir.apply_zoom(scene, {"yt_idv_zoom_target": "0.25 0.5 0.75", "yt_idv_zoom_level": 3.0})
+    np.testing.assert_allclose(anchor, target)  # full domain: cube coords are unitary
+    assert scale == 1.0  # no camera given
+    np.testing.assert_allclose(collection.applied_scale_offset, target)
+    assert collection.applied_scale_ratio == pytest.approx(1e-3)
+    # the block corner at the origin lands 1000x farther from the target
+    np.testing.assert_allclose(collection.vertex_array.attributes[0].data[0], -target * 1e3, rtol=1e-6)
+
+
+def test_apply_zoom_is_absolute_across_frames_and_reverts_when_cleared():
+    collection = _full_domain_collection()
+    scene = _block_scene(collection)
+    for level in (1.0, 5.0, 2.0):
+        yir.apply_zoom(scene, {"yt_idv_zoom_target": "0.5 0.5 0.5", "yt_idv_zoom_level": level})
+    assert collection.applied_scale_ratio == pytest.approx(1e-2)
+    yir.apply_zoom(scene, {})
+    np.testing.assert_allclose(collection.applied_scale_offset, 0.0)
+    assert collection.applied_scale_ratio == pytest.approx(1.0)
+
+
+def test_apply_zoom_composes_with_subset_scaling():
+    collection = _subset_collection()
+    scene = _block_scene(collection)
+    yir.scale_scene_to_subset(scene)
+    # region low corner (0.4, 0.45, 0.45), longest axis 0.1: unitary 0.45 -> cube 0.5
+    anchor, _ = yir.apply_zoom(scene, {"yt_idv_zoom_target": "0.45 0.475 0.4625", "yt_idv_zoom_level": 2.0})
+    np.testing.assert_allclose(anchor, [0.5, 0.25, 0.125], atol=1e-12)
+    assert collection.applied_scale_ratio == pytest.approx(0.1 / 100.0)
+
+
+def test_registered_camera_kwargs_apply_model_frame():
+    camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]])
+    plain = yir._registered_camera_kwargs(camera, _identity_volume(), _FakeDataset(), 100, 100)
+    anchor = np.array([0.25, 0.5, 0.75])
+    framed = yir._registered_camera_kwargs(
+        camera, _identity_volume(), _FakeDataset(), 100, 100, model_frame=(anchor, 10.0),
+    )
+    np.testing.assert_allclose(framed["position"], (plain["position"] - anchor) * 10.0, rtol=1e-6)
+    view = lambda k: (k["focus"] - k["position"]) / np.linalg.norm(k["focus"] - k["position"])
+    np.testing.assert_allclose(view(framed), view(plain), atol=1e-6)
+
+
+def test_cycles_depth_to_yt_idv_window_depth_applies_model_frame(persp_camera_params):
+    request = RenderRequest(
+        camera=persp_camera_params,
+        depth=_uniform_depth_buffer(5.0),
+        volume=_boxed_volume_at_5(),
+        frame=FrameParams(frame_number=1, scene_time_seconds=0.0),
+    )
+    window_depth = yir._cycles_depth_to_yt_idv_window_depth(
+        request, _IdentityYtIdvCamera(), (np.array([0.0, 0.0, 0.25]), 2.0),
+    )
+    # unitary z 0.5 -> (0.5 - 0.25) * 2 = 0.5 -> 0.5 * 0.5 + 0.5
+    np.testing.assert_allclose(window_depth, 0.75, atol=1e-5)
+
+
+def test_zoom_target_max_without_dataset_finds_densest_unmasked_cell():
+    # two 2x2x2-cell blocks; the hottest corner of block 1 is masked off
+    hot = np.zeros((3, 3, 3), dtype="f4")
+    hot[2, 2, 2] = 8.0  # only cell (1, 1, 1) touches it: value 1.0
+    masked = np.full((3, 3, 3), 5.0, dtype="f4")
+    collection = _FakeBlockCollection(
+        left_edges=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        right_edges=[[0.5, 0.5, 0.5], [1.0, 0.5, 0.5]],
+    )
+    collection.vertex_array.attributes.append(
+        types.SimpleNamespace(name="in_dx", data=np.full((2, 3), 0.125, dtype="f4"))  # model units
+    )
+    collection.data_source = None
+    collection.texture_objects = {0: types.SimpleNamespace(data=hot), 1: types.SimpleNamespace(data=masked)}
+    collection.bitmap_objects = {
+        0: types.SimpleNamespace(data=np.full((2, 2, 2), 255, dtype="u1")),
+        1: types.SimpleNamespace(data=np.zeros((2, 2, 2), dtype="u1")),
+    }
+    collection._set_scale(np.array([0.5, 0.0, 0.0]), 2.0)  # unitary = model * 2 + offset
+    target = yir._zoom_target_unitary("max", collection)
+    # cell (1, 1, 1) of block 0 spans unitary [0.25, 0.5]^3
+    np.testing.assert_allclose(target, [0.375, 0.375, 0.375], atol=1e-6)
+
+
+def test_apply_zoom_scales_so_the_camera_is_one_unit_from_the_target():
+    # 2x2x2 cube at the origin: unitary 0.5 is world 0; the camera is 1e-6 cube widths away
+    collection = _full_domain_collection()
+    anchor, scale = yir.apply_zoom(
+        _block_scene(collection), {"yt_idv_zoom_target": "0.5 0.5 0.5", "yt_idv_zoom_level": 2.0},
+        _identity_volume(), np.array([0.0, 0.0, 2e-6]),
+    )
+    assert scale == pytest.approx(1e6)
+    # the data is magnified 100x on top of the numeric scale
+    assert collection.applied_scale_ratio == pytest.approx(1.0 / (100.0 * 1e6))
+
+
+def test_apply_zoom_leaves_scale_alone_for_a_distant_camera():
+    _, scale = yir.apply_zoom(
+        _block_scene(_full_domain_collection()), {"yt_idv_zoom_target": "0.5 0.5 0.5"},
+        _identity_volume(), np.array([0.0, 0.0, 5.0]),
+    )
+    assert scale == 1.0
+
+
+def test_world_to_model_keeps_precision_near_a_target_at_the_world_origin():
+    # Regression: going through unitary coordinates (~0.5) lost 1e-16 absolute,
+    # i.e. 1e-4 of a 1e-12 offset.
+    target = np.array([0.5396208033853327, 0.5348483302877867, 0.5151424408177263])
+    offset = (-(2 * target - 1)).astype("f4").astype(np.float64)  # Blender stores float32
+    volume = _identity_volume(matrix_world=[[1, 0, 0, offset[0]], [0, 1, 0, offset[1]], [0, 0, 1, offset[2]], [0, 0, 0, 1]])
+    A, b = yir._world_to_model(volume, (target, 1.0))
+    camera = b + np.array([0.0, 0.0, 2e-12])  # 1e-12 cube widths above the target
+    np.testing.assert_allclose(A @ (camera - b), [0.0, 0.0, 1e-12], rtol=1e-9, atol=1e-24)

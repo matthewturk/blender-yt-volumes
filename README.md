@@ -180,8 +180,8 @@ Python/venv story from your real Blender's install, just a separate
 **The external depth clip needs yt_idv `main` or newer** (yt-project/yt_idv#247,
 now merged); older releases import and render fine but have no depth clip, and
 `set_external_depth_clip` raises rather than silently doing nothing. Subset
-scaling additionally needs yt-project/yt_idv#287 (scene transforms) -- see
-pyproject.toml's `ytidv` group for the checkout recipe.
+scaling and deep zooms additionally need yt-project/yt_idv#287 (scene
+transforms) -- see pyproject.toml's `ytidv` group for the checkout recipe.
 
 ### Rendering from a config file
 
@@ -200,6 +200,32 @@ PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume 
 file, `--set section.key=value` reaches any key (values parse as TOML), and
 `--check` prints the merged config without rendering. Each run gets its own
 temporary `work_dir` unless one is set, so concurrent runs don't collide.
+
+### Deep zooms past float32
+
+Moving a Blender camera toward a tiny feature normally stops working around
+1e-6 of the box: Blender holds positions in float32, and next to an ordinary
+world offset there is no room left for the camera's offset from the target.
+The volume object's **Zoom Target** (`"max"` or `"x, y, z"` in unitary
+coordinates, a string so it keeps float64 precision) anchors two ways around
+it; `[zoom]` in a config sets it.
+
+- **Magnify** (`examples/deep_zoom.toml`, built by
+  `examples/make_deep_zoom_blend.py`): the camera moves at ordinary scales
+  and **Zoom Level** (a power of 10, animatable; `level` in `[zoom]` is a
+  `[[frame, level], ...]` curve) magnifies the data about the target. Cycles
+  objects don't magnify with it.
+- **Fly**: put the target at the world origin, where float32 keeps its
+  relative precision at any scale, and fly the camera in for real. With the
+  target at the origin Blender holds the camera to ~1e-7 of its distance at
+  1e-10 box widths; parented 1 unit away, it is 1.5% off at 1e-6 and lost by
+  1e-8. Cycles objects near the target stay registered with the data, though
+  Blender clips them closer than 1e-6 world units to the camera.
+
+Either way the worker rescales yt_idv each frame so the camera is about one
+unit from the target in model space, and maps world to model coordinates
+relative to the target in float64. `examples/make_flythrough_blend.py` turns
+`flythrough_densest.py`'s camera paths into either kind of scene (`--fly`).
 
 ### Animating a dataset series
 

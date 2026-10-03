@@ -19,11 +19,13 @@ import shutil
 import sys
 import tempfile
 import tomllib
+import types
 
 DEFAULTS = {
     "data": {
         "sample": None,  # yt.load_sample name
-        "path": None,  # yt.load path; exactly one of sample/path
+        "path": None,  # yt.load path; exactly one of sample/path/scene
+        "scene": None,  # a yt_idv scene saved with SceneGraph.save
         "series": None,  # glob or list of paths; render_series only
         "simulation": None,  # {parameter_file, code, ...}; render_series only
         "load_kwargs": {},
@@ -50,6 +52,10 @@ DEFAULTS = {
         "reset_cmap_each_frame": False,
         "yt_idv": {},
     },
+    "zoom": {
+        "target": None,  # "max", or [x, y, z] in unitary coordinates
+        "level": 0.0,  # log10 magnification, or a [[frame, level], ...] curve
+    },
     # Frame -> dataset mapping; render_series only.
     "time": {
         "by": "time",  # "time" or "index"
@@ -68,7 +74,7 @@ COLORMAP_PREFERENCE = {
     "YT_IDV_THRESHOLD_FOG": "fog_colormap",
     "YT_IDV_MAX_INTENSITY_ALPHA": "mip_alpha_colormap",
 }
-PATH_KEYS = (("data", "path"), ("blender", "file"), ("blender", "output"), ("blender", "work_dir"))
+PATH_KEYS = (("data", "path"), ("data", "scene"), ("blender", "file"), ("blender", "output"), ("blender", "work_dir"))
 
 _active_config = None  # read by volume_provider during a render
 _active_scene = None  # the scene volume_provider built, for render()'s report
@@ -173,6 +179,38 @@ def cmap_range_at(render, frame):
     return tuple(cmap_range)
 
 
+def zoom_level_at(zoom, frame):
+    level = zoom["level"]
+    if isinstance(level, list):
+        return interpolate_rows(level, frame)[0]
+    return float(level)
+
+
+def _zoom_target_spec(target):
+    """The `zoom_target` property string; repr keeps float64 precision."""
+    if target is None:
+        return ""
+    if target == "max":
+        return "max"
+    return ", ".join(repr(float(v)) for v in target)
+
+
+def _validate_zoom(zoom):
+    target, level = zoom["target"], zoom["level"]
+    if target is not None and target != "max" and not (
+        isinstance(target, list) and len(target) == 3 and all(isinstance(v, (int, float)) for v in target)
+    ):
+        raise ConfigError("zoom.target must be \"max\" or [x, y, z] in unitary coordinates")
+    if isinstance(level, (int, float)):
+        return
+    if not (isinstance(level, list) and len(level) >= 2
+            and all(isinstance(k, list) and len(k) == 2 for k in level)):
+        raise ConfigError("zoom.level must be a number or a list of at least two [frame, level] pairs")
+    frames = [k[0] for k in level]
+    if any(b <= a for a, b in zip(frames, frames[1:])):
+        raise ConfigError("zoom.level frames must be strictly increasing")
+
+
 def _validate_cmap(render, series):
     cmap_range = render["cmap_range"]
     if render["cmap_interpolation"] not in ("linear", "log"):
@@ -205,8 +243,8 @@ def validate(config, series=False):
     if series:
         if bool(data["series"]) == bool(data["simulation"]):
             raise ConfigError("set exactly one of data.series or data.simulation")
-        if data["sample"] is not None or data["path"] is not None:
-            raise ConfigError("data.sample/data.path can't be combined with a series")
+        if data["sample"] is not None or data["path"] is not None or data["scene"] is not None:
+            raise ConfigError("data.sample/data.path/data.scene can't be combined with a series")
         if data["simulation"] and not {"parameter_file", "code"} <= set(data["simulation"]):
             raise ConfigError("data.simulation needs parameter_file and code")
         if blender["frames"] is None:
@@ -215,8 +253,10 @@ def validate(config, series=False):
     else:
         if data["series"] or data["simulation"]:
             raise ConfigError("data.series/data.simulation are rendered with render_series")
-        if (data["sample"] is None) == (data["path"] is None):
-            raise ConfigError("set exactly one of data.sample or data.path")
+        if sum(data[key] is not None for key in ("sample", "path", "scene")) != 1:
+            raise ConfigError("set exactly one of data.sample, data.path or data.scene")
+        if data["scene"] is not None and data["subset"] is not None:
+            raise ConfigError("data.subset can't be applied to a saved data.scene")
     for key in ("file", "volume"):
         if not blender[key]:
             raise ConfigError(f"blender.{key} is required")
@@ -230,6 +270,7 @@ def validate(config, series=False):
     if not render["mode"].startswith("YT_IDV_"):
         raise ConfigError(f"render.mode {render['mode']!r} is not a YT_IDV_* mode")
     _validate_cmap(render, series)
+    _validate_zoom(config["zoom"])
     subset = data["subset"]
     if subset is not None:
         kind = subset.get("kind")
@@ -328,7 +369,7 @@ def _field(data_config):
 
 def volume_provider(ctx):
     """`yt_idv_volume_provider` driven by the active config; builds the scene once."""
-    from .yt_idv_renderer import VolumeSetupResult, scale_scene_to_subset
+    from .yt_idv_renderer import VolumeSetupResult
 
     global _active_scene, _applied_cmap_range
     config = _active_config
@@ -342,17 +383,12 @@ def volume_provider(ctx):
             changed = _apply_cmap_range(ctx.previous_scene, cmap_range_at(render, ctx.frame.frame_number))
         return VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=changed)
 
-    import yt
-
     data = config["data"]
-    if data["path"]:
-        ds = yt.load(data["path"], **data["load_kwargs"])
+    if data["scene"]:
+        scene, ds = _load_saved_scene(data["scene"])
+        ctx.render_context.scene = scene
     else:
-        ds = yt.load_sample(data["sample"], **data["load_kwargs"])
-    data_source = build_data_source(ds, data)
-    scene = ctx.render_context.add_scene(data_source, _field(data), no_ghost=data["no_ghost"])
-    if data["subset"] is not None and data["subset"].get("scale", True):
-        scale_scene_to_subset(scene)
+        scene, ds = _build_scene(ctx, data)
 
     for component in scene.components:
         if render["colormap"] and render["mode"] in COMPONENT_COLORMAP_MODES:
@@ -362,6 +398,35 @@ def volume_provider(ctx):
         _apply_cmap_range(scene, cmap_range_at(render, ctx.frame.frame_number))
     _active_scene = scene
     return VolumeSetupResult(scene=scene, ds=ds, changed=True)
+
+
+def _build_scene(ctx, data):
+    import yt
+
+    from .yt_idv_renderer import scale_scene_to_subset
+
+    if data["path"]:
+        ds = yt.load(data["path"], **data["load_kwargs"])
+    else:
+        ds = yt.load_sample(data["sample"], **data["load_kwargs"])
+    data_source = build_data_source(ds, data)
+    scene = ctx.render_context.add_scene(data_source, _field(data), no_ghost=data["no_ghost"])
+    if data["subset"] is not None and data["subset"].get("scale", True):
+        scale_scene_to_subset(scene)
+    return scene, ds
+
+
+def _load_saved_scene(path):
+    """A scene from `SceneGraph.save`, scaled so its saved bbox fills the volume box."""
+    import numpy as np
+    from yt_idv.scene_graph import SceneGraph
+
+    from .yt_idv_renderer import scale_scene_to_subset
+
+    scene = SceneGraph.load(path)
+    scale_scene_to_subset(scene)
+    # the renderer only reads ds.domain_center, in unitary units
+    return scene, types.SimpleNamespace(domain_center=np.full(3, 0.5))
 
 
 def _apply_cmap_range(scene, cmap_range):
@@ -406,6 +471,7 @@ def _configure_blender(config):
         raise ConfigError(f"no object named {blender['volume']!r} in {blender['file']}")
     obj.volume_override.is_volume_override = True
     obj.volume_override.yt_idv_volume_provider = f"{__name__}:volume_provider"
+    obj.volume_override.zoom_target = _zoom_target_spec(config["zoom"]["target"])
 
     if blender["camera"]:
         camera = bpy.data.objects.get(blender["camera"])
@@ -463,7 +529,7 @@ def write_report(path, config, written):
     """JSON summary of a run: dataset, frames written, and the colormap range used."""
     data = config["data"]
     report = {
-        "dataset": data["path"] or data["sample"],
+        "dataset": data["path"] or data["sample"] or data["scene"],
         "frames": written,
         "cmap_range": _cmap_range(_active_scene),
     }
@@ -480,6 +546,7 @@ def render(config):
     global _active_config
     _active_config = config
     scene, temp_work_dir = _configure_blender(config)
+    volume = bpy.data.objects[config["blender"]["volume"]]
     start, end = parse_frames(config["blender"]["frames"]) or (scene.frame_start, scene.frame_end)
     prefix = config["blender"]["output"]
     os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)
@@ -489,6 +556,8 @@ def render(config):
         with operators.render_session(bpy.context):
             for frame in range(start, end + 1):
                 scene.frame_set(frame)
+                if config["zoom"]["target"] is not None:
+                    volume.volume_override.zoom_level = zoom_level_at(config["zoom"], frame)
                 # The add-on's output isn't auto-numbered.
                 scene.render.filepath = f"{prefix}{frame:04d}"
                 bpy.ops.render.volume_override(animation=False)

@@ -61,7 +61,7 @@ def test_options_alone_are_enough_without_a_config_file(blend, monkeypatch):
 
 
 @pytest.mark.parametrize("text, message", [
-    ('[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one of data.sample or data.path"),
+    ('[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one of data.sample, data.path or data.scene"),
     ('[data]\nsample = "x"\npath = "y"\n[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one"),
     ('[data]\nsample = "x"\n[blender]\nfile = "missing.blend"\nvolume = "V"\n', "does not exist"),
     ('[data]\nsample = "x"\n[blender]\nfile = "scene.blend"\n', "blender.volume is required"),
@@ -229,3 +229,50 @@ def test_volume_provider_applies_the_curve_each_frame_and_reports_changes(monkey
     assert at(2).changed is False  # same frame, same range: the cached render is still right
     assert at(3).changed is True
     assert (component.fixed_cmap_min, component.fixed_cmap_max) == (1.0, 3.0)
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        ('[zoom]\ntarget = "center"\n', "zoom.target"),
+        ("[zoom]\ntarget = [0.5, 0.5]\n", "zoom.target"),
+        ('[zoom]\ntarget = "max"\nlevel = [[1, 0.0]]\n', "zoom.level"),
+        ('[zoom]\ntarget = "max"\nlevel = [[5, 0.0], [5, 3.0]]\n', "strictly increasing"),
+    ],
+)
+def test_zoom_validation(tmp_path, blend, extra, message):
+    with pytest.raises(rv.ConfigError, match=message):
+        rv.load_config(_write(tmp_path, _minimal() + extra))
+
+
+def test_zoom_level_is_a_constant_or_a_clamped_linear_curve(tmp_path, blend):
+    config = rv.load_config(_write(tmp_path, _minimal() + '[zoom]\ntarget = "max"\nlevel = [[1, 0.0], [101, 10.0]]\n'))
+    zoom = config["zoom"]
+    assert rv.zoom_level_at(zoom, 1) == 0.0
+    assert rv.zoom_level_at(zoom, 51) == pytest.approx(5.0)
+    assert rv.zoom_level_at(zoom, 500) == 10.0
+    assert rv.zoom_level_at({"level": 2}, 7) == 2.0
+
+
+def test_zoom_target_spec_round_trips_float64():
+    target = [0.49150733019824, 0.505260534, 0.1 + 0.2]
+    spec = rv._zoom_target_spec(target)
+    assert [float(v) for v in spec.split(",")] == target
+    assert rv._zoom_target_spec("max") == "max"
+    assert rv._zoom_target_spec(None) == ""
+
+
+def test_saved_scene_is_a_data_source_and_resolves_against_the_config(tmp_path, blend):
+    text = '[data]\nscene = "saved.zip"\n[blender]\nfile = "scene.blend"\nvolume = "V"\n'
+    config = rv.load_config(_write(tmp_path, text))
+    assert config["data"]["scene"] == str(tmp_path / "saved.zip")
+
+
+@pytest.mark.parametrize("extra", [
+    'sample = "IsolatedGalaxy"\n',
+    '[data.subset]\nkind = "sphere"\nradius = 1\n',
+])
+def test_saved_scene_excludes_other_sources_and_subsets(tmp_path, blend, extra):
+    text = '[blender]\nfile = "scene.blend"\nvolume = "V"\n[data]\nscene = "saved.zip"\n' + extra
+    with pytest.raises(rv.ConfigError, match="data.s"):
+        rv.load_config(_write(tmp_path, text))
