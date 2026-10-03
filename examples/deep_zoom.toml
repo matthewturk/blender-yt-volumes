@@ -1,0 +1,35 @@
+# Fly into DeeplyNestedZoom's density peak, 12 orders of magnitude.
+#
+#   python examples/make_deep_zoom_blend.py examples/deep_zoom.blend
+#   python -m cycles_volume_override.render_volume examples/deep_zoom.toml
+#
+# Same keys as render_volume.toml, plus [zoom].
+
+[data]
+path = "/data/yt_sample_data/DeeplyNestedZoom/DD0025/data0025"
+field = ["gas", "density"]
+no_ghost = true
+
+[blender]
+file = "deep_zoom.blend"
+volume = "Volume"
+frames = "1-240"
+output = "../renders/deep_zoom/frame_"
+resolution = [1280, 720]
+samples = 16
+device = "OPTIX"
+
+[render]
+mode = "YT_IDV_MAX_INTENSITY"
+colormap = "inferno"
+# The density range climbs ~20 decades on the way in, so the colormap range
+# follows a curve (from per-frame auto ranges), interpolated in log space.
+cmap_range = [[1, 1e-20, 1e-16], [60, 1.1e-19, 1.3e-15], [120, 4.5e-15, 3.5e-8],
+              [180, 4.9e-9, 0.085], [240, 0.028, 1.0]]
+cmap_interpolation = "log"
+
+# Magnify the data about `target`, in float64. Levels are powers of 10, so a
+# straight line is a steady exponential fly-in.
+[zoom]
+target = "max"        # or [x, y, z] in unitary coordinates
+level = [[1, 0.0], [240, 12.0]]
