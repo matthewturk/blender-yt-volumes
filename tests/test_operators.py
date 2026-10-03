@@ -2,6 +2,7 @@ import os
 from types import SimpleNamespace
 
 import bpy
+import numpy as np
 import pytest
 from mathutils import Vector
 
@@ -201,12 +202,23 @@ def test_build_volume_params_rejects_a_mesh_object(clean_scene_with_props):
 
 
 def test_build_volume_params_rejects_a_non_cube_empty(clean_scene_with_props):
-    bpy.ops.object.empty_add(type='SPHERE')
+    bpy.ops.object.empty_add(type='PLAIN_AXES')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
 
-    with pytest.raises(RuntimeError, match="Empty-Cube"):
+    with pytest.raises(RuntimeError, match="Empty-Cube or Empty-Sphere"):
         operators.build_volume_params(obj)
+
+
+def test_build_volume_params_accepts_a_sphere_empty_with_its_bounding_cube(clean_scene_with_props):
+    bpy.ops.object.empty_add(type='SPHERE')
+    obj = bpy.context.active_object
+    obj.empty_display_size = 2.0
+    obj.volume_override.is_volume_override = True
+
+    corners = np.array(operators.build_volume_params(obj).bounding_box_local)
+    np.testing.assert_allclose(corners.min(axis=0), -2.0)
+    np.testing.assert_allclose(corners.max(axis=0), 2.0)
 
 
 def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_scene_with_props):

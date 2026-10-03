@@ -19,6 +19,9 @@ unit away; that keeps the GPU's float32 precise however deep the zoom, whether
 the zoom comes from the level or from the Blender camera flying in. A camera
 flying in needs the target near the world origin, where float32 is precise.
 
+Spherical data: the volume object's inscribed sphere is the data's outer
+radius, its local +z the pole (theta = 0) and +x longitude 0 (phi = 0).
+
 Volume source: the `IsolatedGalaxy` sample by default.
 `custom_params["yt_idv_volume_provider"]` (`"module.submodule:function"`)
 names a callable `provider(ctx: VolumeSetupContext) -> VolumeSetupResult`,
@@ -211,10 +214,20 @@ def _vertex_attribute(collection, name):
     raise KeyError(name)
 
 
+def _is_spherical(collection):
+    return getattr(collection, "_yt_geom_str", "cartesian") == "spherical"
+
+
 def _collection_bounds(collection):
     """The collection's visible extent in model space: its data source's bbox
     clipped to its blocks, or just the blocks if the bbox is unknown.
     """
+    if _is_spherical(collection):
+        # in_left_edge holds (r, theta, phi); the cartesian boxes are separate
+        return (
+            _vertex_attribute(collection, "le_cart").min(axis=0),
+            _vertex_attribute(collection, "re_cart").max(axis=0),
+        )
     low = _vertex_attribute(collection, "in_left_edge").min(axis=0)
     high = _vertex_attribute(collection, "in_right_edge").max(axis=0)
     bbox = getattr(collection, "bbox", None)
@@ -247,6 +260,8 @@ def scale_scene_to_subset(scene):
     are left alone.
     """
     for collection in _block_collections(scene):
+        if _is_spherical(collection):
+            continue
         if not hasattr(collection, "apply_scale"):
             raise RuntimeError(
                 "scale_scene_to_subset needs a yt_idv with scene transforms "
@@ -326,6 +341,11 @@ def _zoom_target_unitary(spec, collection):
     return np.array([float(v) for v in values])
 
 
+# yt_idv draws spherical data in cartesian coordinates scaled by the outer
+# radius: a unit sphere at the model origin, the volume object's inscribed sphere.
+SPHERICAL_MODEL_FRAME = (np.full(3, 0.5), 2.0)
+
+
 def apply_zoom(scene, custom_params, volume=None, camera_world=None):
     """Set each block collection's transform for the zoom in `custom_params`.
 
@@ -333,9 +353,14 @@ def apply_zoom(scene, custom_params, volume=None, camera_world=None):
     with `anchor` the zoom target in volume-cube coordinates. Given the volume
     and the camera's world position, `scale` puts the camera about one unit
     from the target, which only changes the numbers, not the image. Returns
-    None without a zoom.
+    None for cartesian data without a zoom, and SPHERICAL_MODEL_FRAME for
+    spherical data, which can't be zoomed.
     """
     spec = custom_params.get("yt_idv_zoom_target")
+    if any(_is_spherical(c) for c in _block_collections(scene)):
+        if spec:
+            raise NotImplementedError("yt_idv can't rescale spherical data, so it can't be zoomed")
+        return SPHERICAL_MODEL_FRAME
     if not spec:
         for collection in _block_collections(scene):
             base = getattr(collection, "_cycles_yt_base_transform", None)

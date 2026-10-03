@@ -1,0 +1,24 @@
+# A synthetic mantle (spherical geometry) inside an Empty-Sphere, with a core,
+# graticule and hotspot rings drawn by Cycles.
+#
+#   python examples/make_earth_blend.py examples/earth.blend
+#   python -m cycles_volume_override.render_volume examples/spherical_earth.toml
+
+[data]
+loader = "spherical_earth.py:load"   # any "module:function" or "file.py:function" returning a dataset
+field = ["stream", "plumes"]
+no_ghost = true
+
+[blender]
+file = "earth.blend"
+volume = "Earth"
+frames = "1-240"
+output = "../renders/earth/frame_"
+resolution = [1280, 720]
+samples = 32
+device = "OPTIX"
+
+[render]
+mode = "YT_IDV_MAX_INTENSITY_ALPHA"
+colormap = "inferno"
+cmap_range = [0.04, 1.0]

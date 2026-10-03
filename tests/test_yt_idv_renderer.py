@@ -1263,3 +1263,49 @@ def test_world_to_model_keeps_precision_near_a_target_at_the_world_origin():
     A, b = yir._world_to_model(volume, (target, 1.0))
     camera = b + np.array([0.0, 0.0, 2e-12])  # 1e-12 cube widths above the target
     np.testing.assert_allclose(A @ (camera - b), [0.0, 0.0, 1e-12], rtol=1e-9, atol=1e-24)
+
+
+# --- spherical data -------------------------------------------------------------
+
+
+def _spherical_collection():
+    """A shell's blocks: native (r, theta, phi) edges plus their cartesian boxes."""
+    attrs = {
+        "in_left_edge": [[0.5, 0.0, 0.0]], "in_right_edge": [[1.0, np.pi, 2 * np.pi]],
+        "le_cart": [[-1.0, -1.0, -1.0]], "re_cart": [[1.0, 1.0, 1.0]],
+    }
+    return types.SimpleNamespace(
+        _yt_geom_str="spherical",
+        scale=False,
+        vertex_array=types.SimpleNamespace(attributes=[
+            types.SimpleNamespace(name=k, data=np.asarray(v, dtype="f4")) for k, v in attrs.items()
+        ]),
+    )
+
+
+def test_spherical_bounds_come_from_the_cartesian_boxes():
+    low, high = yir._scene_model_bounds(_block_scene(_spherical_collection()))
+    np.testing.assert_allclose(low, -1.0)
+    np.testing.assert_allclose(high, 1.0)
+
+
+def test_spherical_scenes_get_the_unit_sphere_frame_and_no_subset_scaling():
+    scene = _block_scene(_spherical_collection())
+    yir.scale_scene_to_subset(scene)  # would fail on the fake if it tried
+    assert yir.apply_zoom(scene, {}) is yir.SPHERICAL_MODEL_FRAME
+
+
+def test_spherical_scenes_refuse_to_zoom():
+    with pytest.raises(NotImplementedError, match="spherical"):
+        yir.apply_zoom(_block_scene(_spherical_collection()), {"yt_idv_zoom_target": "max"})
+
+
+def test_spherical_registration_maps_the_inscribed_sphere_to_the_unit_sphere():
+    # a radius-1 Empty-Sphere at the origin; the camera 3 radii above the north pole
+    camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 3], [0, 0, 0, 1]])
+    volume = _identity_volume(bounding_box_local=_cube_bbox())
+    kwargs = yir._registered_camera_kwargs(
+        camera, volume, _FakeDataset(), 100, 100, model_frame=yir.SPHERICAL_MODEL_FRAME,
+    )
+    np.testing.assert_allclose(kwargs["position"], [0.0, 0.0, 3.0], atol=1e-6)
+    np.testing.assert_allclose(kwargs["focus"], [0.0, 0.0, 0.0], atol=1e-6)  # looking at the center

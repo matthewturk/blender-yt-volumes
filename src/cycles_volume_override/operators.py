@@ -499,22 +499,26 @@ def _yt_idv_custom_params():
     return params
 
 
-def _empty_cube_bounding_box_local(obj):
-    """The 8 local-space corners `[-size, +size]^3` of a flagged Empty-Cube,
-    `size` being its `empty_display_size`.
+VOLUME_EMPTY_DISPLAY_TYPES = ("CUBE", "SPHERE")
 
-    Flagged objects must be Empty-Cubes: Empties never appear in a Cycles
+
+def _empty_cube_bounding_box_local(obj):
+    """The 8 local-space corners `[-size, +size]^3` of a flagged Empty-Cube or
+    Empty-Sphere, `size` being its `empty_display_size`.
+
+    Flagged objects must be such Empties: Empties never appear in a Cycles
     render, so they needn't be hidden for pass 1 (toggling `hide_render`
-    per frame invalidates Cycles' persistent-data cache). Raises otherwise.
+    per frame invalidates Cycles' persistent-data cache). A sphere stands in
+    for spherical data, its radius the data's outer radius. Raises otherwise.
     """
-    if obj.type != "EMPTY" or obj.empty_display_type != "CUBE":
+    if obj.type != "EMPTY" or obj.empty_display_type not in VOLUME_EMPTY_DISPLAY_TYPES:
         raise RuntimeError(
             f"{obj.name!r} is flagged as a volume override but is not an "
-            f"Empty-Cube object (type={obj.type!r}, empty_display_type="
+            f"Empty-Cube or Empty-Sphere (type={obj.type!r}, empty_display_type="
             f"{getattr(obj, 'empty_display_type', None)!r}) -- flagged "
-            "objects must be an Empty with Display Type 'Cube' (Object "
-            "Properties > Viewport Display > Cube, or Add > Empty > Cube). "
-            "See build_volume_params's own docstring for why."
+            "objects must be an Empty with Display Type 'Cube', or 'Sphere' "
+            "for spherical data (Object Properties > Viewport Display, or "
+            "Add > Empty). See build_volume_params's own docstring for why."
         )
     size = obj.empty_display_size
     return [

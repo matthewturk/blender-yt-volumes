@@ -26,6 +26,7 @@ DEFAULTS = {
         "sample": None,  # yt.load_sample name
         "path": None,  # yt.load path; exactly one of sample/path/scene
         "scene": None,  # a yt_idv scene saved with SceneGraph.save
+        "loader": None,  # "module:function" or "file.py:function" returning a yt dataset
         "series": None,  # glob or list of paths; render_series only
         "simulation": None,  # {parameter_file, code, ...}; render_series only
         "load_kwargs": {},
@@ -243,8 +244,8 @@ def validate(config, series=False):
     if series:
         if bool(data["series"]) == bool(data["simulation"]):
             raise ConfigError("set exactly one of data.series or data.simulation")
-        if data["sample"] is not None or data["path"] is not None or data["scene"] is not None:
-            raise ConfigError("data.sample/data.path/data.scene can't be combined with a series")
+        if any(data[key] is not None for key in ("sample", "path", "scene", "loader")):
+            raise ConfigError("data.sample/path/scene/loader can't be combined with a series")
         if data["simulation"] and not {"parameter_file", "code"} <= set(data["simulation"]):
             raise ConfigError("data.simulation needs parameter_file and code")
         if blender["frames"] is None:
@@ -253,8 +254,8 @@ def validate(config, series=False):
     else:
         if data["series"] or data["simulation"]:
             raise ConfigError("data.series/data.simulation are rendered with render_series")
-        if sum(data[key] is not None for key in ("sample", "path", "scene")) != 1:
-            raise ConfigError("set exactly one of data.sample, data.path or data.scene")
+        if sum(data[key] is not None for key in ("sample", "path", "scene", "loader")) != 1:
+            raise ConfigError("set exactly one of data.sample, data.path, data.scene or data.loader")
         if data["scene"] is not None and data["subset"] is not None:
             raise ConfigError("data.subset can't be applied to a saved data.scene")
     for key in ("file", "volume"):
@@ -292,6 +293,10 @@ def _resolve_paths(config, base_dir, only=None):
         if value and (only is None or f"{section}.{key}" in only):
             config[section][key] = _resolve(base_dir, value)
     data = config.get("data", {})
+    loader = data.get("loader")
+    if loader and ".py:" in loader and (only is None or "data.loader" in only):
+        path, _, name = loader.rpartition(":")
+        data["loader"] = f"{_resolve(base_dir, path)}:{name}"
     if data.get("series") and (only is None or "data.series" in only):
         series = data["series"]
         data["series"] = [_resolve(base_dir, p) for p in series] if isinstance(series, list) else _resolve(base_dir, series)
@@ -405,7 +410,9 @@ def _build_scene(ctx, data):
 
     from .yt_idv_renderer import scale_scene_to_subset
 
-    if data["path"]:
+    if data["loader"]:
+        ds = _resolve_loader(data["loader"])(**data["load_kwargs"])
+    elif data["path"]:
         ds = yt.load(data["path"], **data["load_kwargs"])
     else:
         ds = yt.load_sample(data["sample"], **data["load_kwargs"])
@@ -414,6 +421,23 @@ def _build_scene(ctx, data):
     if data["subset"] is not None and data["subset"].get("scale", True):
         scale_scene_to_subset(scene)
     return scene, ds
+
+
+def _resolve_loader(spec):
+    """`"module:function"` or `"path/to/file.py:function"` as a callable."""
+    import importlib
+    import importlib.util
+
+    target, sep, name = spec.rpartition(":")
+    if not sep or not target or not name:
+        raise ConfigError(f"data.loader {spec!r} is not 'module:function' or 'file.py:function'")
+    if target.endswith(".py"):
+        module_spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(target))[0], target)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+    else:
+        module = importlib.import_module(target)
+    return getattr(module, name)
 
 
 def _load_saved_scene(path):
@@ -529,7 +553,7 @@ def write_report(path, config, written):
     """JSON summary of a run: dataset, frames written, and the colormap range used."""
     data = config["data"]
     report = {
-        "dataset": data["path"] or data["sample"] or data["scene"],
+        "dataset": data["path"] or data["sample"] or data["scene"] or data["loader"],
         "frames": written,
         "cmap_range": _cmap_range(_active_scene),
     }

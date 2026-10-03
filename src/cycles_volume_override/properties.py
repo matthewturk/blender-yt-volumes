@@ -27,7 +27,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         description=(
             "Render this object's region via the external volume renderer "
             "instead, composited back in via depth-clipped Alpha Over. "
-            "Requires an Empty with Display Type 'Cube' -- see "
+            "Requires an Empty with Display Type 'Cube' ('Sphere' for "
+            "spherical data) -- see "
             "operators.build_volume_params's docstring for why (an Empty "
             "never renders in Cycles at all, so there's no need to hide it "
             "for pass 1, and a real mesh's own bound_box would double as "
@@ -290,10 +291,12 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         props = obj.volume_override
         layout.prop(props, "is_volume_override")
 
-        if props.is_volume_override and (obj.type != "EMPTY" or obj.empty_display_type != "CUBE"):
+        if props.is_volume_override and (
+            obj.type != "EMPTY" or obj.empty_display_type not in ("CUBE", "SPHERE")
+        ):
             box = layout.box()
             box.alert = True
-            box.label(text="Must be an Empty with Display Type 'Cube'", icon="ERROR")
+            box.label(text="Must be an Empty with Display Type 'Cube' or 'Sphere'", icon="ERROR")
             box.label(text=f"(this is a {obj.type.title()}) -- rendering will raise an error")
 
         col = layout.column()

@@ -61,7 +61,7 @@ def test_options_alone_are_enough_without_a_config_file(blend, monkeypatch):
 
 
 @pytest.mark.parametrize("text, message", [
-    ('[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one of data.sample, data.path or data.scene"),
+    ('[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one of data.sample, data.path, data.scene or data.loader"),
     ('[data]\nsample = "x"\npath = "y"\n[blender]\nfile = "scene.blend"\nvolume = "V"\n', "exactly one"),
     ('[data]\nsample = "x"\n[blender]\nfile = "missing.blend"\nvolume = "V"\n', "does not exist"),
     ('[data]\nsample = "x"\n[blender]\nfile = "scene.blend"\n', "blender.volume is required"),

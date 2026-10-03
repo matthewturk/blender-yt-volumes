@@ -227,6 +227,23 @@ unit from the target in model space, and maps world to model coordinates
 relative to the target in float64. `examples/make_flythrough_blend.py` turns
 `flythrough_densest.py`'s camera paths into either kind of scene (`--fly`).
 
+### Spherical data
+
+For a dataset in yt's spherical geometry, flag an **Empty with Display Type
+'Sphere'** instead of a cube. yt_idv draws spherical data in cartesian
+coordinates scaled by the domain's outer radius, so the Empty's radius is the
+data's outer edge (not necessarily the planet's surface), its local +z is the
+pole (theta = 0) and its local +x is longitude 0 (phi = 0). Keep its scale
+uniform. Zoom and subset scaling don't apply: yt_idv can't rescale spherical
+data.
+
+`examples/spherical_earth.toml` renders a synthetic mantle with plumes under
+Hawaii, Iceland and Reunion (`examples/spherical_earth.py`), inside a globe
+built by `examples/make_earth_blend.py`: an opaque core, a graticule and rings
+at the hotspots, all Cycles geometry the volume is depth-clipped against. It
+loads the dataset with `data.loader`, which names any `"module:function"` or
+`"file.py:function"` that returns a yt dataset.
+
 ### Animating a dataset series
 
 `render_series` drives `render_volume` over a time series. The config is the
