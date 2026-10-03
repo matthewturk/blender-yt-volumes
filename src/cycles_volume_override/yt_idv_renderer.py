@@ -624,14 +624,16 @@ def _box_corners(low, high):
 
 
 def _near_far_planes(position, margin=0.1, corners=_UNIT_CUBE_CORNERS):
-    """Near/far planes bracketing `corners` (default the unit cube), plus `margin`.
+    """Near/far planes bracketing the box around `corners` (default the unit
+    cube), plus `margin`; the near plane is floored inside the box.
 
     A loose near/far range squeezes the domain into a tiny window-depth band,
     making the external depth clip comparison flip randomly between pixels.
     """
     dists = np.linalg.norm(corners - position, axis=1)
+    gap = np.maximum(np.maximum(corners.min(axis=0) - position, position - corners.max(axis=0)), 0.0)
     return {
-        "near_plane": max(1e-5, float(dists.min()) - margin),
+        "near_plane": max(1e-5, float(np.linalg.norm(gap)) - margin),
         "far_plane": float(dists.max()) + margin,
     }
 

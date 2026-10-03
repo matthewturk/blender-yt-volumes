@@ -179,6 +179,17 @@ def test_near_far_planes_floors_near_plane_when_camera_is_inside_the_cube():
     assert planes["near_plane"] == pytest.approx(1e-5)
 
 
+def test_near_far_planes_floors_near_plane_inside_the_cube_with_default_margin():
+    # Regression: the nearest corner is ~0.87 away, which used to clip everything closer.
+    planes = yir._near_far_planes(np.array([0.5, 0.5, 0.5]))
+    assert planes["near_plane"] == pytest.approx(1e-5)
+
+
+def test_near_far_planes_measure_to_the_nearest_face_not_corner():
+    planes = yir._near_far_planes(np.array([0.5, 0.5, 3.0]), margin=0.1)
+    assert planes["near_plane"] == pytest.approx(1.9)
+
+
 def test_near_far_planes_ratio_does_not_blow_up_with_camera_distance():
     # Regression: the old formula had a fixed 400:1 far/near ratio at any distance.
     position = np.array([100.0, 100.0, 100.0])
@@ -320,7 +331,8 @@ def test_near_far_planes_bracket_model_bounds_when_given():
     position = unit["position"].astype(np.float64)
     corners = yir._box_corners(np.zeros(3), [1.0, 0.5, 0.25])
     dists = np.linalg.norm(corners - position, axis=1)
-    assert bounded["near_plane"] == pytest.approx(dists.min() - 0.1)
+    gap = np.maximum(np.maximum(-position, position - [1.0, 0.5, 0.25]), 0.0)
+    assert bounded["near_plane"] == pytest.approx(np.linalg.norm(gap) - 0.1)
     assert bounded["far_plane"] == pytest.approx(dists.max() + 0.1)
     assert bounded["near_plane"] > unit["near_plane"]  # z extent is only 0.25
     np.testing.assert_allclose(bounded["position"], unit["position"])  # registration unchanged
