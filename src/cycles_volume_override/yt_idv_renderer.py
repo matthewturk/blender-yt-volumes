@@ -7,7 +7,9 @@ Registration: the flagged object's `bounding_box_local`/`matrix_world` maps
 yt_idv's unitary `[0, 1]^3` domain into Blender world space (unitary `u` ->
 object-local `bbox_min + u*bbox_extent` -> `matrix_world`). The same mapping
 positions the yt_idv camera and converts Cycles' Z-buffer into yt_idv window
-depth for the external depth clip.
+depth for the external depth clip. A subset scene rescaled by
+`scale_scene_to_subset` fills that cube along its longest axis, starting at
+the origin corner; shorter axes leave empty space at their high end.
 
 Volume source: the `IsolatedGalaxy` sample by default.
 `custom_params["yt_idv_volume_provider"]` (`"module.submodule:function"`)
@@ -38,6 +40,7 @@ yt_idv gotchas handled here or in the required yt_idv patches:
     `eglMakeCurrent` fail (`EGL_BAD_ACCESS`); `operators` forces the CPU
     compositor during yt_idv renders.
   - The external depth clip requires yt-project/yt_idv#247.
+  - `scale_scene_to_subset` requires yt-project/yt_idv#276.
 
 `yt`/`yt_idv` are imported lazily so the add-on registers without them.
 """
@@ -85,6 +88,8 @@ MIP_ALPHA_COLORMAP = "dusk"
 MIP_ALPHA_MAX = 0.7  # < 1.0 so objects behind the densest material still show through
 MIP_ALPHA_RAMP_POWER = 0.15  # < 1 keeps more of the faint halo visible
 MIP_ALPHA_NBINS = 256
+
+SUBSET_BOUNDS_TOLERANCE = 1e-4  # model-space slack when checking scaled bounds
 
 _dataset_cache = {}  # dataset name -> (ds, data_source)
 _render_context_cache = {}  # (backend, width, height) -> rc
@@ -186,6 +191,65 @@ def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
     return VolumeSetupResult(scene=scene, ds=ds, changed=True)
 
 
+def _block_collections(scene):
+    """The `BlockCollection`s behind the scene's `block_rendering` components."""
+    return [c.data for c in scene.components if getattr(c, "name", None) == "block_rendering"]
+
+
+def _vertex_attribute(collection, name):
+    for attribute in collection.vertex_array.attributes:
+        if attribute.name == name:
+            return np.asarray(attribute.data, dtype=np.float64)[:, :3]
+    raise KeyError(name)
+
+
+def _collection_bounds(collection):
+    low = _vertex_attribute(collection, "in_left_edge").min(axis=0)
+    high = _vertex_attribute(collection, "in_right_edge").max(axis=0)
+    return low, high
+
+
+def _scene_model_bounds(scene):
+    """`(low, high)` (3,) arrays bounding the scene's blocks in yt_idv model
+    space, or None if the scene has no blocks.
+    """
+    bounds = [_collection_bounds(c) for c in _block_collections(scene)]
+    if not bounds:
+        return None
+    return np.min([b[0] for b in bounds], axis=0), np.max([b[1] for b in bounds], axis=0)
+
+
+def _fills_unit_cube(low, high, tol=SUBSET_BOUNDS_TOLERANCE):
+    """True if blocks start at the origin and their longest axis spans [0, 1]."""
+    return bool(np.all(np.abs(low) <= tol) and abs(float((high - low).max()) - 1.0) <= tol)
+
+
+def scale_scene_to_subset(scene):
+    """Rescale a subset scene so its longest axis spans yt_idv's [0, 1] model
+    space, starting at the origin. Scenes that already fill it are left alone.
+    """
+    for collection in _block_collections(scene):
+        if not collection.has_trait("applied_scale_ratio"):
+            raise RuntimeError(
+                "scale_scene_to_subset needs a yt_idv with runtime block "
+                "scaling (yt-project/yt_idv#276); this install doesn't have it."
+            )
+        low, high = _collection_bounds(collection)
+        if collection.scale or _fills_unit_cube(low, high):
+            continue
+        collection.scale = True
+        low, high = _collection_bounds(collection)
+        if not _fills_unit_cube(low, high):
+            collection.scale = False
+            # yt_idv computes the scale in code_length but applies it to
+            # unitary vertices, so this fails when code_length != domain width.
+            raise RuntimeError(
+                f"yt_idv block scaling produced model bounds {low} .. {high} "
+                "instead of spanning [0, 1]; this dataset's code_length is "
+                "probably not its domain width. Render the subset unscaled."
+            )
+
+
 def _get_volume_scene(request: RenderRequest, render_size: int):
     """Call this object's volume provider and cache its scene.
 
@@ -220,7 +284,7 @@ def _get_volume_scene(request: RenderRequest, render_size: int):
     return rc, result.scene, result.ds, result.changed
 
 
-def _render_signature(request: RenderRequest, render_size: int) -> dict:
+def _render_signature(request: RenderRequest, render_size: int, render_mode: str = "") -> dict:
     """Everything besides the volume data that affects the image. The depth
     buffer is hashed by content, since occluders can move under a fixed camera.
     """
@@ -230,14 +294,17 @@ def _render_signature(request: RenderRequest, render_size: int) -> dict:
         "depth_hash": hashlib.sha256(np.ascontiguousarray(request.depth.data).tobytes()).hexdigest(),
         "render_size": render_size,
         "params_hash": request.volume.params_version.hash,
+        "render_mode": render_mode,
     }
 
 
-def _render_signature_changed(dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool) -> bool:
+def _render_signature_changed(
+    dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool, render_mode: str = ""
+) -> bool:
     """True if the provider reported a change or the render signature differs
     from this object's last render.
     """
-    signature = _render_signature(request, render_size)
+    signature = _render_signature(request, render_size, render_mode)
     version = change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature)
     return volume_changed or version.changed
 
@@ -483,9 +550,11 @@ def _bbox_local_min_extent(bounding_box_local):
     return local_min, np.where(extent == 0.0, 1.0, extent)
 
 
-def _registered_camera_kwargs(camera, volume, ds, width, height):
+def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=None):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
     object bounding-box registration into unitary space.
+
+    `model_bounds` (`(low, high)`, default the unit cube) sets the near/far planes.
     """
     if camera.projection != "PERSP":
         raise NotImplementedError(
@@ -532,6 +601,7 @@ def _registered_camera_kwargs(camera, volume, ds, width, height):
 
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, aspect_ratio)
+    corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
 
     return {
         "position": position.astype("f4"),
@@ -539,7 +609,7 @@ def _registered_camera_kwargs(camera, volume, ds, width, height):
         "up": up_unitary.astype("f4"),
         "fov": fov_deg,
         "aspect_ratio": aspect_ratio,
-        **_near_far_planes(position),
+        **_near_far_planes(position, corners=corners),
     }
 
 
@@ -549,13 +619,18 @@ _UNIT_CUBE_CORNERS = np.array(
 )
 
 
-def _near_far_planes(position, margin=0.1):
-    """Near/far planes bracketing the unitary cube's corners, plus `margin`.
+def _box_corners(low, high):
+    low, high = np.asarray(low, dtype=np.float64), np.asarray(high, dtype=np.float64)
+    return low + _UNIT_CUBE_CORNERS * (high - low)
+
+
+def _near_far_planes(position, margin=0.1, corners=_UNIT_CUBE_CORNERS):
+    """Near/far planes bracketing `corners` (default the unit cube), plus `margin`.
 
     A loose near/far range squeezes the domain into a tiny window-depth band,
     making the external depth clip comparison flip randomly between pixels.
     """
-    dists = np.linalg.norm(_UNIT_CUBE_CORNERS - position, axis=1)
+    dists = np.linalg.norm(corners - position, axis=1)
     return {
         "near_plane": max(1e-5, float(dists.min()) - margin),
         "far_plane": float(dists.max()) + margin,
@@ -678,7 +753,9 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     dataset_id = request.volume.dataset.dataset_id
 
     rc, scene, ds, volume_changed = _get_volume_scene(request, render_size)
-    needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed)
+    # The mode isn't in custom_params, so switching modes must be tracked here.
+    render_mode = getattr(configure_component, "__qualname__", repr(configure_component))
+    needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed, render_mode)
     if not needs_render:
         cached_result = _render_result_cache.get(dataset_id)
         if cached_result is not None:
@@ -693,11 +770,11 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     for component in scene.components:
         configure_component(component, custom_params)
     scene.camera.update(
-        **_registered_camera_kwargs(request.camera, request.volume, ds, render_size, render_size)
+        **_registered_camera_kwargs(
+            request.camera, request.volume, ds, render_size, render_size,
+            model_bounds=_scene_model_bounds(scene),
+        )
     )
-    # TrackballCamera._compute_matrices is a no-op, so update() alone leaves
-    # projection_matrix stale.
-    scene.camera._update_matrices()
 
     window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera)
     set_external_depth_clip(scene, _pad_to_square(window_depth, render_size))

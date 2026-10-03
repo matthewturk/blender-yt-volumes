@@ -1,0 +1,41 @@
+# python -m cycles_volume_override.render_series examples/render_series.toml [--dry-run]
+# Same keys as render_volume.toml, except [data] names a series and [time]
+# maps frames to its outputs. Each run of frames showing one output renders
+# in its own process.
+
+[data]
+series = "/data/yt_sample_data/enzo_tiny_cosmology/DD????/DD????"  # glob, or a list of paths
+# simulation = { parameter_file = "/data/yt_sample_data/enzo_tiny_cosmology/32Mpc_32.enzo", code = "Enzo" }
+#   optional: find_outputs = true, time_series = { initial_redshift = 5.0 }  (passed to get_time_series)
+field = "density"
+no_ghost = true
+# [data.subset] works as in render_volume.toml, evaluated per output.
+
+[time]
+by = "time"          # "time": frames track simulation time; "index": every output gets equal screen time
+units = "Gyr"        # units for `keys` and the printed plan
+pick = "nearest"     # or "previous": the last output at or before each frame's time
+# Stretching: [frame, time] keyframes, piecewise linear and clamped. This sweeps
+# 0.5-3 Gyr over frames 1-150, slows to 3-6 Gyr by 220, then holds to 250.
+# keys = [[1, 0.5], [150, 3.0], [220, 6.0], [250, 6.0]]
+# Default: frames span the first to last output.
+
+[blender]
+file = "../test-cycles-override.blend"
+volume = "Volume 1"
+frames = "1-250"     # required for a series
+output = "../renders/series/frame_"
+resolution = [1920, 1080]
+samples = 32
+device = "OPTIX"
+
+[render]
+mode = "YT_IDV_MAX_INTENSITY"
+colormap = "arbre"
+# "first_last": auto-scale one probe frame of the first and last output, then
+# interpolate min/max between them over the frames. Also: "first" (pin the
+# first segment's range), [min, max], or a curve [[frame, min, max], ...].
+cmap_range = "first_last"
+# yt_idv colormaps are log-scaled by default, so interpolate the range in log
+# space; "linear" keeps the min near the first output's for most of the run.
+cmap_interpolation = "log"

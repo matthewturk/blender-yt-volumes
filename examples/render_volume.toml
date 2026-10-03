@@ -1,0 +1,43 @@
+# python -m cycles_volume_override.render_volume examples/render_volume.toml
+# Relative paths resolve against this file's directory.
+
+[data]
+sample = "HiresIsolatedGalaxy"  # yt.load_sample name...
+# path = "/data/DD0046/DD0046"  # ...or a dataset to yt.load (set exactly one)
+load_kwargs = {}                 # extra keyword arguments to yt.load / yt.load_sample
+field = "density"                # or ["gas", "density"]
+no_ghost = true                  # false = ghost zones: slower build, better block edges
+
+# Omit this table to render the whole domain.
+[data.subset]
+kind = "region"       # "region" (cube around center), "sphere", or "box"
+center = "max"        # "max" (peak of `field`), "c" (domain center), or [x, y, z] in `units`
+half_width = 50       # region; a bare number is in `units`, or use [50, "kpc"]
+# radius = 50         # sphere
+# left_edge = [0.4, 0.4, 0.4]   # box
+# right_edge = [0.6, 0.6, 0.6]
+units = "kpc"
+scale = true          # stretch the subset to fill the volume box (needs yt_idv#276)
+
+[blender]
+file = "../test-cycles-override.blend"
+volume = "Volume 1"   # an Empty with Display Type "Cube"; its box maps to yt's unitary cube
+# camera = "Camera"   # default: the scene's camera
+frames = "1-1"        # N, "N-M", or [N, M]; default: the .blend's frame range
+output = "../renders/frame_"   # PNG path prefix; the frame number is appended
+resolution = [1920, 1080]      # default: the .blend's
+samples = 32                   # Cycles samples; default: the .blend's
+device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU
+# work_dir = "/tmp/my_work"    # default: a fresh temp directory per run
+
+[render]
+mode = "YT_IDV_MAX_INTENSITY_ALPHA"  # or YT_IDV_MAX_INTENSITY, _PROJECTION, _TRANSFER_FUNCTION, _THRESHOLD_FOG
+colormap = "arbre"
+# cmap_range = [4.5e-06, 0.78]  # fix the colormap range; default: auto-scale on the first frame
+# cmap_range = [[1, 1e-5, 0.4], [250, 1e-3, 0.8]]  # or a [frame, min, max] curve
+# cmap_interpolation = "log"    # between curve keys: "linear" (default) or "log"
+reset_cmap_each_frame = false
+
+# Any Preferences > yt_idv setting.
+[render.yt_idv]
+mip_alpha_max = 0.7

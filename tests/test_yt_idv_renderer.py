@@ -187,6 +187,142 @@ def test_near_far_planes_ratio_does_not_blow_up_with_camera_distance():
     assert ratio < 2.0
 
 
+class _FakeBlockCollection:
+    """Stand-in for a yt_idv BlockCollection with #276's runtime `scale` toggle.
+
+    `unit_mismatch` multiplies the offset/ratio, as yt_idv does when
+    code_length != domain width.
+    """
+
+    def __init__(self, left_edges, right_edges, has_scaling=True, unit_mismatch=1.0):
+        self._has_scaling = has_scaling
+        self._unit_mismatch = unit_mismatch
+        self._scale = False
+        self._applied = (np.zeros(3), 1.0)
+        self.vertex_array = types.SimpleNamespace(attributes=[
+            types.SimpleNamespace(name="in_left_edge", data=np.asarray(left_edges, dtype="f4")),
+            types.SimpleNamespace(name="in_right_edge", data=np.asarray(right_edges, dtype="f4")),
+        ])
+
+    def has_trait(self, name):
+        return self._has_scaling and name == "applied_scale_ratio"
+
+    @property
+    def scale(self):
+        return self._scale
+
+    @scale.setter
+    def scale(self, value):
+        if value == self._scale:
+            return
+        self._scale = value
+        le, re = (a.data.astype(np.float64) for a in self.vertex_array.attributes)
+        if value:
+            offset = le.min(axis=0) * self._unit_mismatch
+            ratio = (re.max(axis=0) - le.min(axis=0)).max() * self._unit_mismatch
+            self._applied = (offset, ratio)
+            transform = lambda v: (v - offset) / ratio
+        else:
+            offset, ratio = self._applied
+            transform = lambda v: v * ratio + offset
+        for attribute in self.vertex_array.attributes:
+            attribute.data = transform(attribute.data.astype(np.float64)).astype("f4")
+
+
+def _block_scene(*collections):
+    components = [types.SimpleNamespace(name="block_rendering", data=c) for c in collections]
+    components.append(types.SimpleNamespace(name="block_outline", data=None))  # ignored
+    return types.SimpleNamespace(components=components)
+
+
+def _subset_collection(**kwargs):
+    # Two blocks covering x in [0.4, 0.5], y in [0.45, 0.5], z in [0.45, 0.475] (unitary).
+    return _FakeBlockCollection(
+        left_edges=[[0.4, 0.45, 0.45], [0.45, 0.45, 0.45]],
+        right_edges=[[0.45, 0.5, 0.475], [0.5, 0.5, 0.475]],
+        **kwargs,
+    )
+
+
+def _full_domain_collection(**kwargs):
+    return _FakeBlockCollection(
+        left_edges=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        right_edges=[[0.5, 1.0, 1.0], [1.0, 1.0, 1.0]],
+        **kwargs,
+    )
+
+
+def test_scene_model_bounds_spans_all_block_collections():
+    scene = _block_scene(_subset_collection(), _full_domain_collection())
+    low, high = yir._scene_model_bounds(scene)
+    np.testing.assert_allclose(low, [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(high, [1.0, 1.0, 1.0])
+
+
+def test_scene_model_bounds_is_none_without_blocks():
+    assert yir._scene_model_bounds(types.SimpleNamespace(components=[])) is None
+
+
+def test_scale_scene_to_subset_fills_unit_cube_along_longest_axis():
+    collection = _subset_collection()
+    yir.scale_scene_to_subset(_block_scene(collection))
+    assert collection.scale is True
+    low, high = yir._scene_model_bounds(_block_scene(collection))
+    np.testing.assert_allclose(low, [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(high, [1.0, 0.5, 0.25], atol=1e-6)  # aspect preserved
+
+
+def test_scale_scene_to_subset_leaves_full_domain_unscaled():
+    collection = _full_domain_collection(unit_mismatch=1e-22)  # would break if scaled
+    yir.scale_scene_to_subset(_block_scene(collection))
+    assert collection.scale is False
+
+
+def test_scale_scene_to_subset_is_idempotent():
+    collection = _subset_collection()
+    scene = _block_scene(collection)
+    yir.scale_scene_to_subset(scene)
+    yir.scale_scene_to_subset(scene)
+    np.testing.assert_allclose(yir._scene_model_bounds(scene)[1], [1.0, 0.5, 0.25], atol=1e-6)
+
+
+def test_scale_scene_to_subset_reverts_and_raises_on_unit_mismatch():
+    collection = _subset_collection(unit_mismatch=2.0)
+    with pytest.raises(RuntimeError, match="code_length"):
+        yir.scale_scene_to_subset(_block_scene(collection))
+    assert collection.scale is False
+    low, _ = yir._scene_model_bounds(_block_scene(collection))
+    np.testing.assert_allclose(low, [0.4, 0.45, 0.45], atol=1e-6)
+
+
+def test_scale_scene_to_subset_raises_without_yt_idv_scaling_support():
+    with pytest.raises(RuntimeError, match="#276"):
+        yir.scale_scene_to_subset(_block_scene(_subset_collection(has_scaling=False)))
+
+
+def test_near_far_planes_bracket_model_bounds_when_given():
+    camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]])
+    volume = _identity_volume()
+    unit = yir._registered_camera_kwargs(camera, volume, _FakeDataset(), 100, 100)
+    bounded = yir._registered_camera_kwargs(
+        camera, volume, _FakeDataset(), 100, 100,
+        model_bounds=(np.zeros(3), np.array([1.0, 0.5, 0.25])),
+    )
+    position = unit["position"].astype(np.float64)
+    corners = yir._box_corners(np.zeros(3), [1.0, 0.5, 0.25])
+    dists = np.linalg.norm(corners - position, axis=1)
+    assert bounded["near_plane"] == pytest.approx(dists.min() - 0.1)
+    assert bounded["far_plane"] == pytest.approx(dists.max() + 0.1)
+    assert bounded["near_plane"] > unit["near_plane"]  # z extent is only 0.25
+    np.testing.assert_allclose(bounded["position"], unit["position"])  # registration unchanged
+
+
+def test_near_far_planes_for_full_domain_bounds_match_unit_cube():
+    position = np.array([2.0, 2.0, 2.0])
+    corners = yir._box_corners(np.zeros(3), np.ones(3))
+    assert yir._near_far_planes(position, corners=corners) == yir._near_far_planes(position)
+
+
 def test_domain_array_unitary_converts_real_ytarray_like_objects():
     value = np.asarray([4.0, 4.0, 4.0]).view(_FakeYTArray)
     got = yir._domain_array_unitary(value)
@@ -400,16 +536,19 @@ def test_render_signature_changed_forced_true_when_volume_provider_reports_chang
     assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=True) is True
 
 
+def test_render_signature_changed_when_render_mode_changes(_clean_yir_state):
+    request = _request_with()
+    yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity")
+    assert yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity") is False
+    assert yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity_alpha") is True
+
+
 class _FakeYtIdvCamera:
     def __init__(self):
         self.update_calls = []
-        self.update_matrices_calls = 0
 
     def update(self, **kwargs):
         self.update_calls.append(kwargs)
-
-    def _update_matrices(self):
-        self.update_matrices_calls += 1
 
 
 class _FakeYtIdvScene:

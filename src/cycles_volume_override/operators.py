@@ -254,9 +254,7 @@ RENDERER_MODES = {
 
 # Modes that create their own offscreen EGL context (see compositor_device in
 # render_current_frame).
-YT_IDV_RENDERER_MODES = {
-    "YT_IDV_MAX_INTENSITY", "YT_IDV_TRANSFER_FUNCTION", "YT_IDV_PROJECTION",
-}
+YT_IDV_RENDERER_MODES = {mode for mode in RENDERER_MODES if mode.startswith("YT_IDV_")}
 
 
 class VolumeOverridePreferences(bpy.types.AddonPreferences):

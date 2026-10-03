@@ -177,17 +177,76 @@ group -- see "Development & testing" below; it's no longer a separate
 Python/venv story from your real Blender's install, just a separate
 `pip`/`uv` invocation.
 
-**If you want the real external depth clip to actually do anything, plain
-`main` isn't enough either -- see "External depth clip" below.** The
-`imgui-optional` fix above only makes `yt_idv` *installable* on Python
-3.13+; the depth-clip feature this add-on's whole Z-buffer-wiring story
-depends on (see "yt_idv integration" above) is a SEPARATE, still-unmerged
-change (yt-project/yt_idv#247). Installing plain `main` gets you a yt_idv
-that imports and renders fine but silently ignores every depth clip call --
-confirmed directly (`scripts/yt_idv_exploration/blender_scene/
-verify_overlap.py`: a 0.0% measured effect in every renderer mode, not a
-crash, not a warning). Use the checkout-plus-merge recipe in
-pyproject.toml's `ytidv` group instead until #247 is rebased and merged.
+**The external depth clip needs yt_idv `main` or newer** (yt-project/yt_idv#247,
+now merged); older releases import and render fine but have no depth clip, and
+`set_external_depth_clip` raises rather than silently doing nothing. Subset
+scaling additionally needs yt-project/yt_idv#276 -- see pyproject.toml's
+`ytidv` group for the checkout recipe.
+
+### Rendering from a config file
+
+`render_volume` renders a yt dataset into an existing `.blend` without a
+custom harness: one TOML file names the dataset (plus optional subset), the
+`.blend` file, the Empty-Cube object to replace, and the look.
+
+```
+PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume examples/render_volume.toml
+PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume \
+    --sample IsolatedGalaxy --blend scene.blend --volume "Volume 1" --frames 1-10 \
+    --set data.subset.kind='"sphere"' --set data.subset.radius='[20, "kpc"]'
+```
+
+`examples/render_volume.toml` documents every key. Options override the
+file, `--set section.key=value` reaches any key (values parse as TOML), and
+`--check` prints the merged config without rendering. Each run gets its own
+temporary `work_dir` unless one is set, so concurrent runs don't collide.
+
+### Animating a dataset series
+
+`render_series` drives `render_volume` over a time series. The config is the
+same, except `[data]` names a `series` (glob or list of paths) or a
+`simulation` (`yt.load_simulation` parameter file and code), and `[time]`
+maps frames to outputs: by simulation time or by output index, with optional
+`[frame, time]` keyframes to stretch or hold. `examples/render_series.toml`
+has the details.
+
+```
+PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_series examples/render_series.toml --dry-run
+```
+
+Consecutive frames that show the same output form a segment, and each segment
+runs as its own `render_volume` process, because yt_idv never frees GPU
+textures within a process. Each segment's resolved config is saved under
+`<output dir>/.render_series/`, so one segment can be rerun by hand;
+`--skip-existing` resumes an interrupted run. `cmap_range = "first_last"`
+auto-scales one probe frame each of the first and last output and
+interpolates the colormap range between them over the frames, so colors
+change smoothly as structure forms instead of pumping between outputs or
+saturating against the first output's range (`"first"` pins that, and a
+`[[frame, min, max], ...]` curve sets it by hand). yt_idv colormaps are
+log-scaled by default, so set `cmap_interpolation = "log"`; linear
+interpolation keeps the min near the first output's for most of the run. A
+resumed run reuses the saved range. A `[data.subset]` is re-evaluated per output (a `"max"`
+center can jump between outputs), and subset scaling follows each output's
+blocks, so the stretch can change between segments.
+
+### Rendering a subset of a dataset
+
+A volume provider can pass any yt data object to `add_scene` -- `ds.region`,
+`ds.sphere`, `ds.cut_region` -- and the Blender volume box still maps to
+yt_idv's unitary `[0, 1]^3`. Unscaled, the subset sits at its true position and
+size inside that cube, so it looks small. `yt_idv_renderer.
+scale_scene_to_subset(scene)` (needs #276) stretches the scene so the
+subset's longest axis fills the cube, starting at its origin corner; shorter
+axes leave empty space at their high end. It leaves full-domain scenes alone,
+and it raises (after undoing the stretch) if yt_idv's scaling doesn't land on
+`[0, 1]`, which happens for datasets whose `code_length` isn't the domain
+width. `scene_setup.py`'s `SUBSET_HALF_WIDTH_KPC`/`SCALE_SUBSET` show both.
+
+yt_idv scales to the grid blocks the subset touches, not to the data object's
+own edges, so the visible region can be noticeably smaller than the box.
+Projection values also grow by the stretch factor, so fixed colormap ranges
+from an unscaled run don't carry over.
 
 ### Six real yt_idv bugs found while wiring this up
 
@@ -276,32 +335,10 @@ produce. Full story, including bug 4 above, in `yt_idv_renderer.py`'s
 "External depth clip" docstring section and `scripts/yt_idv_exploration/
 explore_external_depth_clip.py`.
 
-**Status upstream: this is yt-project/yt_idv#247 ("Fixing for external
-usage"), open, not yet merged into `main` or released.** It's NOT on PyPI
-and NOT on `main`. #247 was branched before `main` grew `rendered_image_
-plane`/`RenderedImagePlane`, so it doesn't merge onto current `main`
-cleanly on its own (2 conflicts -- an import-list merge in `blocks.py`,
-and an EGL alpha-bits fix `main` has since ALSO picked up independently --
-both trivially additive). The local `yt_idv/` checkout's `external-usage`
-branch is kept rebased onto current `main` with those conflicts resolved
-(most recently 2026-09-19, past `main`'s own `imgui-optional` fix and its
-later full move to `pyproject.toml`) -- `scripts/yt_idv_exploration/
-yt_idv_external_depth_clip.patch` is the diff of that branch against
-`main`, regenerated after each rebase; see pyproject.toml's `ytidv` group
-for the exact recipe. **This isn't a hypothetical caveat**: installing plain `main` yt_idv (which
-DOES have the `imgui-optional` fix and imports/renders just fine) makes
-`yt_idv_renderer.set_external_depth_clip` silently do nothing on every
-call -- no error, no warning, a perfectly plausible-looking render either
-way -- because no component has the `use_external_depth_clip` attribute at
-all. Caught directly, not suspected, by `scripts/yt_idv_exploration/
-blender_scene/verify_overlap.py`: diffing a real clipped render against a
-real unclipped one against plain `main` measured a flat 0.0% difference in
-EVERY renderer mode (not just MIP, where a small/no difference can be
-legitimate -- see that script's own docstring). `set_external_depth_clip`
-now raises instead of silently no-opping when this happens (see its own
-docstring) specifically so this can't go unnoticed again the way it did
-here. See "The real end-to-end demo" below for what it looks like once the
-clip is actually active.
+**Status upstream:** this is yt-project/yt_idv#247 ("Fixing for external
+usage"), now merged into `main`. Without it, `set_external_depth_clip` raises
+rather than silently doing nothing (no component would have
+`use_external_depth_clip`, and every render would still look plausible).
 
 ### Threshold fog transfer function -- a fourth render mode, `YT_IDV_THRESHOLD_FOG`
 

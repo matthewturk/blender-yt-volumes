@@ -89,7 +89,7 @@ scene.cycles.denoiser = "OPTIX"  # GPU denoiser instead of the OpenImageDenoise 
 if hasattr(scene.cycles, "denoising_use_gpu"):
     scene.cycles.denoising_use_gpu = True
 
-FRAME_PREFIX = "frame2_"  # output filename prefix
+FRAME_PREFIX = "frame5_"  # output filename prefix
 
 # render_session applies the add-on's scene settings once for the whole run;
 # without it they are forced and restored every frame, which invalidates

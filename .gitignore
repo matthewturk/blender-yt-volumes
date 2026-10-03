@@ -14,3 +14,6 @@ scripts/yt_idv_exploration/blender_scene/_headless_render_out/
 # separate upstream project, not vendored code (see README "yt_idv
 # integration" and pyproject.toml's `ytidv` group).
 /yt_idv/
+
+# render_volume / render_series output
+/renders/

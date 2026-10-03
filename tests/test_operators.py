@@ -1035,3 +1035,11 @@ def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_
     assert obj.volume_override.opacity == pytest.approx(1.0)
     clean_scene_with_props.frame_set(11)  # midpoint, linear interpolation
     assert obj.volume_override.opacity == pytest.approx(0.5, abs=1e-3)
+
+
+def test_every_yt_idv_renderer_mode_gets_the_cpu_compositor():
+    # A yt_idv mode missing from this set leaves the GPU compositor on, and
+    # yt_idv's eglMakeCurrent then fails with EGL_BAD_ACCESS.
+    yt_idv_modes = {m for m, fn in operators.RENDERER_MODES.items() if fn.__module__.endswith("yt_idv_renderer")}
+    assert yt_idv_modes == operators.YT_IDV_RENDERER_MODES
+    assert {"YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_THRESHOLD_FOG"} <= yt_idv_modes

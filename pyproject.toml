@@ -25,57 +25,17 @@ dev = [
     "openexr>=3.4.13",
 ]
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
-# real yt_idv, installable alongside `bpy` in THIS SAME Python-3.13 venv now
-# (confirmed empirically: `import bpy; import yt_idv` in one interpreter).
-# Needs a LOCAL, patched yt_idv checkout, not a plain `pip install yt_idv`/
-# git-main install -- see below for why, and README "yt_idv integration"
-# for the full story and how this replaces the old two-venv/subprocess-
-# bridge setup:
+# real yt_idv, installed alongside `bpy` in this same Python-3.13 venv from a
+# local checkout at ./yt_idv (gitignored; resolved via `[tool.uv.sources]`).
+# yt_idv `main` has everything the renderer needs (#268 imgui-optional, #247
+# external depth clip); subset scaling (`scale_scene_to_subset`) additionally
+# needs yt-project/yt_idv#276 until it merges:
 #
-# 1. Python-3.13 install was impossible at all until 2026-09-15
-#    (yt-project/yt_idv#268, "imgui-optional", merged to `main`): PyPI's
-#    release (0.5.4) lists `imgui` as an unconditional install_requires,
-#    which has no cp313 wheel and fails to build from source against 3.13's
-#    C API. Fixed by moving imgui to an opt-in `gui` extra (only needed for
-#    the interactive pyglet+imgui control panel, never for this add-on's
-#    own `egl`-backend, no-GUI path).
-# 2. yt_idv_renderer.py's whole depth-clip feature (the actual point of
-#    wiring Cycles' Z-buffer through at all -- see its module docstring)
-#    needs `BlockRendering.use_external_depth_clip`/`external_depth_texture`
-#    plus the matching shader/uniform changes -- these do NOT exist on
-#    `main` at all. They're yt-project/yt_idv#247 ("Fixing for external
-#    usage"), open, authored by this repo's own author, branch
-#    `external-usage` -- confirmed via `verify_overlap.py`: installing
-#    plain `main` makes `set_external_depth_clip` silently a no-op (no
-#    component has the attribute, so its own `hasattr` guard skips every
-#    one) -- the clip measurably does NOTHING, in EVERY renderer mode, not
-#    just MIP, until this PR's changes are present.
+#     git clone https://github.com/yt-project/yt_idv.git yt_idv
+#     cd yt_idv && git fetch origin pull/276/head:scaling && git switch scaling
 #
-# #247's own branch (`external-usage`, on yt-project/yt_idv directly --
-# this repo's author is a yt_idv maintainer, so it's not a fork PR) is kept
-# rebased onto current `main` by hand, since #247 predates both `main`'s
-# `rendered_image_plane`/`RenderedImagePlane` and its EGL alpha-bits fix,
-# so a straight merge no longer applies cleanly. As of the last rebase,
-# `external-usage` IS current `main` plus #247 plus this add-on's own new
-# render-mode shaders (apply_colormap_alpha, passthrough_alpha) -- so a
-# first-time install is just:
-#
-#     git clone https://github.com/yt-project/yt_idv.git ../yt_idv   # from repo root: ./yt_idv
-#     cd ../yt_idv && git checkout external-usage
-#
-# (`/yt_idv/` is gitignored here -- it's a real separate upstream checkout,
-# not vendored code, resolved via `[tool.uv.sources]` below.) `scripts/
-# yt_idv_exploration/yt_idv_external_depth_clip.patch` is this branch's
-# diff against `main` (`git diff main external-usage`), regenerated after
-# each rebase -- kept for reference, not needed for the install above.
-#
-# MAINTAINING this once `main` moves further: `git fetch origin main &&
-# git rebase origin/main` from inside `../yt_idv`, resolve whatever
-# conflicts come up (small and mechanical so far -- import lists, lines
-# `main` has since also touched independently), regenerate the patch file
-# above, and force-push `external-usage`. Once #247 actually merges (or is
-# reopened against current `main`), this whole group can go back to a
-# plain git/PyPI dependency.
+# The install is not editable: after changing the checkout, run
+# `uv sync --group ytidv --reinstall-package yt_idv`.
 ytidv = [
     "yt_idv",
     # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
