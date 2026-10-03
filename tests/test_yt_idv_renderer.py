@@ -188,24 +188,33 @@ def test_near_far_planes_ratio_does_not_blow_up_with_camera_distance():
 
 
 class _FakeBlockCollection:
-    """Stand-in for a yt_idv BlockCollection with #276's runtime `scale` toggle.
-
-    `unit_mismatch` multiplies the offset/ratio, as yt_idv does when
-    code_length != domain width.
+    """Stand-in for a yt_idv BlockCollection with #287's scale transform:
+    `scale = True` maps the data source's bbox onto [0, 1] along its longest axis.
     """
 
-    def __init__(self, left_edges, right_edges, has_scaling=True, unit_mismatch=1.0):
-        self._has_scaling = has_scaling
-        self._unit_mismatch = unit_mismatch
+    def __init__(self, left_edges, right_edges, bbox=None, has_scaling=True):
+        self._unscaled = (np.asarray(left_edges, dtype="f8"), np.asarray(right_edges, dtype="f8"))
+        self.bbox = bbox
         self._scale = False
-        self._applied = (np.zeros(3), 1.0)
+        self.applied_scale_offset = (0.0, 0.0, 0.0)
+        self.applied_scale_ratio = 1.0
+        if has_scaling:
+            self.apply_scale = self._apply_scale
         self.vertex_array = types.SimpleNamespace(attributes=[
-            types.SimpleNamespace(name="in_left_edge", data=np.asarray(left_edges, dtype="f4")),
-            types.SimpleNamespace(name="in_right_edge", data=np.asarray(right_edges, dtype="f4")),
+            types.SimpleNamespace(name="in_left_edge", data=None),
+            types.SimpleNamespace(name="in_right_edge", data=None),
         ])
+        self._set_scale(np.zeros(3), 1.0)
 
-    def has_trait(self, name):
-        return self._has_scaling and name == "applied_scale_ratio"
+    def _set_scale(self, offset, ratio):
+        self.applied_scale_offset = tuple(offset)
+        self.applied_scale_ratio = ratio
+        for attribute, edges in zip(self.vertex_array.attributes, self._unscaled):
+            attribute.data = ((edges - offset) / ratio).astype("f4")
+
+    def _apply_scale(self, offset, ratio):
+        current = self.applied_scale_ratio
+        self._set_scale(np.asarray(self.applied_scale_offset) + current * np.asarray(offset), current * ratio)
 
     @property
     def scale(self):
@@ -213,20 +222,12 @@ class _FakeBlockCollection:
 
     @scale.setter
     def scale(self, value):
-        if value == self._scale:
-            return
         self._scale = value
-        le, re = (a.data.astype(np.float64) for a in self.vertex_array.attributes)
         if value:
-            offset = le.min(axis=0) * self._unit_mismatch
-            ratio = (re.max(axis=0) - le.min(axis=0)).max() * self._unit_mismatch
-            self._applied = (offset, ratio)
-            transform = lambda v: (v - offset) / ratio
+            low, high = (np.asarray(e, dtype="f8") for e in self.bbox)
+            self._set_scale(low, (high - low).max())
         else:
-            offset, ratio = self._applied
-            transform = lambda v: v * ratio + offset
-        for attribute in self.vertex_array.attributes:
-            attribute.data = transform(attribute.data.astype(np.float64)).astype("f4")
+            self._set_scale(np.zeros(3), 1.0)
 
 
 def _block_scene(*collections):
@@ -236,10 +237,12 @@ def _block_scene(*collections):
 
 
 def _subset_collection(**kwargs):
-    # Two blocks covering x in [0.4, 0.5], y in [0.45, 0.5], z in [0.45, 0.475] (unitary).
+    # A region x in [0.4, 0.5], y in [0.45, 0.5], z in [0.45, 0.475] (unitary),
+    # inside coarser blocks that extend past it.
     return _FakeBlockCollection(
-        left_edges=[[0.4, 0.45, 0.45], [0.45, 0.45, 0.45]],
-        right_edges=[[0.45, 0.5, 0.475], [0.5, 0.5, 0.475]],
+        left_edges=[[0.3, 0.4, 0.4], [0.45, 0.4, 0.4]],
+        right_edges=[[0.45, 0.6, 0.6], [0.6, 0.6, 0.6]],
+        bbox=([0.4, 0.45, 0.45], [0.5, 0.5, 0.475]),
         **kwargs,
     )
 
@@ -248,6 +251,7 @@ def _full_domain_collection(**kwargs):
     return _FakeBlockCollection(
         left_edges=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
         right_edges=[[0.5, 1.0, 1.0], [1.0, 1.0, 1.0]],
+        bbox=([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
         **kwargs,
     )
 
@@ -257,6 +261,20 @@ def test_scene_model_bounds_spans_all_block_collections():
     low, high = yir._scene_model_bounds(scene)
     np.testing.assert_allclose(low, [0.0, 0.0, 0.0])
     np.testing.assert_allclose(high, [1.0, 1.0, 1.0])
+
+
+def test_scene_model_bounds_clips_blocks_to_data_source_bbox():
+    low, high = yir._scene_model_bounds(_block_scene(_subset_collection()))
+    np.testing.assert_allclose(low, [0.4, 0.45, 0.45], atol=1e-6)
+    np.testing.assert_allclose(high, [0.5, 0.5, 0.475], atol=1e-6)
+
+
+def test_scene_model_bounds_uses_blocks_without_bbox():
+    collection = _subset_collection()
+    collection.bbox = None
+    low, high = yir._scene_model_bounds(_block_scene(collection))
+    np.testing.assert_allclose(low, [0.3, 0.4, 0.4], atol=1e-6)
+    np.testing.assert_allclose(high, [0.6, 0.6, 0.6], atol=1e-6)
 
 
 def test_scene_model_bounds_is_none_without_blocks():
@@ -273,7 +291,7 @@ def test_scale_scene_to_subset_fills_unit_cube_along_longest_axis():
 
 
 def test_scale_scene_to_subset_leaves_full_domain_unscaled():
-    collection = _full_domain_collection(unit_mismatch=1e-22)  # would break if scaled
+    collection = _full_domain_collection()
     yir.scale_scene_to_subset(_block_scene(collection))
     assert collection.scale is False
 
@@ -286,17 +304,8 @@ def test_scale_scene_to_subset_is_idempotent():
     np.testing.assert_allclose(yir._scene_model_bounds(scene)[1], [1.0, 0.5, 0.25], atol=1e-6)
 
 
-def test_scale_scene_to_subset_reverts_and_raises_on_unit_mismatch():
-    collection = _subset_collection(unit_mismatch=2.0)
-    with pytest.raises(RuntimeError, match="code_length"):
-        yir.scale_scene_to_subset(_block_scene(collection))
-    assert collection.scale is False
-    low, _ = yir._scene_model_bounds(_block_scene(collection))
-    np.testing.assert_allclose(low, [0.4, 0.45, 0.45], atol=1e-6)
-
-
-def test_scale_scene_to_subset_raises_without_yt_idv_scaling_support():
-    with pytest.raises(RuntimeError, match="#276"):
+def test_scale_scene_to_subset_raises_without_yt_idv_scene_transforms():
+    with pytest.raises(RuntimeError, match="#287"):
         yir.scale_scene_to_subset(_block_scene(_subset_collection(has_scaling=False)))
 
 

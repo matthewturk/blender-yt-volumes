@@ -180,8 +180,8 @@ Python/venv story from your real Blender's install, just a separate
 **The external depth clip needs yt_idv `main` or newer** (yt-project/yt_idv#247,
 now merged); older releases import and render fine but have no depth clip, and
 `set_external_depth_clip` raises rather than silently doing nothing. Subset
-scaling additionally needs yt-project/yt_idv#276 -- see pyproject.toml's
-`ytidv` group for the checkout recipe.
+scaling additionally needs yt-project/yt_idv#287 (scene transforms) -- see
+pyproject.toml's `ytidv` group for the checkout recipe.
 
 ### Rendering from a config file
 
@@ -236,16 +236,14 @@ A volume provider can pass any yt data object to `add_scene` -- `ds.region`,
 `ds.sphere`, `ds.cut_region` -- and the Blender volume box still maps to
 yt_idv's unitary `[0, 1]^3`. Unscaled, the subset sits at its true position and
 size inside that cube, so it looks small. `yt_idv_renderer.
-scale_scene_to_subset(scene)` (needs #276) stretches the scene so the
+scale_scene_to_subset(scene)` (needs #287) stretches the scene so the
 subset's longest axis fills the cube, starting at its origin corner; shorter
-axes leave empty space at their high end. It leaves full-domain scenes alone,
-and it raises (after undoing the stretch) if yt_idv's scaling doesn't land on
-`[0, 1]`, which happens for datasets whose `code_length` isn't the domain
-width. `scene_setup.py`'s `SUBSET_HALF_WIDTH_KPC`/`SCALE_SUBSET` show both.
+axes leave empty space at their high end. It leaves full-domain scenes alone.
+`scene_setup.py`'s `SUBSET_HALF_WIDTH_KPC`/`SCALE_SUBSET` show both.
 
-yt_idv scales to the grid blocks the subset touches, not to the data object's
-own edges, so the visible region can be noticeably smaller than the box.
-Projection values also grow by the stretch factor, so fixed colormap ranges
+The stretch uses the data object's own bounding box; grid blocks that stick
+out past it are masked off by yt_idv's selector bitmap. Projection values
+also grow by the stretch factor, so fixed colormap ranges
 from an unscaled run don't carry over.
 
 ### Six real yt_idv bugs found while wiring this up

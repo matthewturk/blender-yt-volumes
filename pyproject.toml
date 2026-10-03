@@ -27,12 +27,18 @@ dev = [
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
 # real yt_idv, installed alongside `bpy` in this same Python-3.13 venv from a
 # local checkout at ./yt_idv (gitignored; resolved via `[tool.uv.sources]`).
-# yt_idv `main` has everything the renderer needs (#268 imgui-optional, #247
-# external depth clip); subset scaling (`scale_scene_to_subset`) additionally
-# needs yt-project/yt_idv#276 until it merges:
+# yt_idv `main` has the depth clip (#247); subset scaling needs
+# the scene transforms of yt-project/yt_idv#287, and #285 (bindless textures)
+# is much faster. Until they merge, merge the open PRs onto main:
 #
-#     git clone https://github.com/yt-project/yt_idv.git yt_idv
-#     cd yt_idv && git fetch origin pull/276/head:scaling && git switch scaling
+#     git clone https://github.com/yt-project/yt_idv.git yt_idv && cd yt_idv
+#     for pr in 284 285 286 287 288; do git fetch origin pull/$pr/head:pr-$pr; done
+#     git switch -c integration main
+#     for pr in 284 285 286 287 288; do git merge --no-edit pr-$pr; done
+#
+# #287 conflicts with #284/#285 in block_collection.py and opengl_support.py;
+# keep both sides, and have viewpoint_order() pass camera.position through
+# _tree_viewpoint().
 #
 # The install is not editable: after changing the checkout, run
 # `uv sync --group ytidv --reinstall-package yt_idv`.

@@ -40,7 +40,7 @@ yt_idv gotchas handled here or in the required yt_idv patches:
     `eglMakeCurrent` fail (`EGL_BAD_ACCESS`); `operators` forces the CPU
     compositor during yt_idv renders.
   - The external depth clip requires yt-project/yt_idv#247.
-  - `scale_scene_to_subset` requires yt-project/yt_idv#276.
+  - `scale_scene_to_subset` requires yt-project/yt_idv#287.
 
 `yt`/`yt_idv` are imported lazily so the add-on registers without them.
 """
@@ -204,14 +204,23 @@ def _vertex_attribute(collection, name):
 
 
 def _collection_bounds(collection):
+    """The collection's visible extent in model space: its data source's bbox
+    clipped to its blocks, or just the blocks if the bbox is unknown.
+    """
     low = _vertex_attribute(collection, "in_left_edge").min(axis=0)
     high = _vertex_attribute(collection, "in_right_edge").max(axis=0)
-    return low, high
+    bbox = getattr(collection, "bbox", None)
+    if bbox is None:
+        return low, high
+    offset = np.asarray(collection.applied_scale_offset, dtype=np.float64)
+    ratio = collection.applied_scale_ratio
+    bbox_low, bbox_high = ((np.asarray(edge, dtype=np.float64) - offset) / ratio for edge in bbox)
+    return np.maximum(low, bbox_low), np.minimum(high, bbox_high)
 
 
 def _scene_model_bounds(scene):
-    """`(low, high)` (3,) arrays bounding the scene's blocks in yt_idv model
-    space, or None if the scene has no blocks.
+    """`(low, high)` (3,) arrays bounding the scene's visible data in yt_idv
+    model space, or None if the scene has no blocks.
     """
     bounds = [_collection_bounds(c) for c in _block_collections(scene)]
     if not bounds:
@@ -220,34 +229,24 @@ def _scene_model_bounds(scene):
 
 
 def _fills_unit_cube(low, high, tol=SUBSET_BOUNDS_TOLERANCE):
-    """True if blocks start at the origin and their longest axis spans [0, 1]."""
+    """True if `low` is the origin and the longest axis spans [0, 1]."""
     return bool(np.all(np.abs(low) <= tol) and abs(float((high - low).max()) - 1.0) <= tol)
 
 
 def scale_scene_to_subset(scene):
-    """Rescale a subset scene so its longest axis spans yt_idv's [0, 1] model
-    space, starting at the origin. Scenes that already fill it are left alone.
+    """Rescale a subset scene so its data source's longest axis spans yt_idv's
+    [0, 1] model space, starting at the origin. Scenes that already fill it
+    are left alone.
     """
     for collection in _block_collections(scene):
-        if not collection.has_trait("applied_scale_ratio"):
+        if not hasattr(collection, "apply_scale"):
             raise RuntimeError(
-                "scale_scene_to_subset needs a yt_idv with runtime block "
-                "scaling (yt-project/yt_idv#276); this install doesn't have it."
+                "scale_scene_to_subset needs a yt_idv with scene transforms "
+                "(yt-project/yt_idv#287); this install doesn't have it."
             )
-        low, high = _collection_bounds(collection)
-        if collection.scale or _fills_unit_cube(low, high):
+        if collection.scale or _fills_unit_cube(*_collection_bounds(collection)):
             continue
         collection.scale = True
-        low, high = _collection_bounds(collection)
-        if not _fills_unit_cube(low, high):
-            collection.scale = False
-            # yt_idv computes the scale in code_length but applies it to
-            # unitary vertices, so this fails when code_length != domain width.
-            raise RuntimeError(
-                f"yt_idv block scaling produced model bounds {low} .. {high} "
-                "instead of spanning [0, 1]; this dataset's code_length is "
-                "probably not its domain width. Render the subset unscaled."
-            )
 
 
 def _get_volume_scene(request: RenderRequest, render_size: int):
