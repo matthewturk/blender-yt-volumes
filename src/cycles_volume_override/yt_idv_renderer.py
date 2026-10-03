@@ -30,7 +30,7 @@ module constants below, which are tuned for IsolatedGalaxy density.
 
 yt_idv gotchas handled here or in the required yt_idv patches:
   - Non-square renders show period-4 banding, so we render square and
-    center-crop; the camera aspect is 1.0, so only the vertical FOV matches.
+    center-crop; the square's FOV covers the frame's longer side.
   - `SceneGraph.image` returns `(width, height, 4)` for non-square renders.
   - OSMesa corrupts non-square renders; the default backend is EGL.
   - The EGL config needs `EGL_ALPHA_SIZE` or backgrounds come back opaque.
@@ -518,15 +518,28 @@ def _get_mip_alpha_colormap_data(colormap, alpha_max, ramp_power, alpha_curve=No
     return data
 
 
-def _approx_vertical_fov_deg(camera, aspect_ratio):
-    """Approximate vertical FOV (degrees) for yt_idv's perspective-only camera
-    from Blender `CameraParams`; ignores pixel aspect.
+def _approx_vertical_fov_deg(camera, frame_aspect, canvas_aspect=None):
+    """Vertical FOV (degrees) of a canvas centered on a Blender frame that
+    covers the whole frame; ignores pixel aspect.
+
+    `frame_aspect` is the Blender frame's width / height, `canvas_aspect` the
+    yt_idv canvas's (default the same).
     """
-    if camera.sensor_fit == "VERTICAL":
-        vert_fov = 2.0 * math.atan((camera.sensor_height_mm / 2.0) / camera.lens_mm)
-        return math.degrees(vert_fov)
-    horiz_fov = 2.0 * math.atan((camera.sensor_width_mm / 2.0) / camera.lens_mm)
-    return math.degrees(2.0 * math.atan(math.tan(horiz_fov / 2.0) / aspect_ratio))
+    if canvas_aspect is None:
+        canvas_aspect = frame_aspect
+    fit = camera.sensor_fit
+    sensor = camera.sensor_width_mm
+    if fit == "AUTO":
+        # AUTO applies sensor_width to the frame's longer side
+        fit = "HORIZONTAL" if frame_aspect >= 1.0 else "VERTICAL"
+    elif fit == "VERTICAL":
+        sensor = camera.sensor_height_mm
+    half_tan = (sensor / 2.0) / camera.lens_mm
+    if fit == "HORIZONTAL":
+        tan_h, tan_v = half_tan, half_tan / frame_aspect
+    else:
+        tan_h, tan_v = half_tan * frame_aspect, half_tan
+    return math.degrees(2.0 * math.atan(max(tan_v, tan_h / canvas_aspect)))
 
 
 def _domain_array_unitary(value):
@@ -549,9 +562,11 @@ def _bbox_local_min_extent(bounding_box_local):
     return local_min, np.where(extent == 0.0, 1.0, extent)
 
 
-def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=None):
+def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=None, frame_aspect=None):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
-    object bounding-box registration into unitary space.
+    object bounding-box registration into unitary space, for a `width` x
+    `height` canvas covering a Blender frame of `frame_aspect` (default the
+    canvas's).
 
     `model_bounds` (`(low, high)`, default the unit cube) sets the near/far planes.
     """
@@ -599,7 +614,7 @@ def _registered_camera_kwargs(camera, volume, ds, width, height, model_bounds=No
     focus = position + forward_unitary * look_ahead
 
     aspect_ratio = width / height
-    fov_deg = _approx_vertical_fov_deg(camera, aspect_ratio)
+    fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
     corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
 
     return {
@@ -774,6 +789,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
             model_bounds=_scene_model_bounds(scene),
+            frame_aspect=width / height,
         )
     )
 

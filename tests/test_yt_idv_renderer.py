@@ -86,8 +86,30 @@ def test_approx_vertical_fov_deg_horizontal_sensor_fit_matches_manual_formula():
 def test_approx_vertical_fov_deg_vertical_sensor_fit_ignores_aspect():
     camera = _persp_camera(sensor_fit="VERTICAL", sensor_height_mm=24.0, lens_mm=50.0)
     expected = math.degrees(2 * math.atan(12.0 / 50.0))
-    assert yir._approx_vertical_fov_deg(camera, aspect_ratio=2.5) == pytest.approx(expected)
-    assert yir._approx_vertical_fov_deg(camera, aspect_ratio=0.5) == pytest.approx(expected)
+    assert yir._approx_vertical_fov_deg(camera, 2.5) == pytest.approx(expected)
+    assert yir._approx_vertical_fov_deg(camera, 0.5) == pytest.approx(expected)
+
+
+def _square_canvas_spans(camera, frame_aspect):
+    """tan of half the square canvas's vertical FOV."""
+    return math.tan(math.radians(yir._approx_vertical_fov_deg(camera, frame_aspect, 1.0)) / 2)
+
+
+@pytest.mark.parametrize("fit, frame_aspect, expected_half_tan", [
+    # landscape: the square spans the frame's width
+    ("AUTO", 16 / 9, 18.0 / 50.0),
+    ("HORIZONTAL", 16 / 9, 18.0 / 50.0),
+    ("VERTICAL", 16 / 9, 12.0 / 50.0 * 16 / 9),
+    # portrait: the square spans the frame's height; AUTO puts sensor_width there
+    ("AUTO", 9 / 16, 18.0 / 50.0),
+    ("HORIZONTAL", 9 / 16, 18.0 / 50.0 * 16 / 9),
+    ("VERTICAL", 9 / 16, 12.0 / 50.0),
+])
+def test_square_canvas_fov_covers_the_frames_longer_side(fit, frame_aspect, expected_half_tan):
+    # Regression: VERTICAL fit used the frame's vertical FOV, so the center
+    # crop of a landscape frame came out zoomed in by the aspect ratio.
+    camera = _persp_camera(sensor_fit=fit, sensor_width_mm=36.0, sensor_height_mm=24.0, lens_mm=50.0)
+    assert _square_canvas_spans(camera, frame_aspect) == pytest.approx(expected_half_tan)
 
 
 def _cube_bbox(half_extent=1.0):
