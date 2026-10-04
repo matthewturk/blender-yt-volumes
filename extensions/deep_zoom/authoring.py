@@ -559,6 +559,32 @@ class DEEPZOOM_OT_anchor_finest(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class DEEPZOOM_OT_shot_at_finest(bpy.types.Operator):
+    """Start a new shot here, anchored at the finest grid box, keeping the view"""
+
+    bl_idname = "deep_zoom.shot_at_finest"
+    bl_label = "New Shot at Finest Grid"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        center = finest_box_center(scene)
+        current = active_shot(scene)
+        if center is None or current is None:
+            self.report({"ERROR"}, "needs a grid structure file and a shot")
+            return {"CANCELLED"}
+        anchor = shot_space.parse_anchor(current.anchor)
+        if isinstance(anchor, str):
+            self.report({"ERROR"}, f"shot {current.name!r} is anchored at 'max'; give it coordinates first")
+            return {"CANCELLED"}
+        settings = _settings(scene)
+        point = shot_space.to_world(center, anchor, zoom_at(scene, scene.frame_current), settings.world_scale)
+        add_shot_at(scene, point, scene.frame_current, scene.camera)
+        settings.active_shot_index = len(settings.shots) - 1
+        scene.frame_set(scene.frame_current)
+        return {"FINISHED"}
+
+
 class DEEPZOOM_OT_remove_shot(bpy.types.Operator):
     """Remove the selected shot"""
 
@@ -735,6 +761,7 @@ class DEEPZOOM_PT_panel(bpy.types.Panel):
         side.operator(DEEPZOOM_OT_add_shot.bl_idname, icon="ADD", text="")
         side.operator(DEEPZOOM_OT_remove_shot.bl_idname, icon="REMOVE", text="")
         side.operator(DEEPZOOM_OT_jump_to_shot.bl_idname, icon="PLAY", text="")
+        side.operator(DEEPZOOM_OT_shot_at_finest.bl_idname, icon="SNAP_VOLUME", text="")
         if settings.shots:
             row = col.row(align=True)
             row.prop(settings.shots[settings.active_shot_index], "anchor")
@@ -776,6 +803,7 @@ CLASSES = (
     DeepZoomSettings,
     DEEPZOOM_OT_add_shot,
     DEEPZOOM_OT_anchor_finest,
+    DEEPZOOM_OT_shot_at_finest,
     DEEPZOOM_OT_remove_shot,
     DEEPZOOM_OT_jump_to_shot,
     DEEPZOOM_OT_dive,

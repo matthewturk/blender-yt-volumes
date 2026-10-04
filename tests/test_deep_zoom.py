@@ -263,3 +263,19 @@ def test_reanchor_at_the_focus_moves_what_the_camera_tracks_too(scene):
     scene.frame_set(20)
     np.testing.assert_allclose(authoring.focus_point(camera), 0.0, atol=1e-5)  # the focus is the new anchor
     np.testing.assert_allclose(np.array(camera.matrix_world.translation), offset, atol=1e-5)
+
+
+def test_new_shot_at_finest_grid_cuts_to_the_finest_box(scene, tmp_path):
+    sizes = 10.0 ** -np.arange(12)
+    finest = ANCHOR + 3e-10
+    path = tmp_path / "grids.npz"
+    np.savez(path, left=finest - sizes[:, None] / 2, right=finest + sizes[:, None] / 2, level=np.arange(12))
+    scene.deep_zoom.grid_file = str(path)
+    authoring.add_shot(scene, ANCHOR, 1, "Approach")
+    authoring.add_dive(scene, 1, 99, 8.0)
+    _camera(scene, [(1, (0.0, -3.0, 0.5)), (100, (0.0, -3.0, 0.5))])
+    scene.frame_set(60)
+    assert bpy.ops.deep_zoom.shot_at_finest() == {"FINISHED"}
+    shots = scene.deep_zoom.shots
+    assert [s.frame_start for s in shots] == [1, 60]
+    np.testing.assert_allclose(shot_space.parse_anchor(shots[1].anchor), finest, rtol=0, atol=1e-17)
