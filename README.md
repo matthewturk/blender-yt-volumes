@@ -252,7 +252,7 @@ so it renders as yt would. Name the function in `[render.yt_idv]`:
 
 `make()` with no arguments is converted once. `make(context)` is called every
 frame with `frame`, `camera` (the camera's unitary float64 position) and `ds`,
-so a transfer function can follow the camera. `examples/dnz_shells_tf.py`
+so a transfer function can follow the camera. `examples/shells_tf.py`
 hides isodensity layers sparser than the gas around the camera, which turns
 the DeeplyNestedZoom dive (`examples/deep_zoom_shots_tf.toml`) into a passage
 through nested shells, one per decade of zoom. In a zoom the near and far

@@ -149,6 +149,11 @@ class YtIdvRenderSettings(bpy.types.PropertyGroup):
         description="Shape of the alpha ramp across the visible value range -- same meaning as Fog Ramp Power -- see yt_idv_renderer.py MIP_ALPHA_RAMP_POWER",
         default=0.15, min=0.01, max=10.0,
     )
+    rescale_colormap: bpy.props.BoolProperty(
+        name="Rescale Colormap Every Render",
+        description="Re-fit the colormap range to each render's data (Maximum Intensity and Projection modes); off keeps the first render's range",
+        default=False,
+    )
     yt_tf: bpy.props.StringProperty(
         name="yt Transfer Function",
         description="'module:function' or 'file.py:function' returning a yt ColorTransferFunction (grey opacity, log10 of the field), for the yt Transfer Function mode",
@@ -283,12 +288,12 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
             ("STUB", "Real renderer (stub)", "external_render.render_volume() -- raises NotImplementedError until wired in"),
             ("DEBUG_FLAT", "Debug: flat placeholder", "A flat semi-transparent color filling the whole frame, ignoring geometry -- see external_render.debug_fake_render_volume()"),
             ("SAMPLE_CONSTANT", "Sample: depth x constant", "A real (if non-physical) demo: ray/volume-box intersection, depth-clipped, output = path length x a constant -- see sample_renderers.constant_density_renderer()"),
-            ("YT_IDV_MAX_INTENSITY", "yt_idv: Maximum Intensity Projection (exploratory)", "Real yt_idv offscreen volume renderer -- hardcoded IsolatedGalaxy sample dataset, depth-clipped against Cycles' own Z pass via the flagged object's bounding box as registration. Needs yt_idv installed in Blender's own Python -- see README 'yt_idv integration'. See yt_idv_renderer.py module docstring for exactly what is/isn't real here."),
-            ("YT_IDV_MAX_INTENSITY_ALPHA", "yt_idv: Maximum Intensity, value-driven alpha (exploratory)", "Same Maximum Intensity Projection as above, but alpha is driven by the selected value itself (transparent at the low end of what's visible, opaque at the high end) instead of a binary presence flag. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
-            ("YT_IDV_TRANSFER_FUNCTION", "yt_idv: Transfer Function (exploratory)", "Real yt_idv offscreen volume renderer with an actual transfer function -- isocontour layers at fixed densities in log space, yt.ColorTransferFunction.add_layers(). Same hardcoded dataset/depth-clip/camera registration as Maximum Intensity Projection -- see yt_idv_renderer.py module docstring."),
-            ("YT_IDV_PROJECTION", "yt_idv: Projective Integration (exploratory)", "Real yt_idv offscreen volume renderer using unweighted line-of-sight integration (additive, not max) -- tends to look smoother/less speckled than Maximum Intensity Projection. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
+            ("YT_IDV_MAX_INTENSITY", "yt_idv: Maximum Intensity Projection", "yt_idv's offscreen volume renderer, keeping the brightest sample along each ray; depth-clipped against Cycles' Z pass. Renders the flagged object's Dataset Path (a yt dataset or a saved yt_idv scene), else the IsolatedGalaxy sample"),
+            ("YT_IDV_MAX_INTENSITY_ALPHA", "yt_idv: Maximum Intensity, Value-Driven Alpha", "Maximum Intensity Projection with alpha driven by the value itself: transparent at the low end of what is visible, opaque at the high end"),
+            ("YT_IDV_TRANSFER_FUNCTION", "yt_idv: Isocontour Transfer Function", "Isocontour layers at fixed values in log space, from yt.ColorTransferFunction.add_layers and the Isocontour settings below"),
+            ("YT_IDV_PROJECTION", "yt_idv: Projective Integration", "Unweighted line-of-sight integration: adds samples along each ray instead of keeping the brightest"),
             ("YT_IDV_YT_TRANSFER_FUNCTION", "yt_idv: yt Transfer Function", "A yt ColorTransferFunction you build (Preferences > yt Transfer Function), converted to yt_idv's so it renders as yt would"),
-            ("YT_IDV_THRESHOLD_FOG", "yt_idv: Threshold Fog (exploratory)", "Real yt_idv offscreen volume renderer with a continuous transfer function -- fully transparent below a density threshold, alpha ramps up above it for a hazy/foggy look, instead of isocontour lines. Same hardcoded dataset/depth-clip/camera registration as the other yt_idv modes -- see yt_idv_renderer.py module docstring."),
+            ("YT_IDV_THRESHOLD_FOG", "yt_idv: Threshold Fog", "A continuous transfer function: transparent below a threshold, alpha ramping up above it"),
         ],
         default="STUB",
     )
@@ -316,7 +321,7 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
         self.layout.prop(self, "work_dir")
         if self.renderer_mode.startswith("YT_IDV_"):
             box = self.layout.box()
-            box.label(text="yt_idv Renderer Parameters (exploratory)", icon="EXPERIMENTAL")
+            box.label(text="yt_idv Renderer Parameters")
             box.prop(self.yt_idv, "backend")
             if self.renderer_mode == "YT_IDV_TRANSFER_FUNCTION":
                 col = box.column(align=True)
@@ -339,6 +344,14 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
                 col.prop(self.yt_idv, "mip_alpha_colormap")
                 col.prop(self.yt_idv, "mip_alpha_max")
                 col.prop(self.yt_idv, "mip_alpha_ramp_power")
+            elif self.renderer_mode == "YT_IDV_YT_TRANSFER_FUNCTION":
+                col = box.column(align=True)
+                col.label(text="yt Transfer Function")
+                col.prop(self.yt_idv, "yt_tf")
+                col.prop(self.yt_idv, "yt_tf_ray_length")
+                col.prop(self.yt_idv, "yt_tf_sample_factor")
+            if self.renderer_mode in ("YT_IDV_MAX_INTENSITY", "YT_IDV_PROJECTION", "YT_IDV_MAX_INTENSITY_ALPHA"):
+                box.prop(self.yt_idv, "rescale_colormap")
             if self.renderer_mode in ("YT_IDV_THRESHOLD_FOG", "YT_IDV_MAX_INTENSITY_ALPHA"):
                 curve_box = box.box()
                 curve_box.label(text="Alpha Source")
@@ -505,6 +518,7 @@ def _yt_idv_custom_params():
         "yt_idv_mip_alpha_colormap": s.mip_alpha_colormap,
         "yt_idv_mip_alpha_max": s.mip_alpha_max,
         "yt_idv_mip_alpha_ramp_power": s.mip_alpha_ramp_power,
+        "yt_idv_rescale_colormap": s.rescale_colormap,
         "yt_idv_yt_tf": s.yt_tf,
         "yt_idv_yt_tf_ray_length": s.yt_tf_ray_length,
         "yt_idv_yt_tf_sample_factor": s.yt_tf_sample_factor,
@@ -867,6 +881,13 @@ def render_current_frame(context):
         raise RuntimeError("Scene has no active camera")
 
     prefs = _get_prefs(context)
+    if prefs.renderer_mode in YT_IDV_RENDERER_MODES and scene.render.engine != "CYCLES":
+        # EEVEE holds a GPU context through pass 1, and yt_idv's own EGL
+        # context then fails with EGL_BAD_ACCESS.
+        raise RuntimeError(
+            f"yt_idv renderer modes need the Cycles render engine (this scene uses "
+            f"{scene.render.engine}); switch Render Properties > Render Engine to Cycles"
+        )
     verbose = prefs.verbose_logging
     log = _log if verbose else (lambda *a, **k: None)
     step = _StepTimer if verbose else _NullStepTimer

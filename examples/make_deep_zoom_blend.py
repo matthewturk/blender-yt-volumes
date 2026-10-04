@@ -22,6 +22,7 @@ def build(path, target, frames):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, frames
+    scene.render.engine = "CYCLES"  # yt_idv modes need it
     scene.render.resolution_x, scene.render.resolution_y = 1920, 1080
     scene.view_settings.view_transform = "Standard"
 

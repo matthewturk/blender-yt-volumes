@@ -56,20 +56,21 @@ def active_shot(shots, frame):
 
 
 def visible_boxes(left, right, anchor, zoom, world_scale=DEFAULT_WORLD_SCALE,
-                  min_size=0.02, max_size=50.0, max_distance=50.0, max_count=4000):
+                  min_size=0.1, max_size=6.0, max_distance=50.0, max_count=600):
     """Grid boxes worth drawing in shot space: between `min_size` and
     `max_size` world units across, and within `max_distance` of the origin.
-    Keeps the `max_count` largest. Returns world-space (left, right, index).
+    Keeps the `max_count` nearest the origin. Returns world-space (left,
+    right, index).
     """
     left = to_world(left, anchor, zoom, world_scale)
     right = to_world(right, anchor, zoom, world_scale)
     size = (right - left).max(axis=1)
     # distance from the origin to the nearest point of each box
-    gap = np.maximum(np.maximum(left, -right), 0.0)
-    keep = (size >= min_size) & (size <= max_size) & (np.linalg.norm(gap, axis=1) <= max_distance)
+    distance = np.linalg.norm(np.maximum(np.maximum(left, -right), 0.0), axis=1)
+    keep = (size >= min_size) & (size <= max_size) & (distance <= max_distance)
     index = np.nonzero(keep)[0]
     if index.size > max_count:
-        index = index[np.argsort(-size[index])[:max_count]]
+        index = index[np.argsort(distance[index], kind="stable")[:max_count]]
     return left[index], right[index], index
 
 

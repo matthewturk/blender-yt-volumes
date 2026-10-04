@@ -1055,3 +1055,14 @@ def test_every_yt_idv_renderer_mode_gets_the_cpu_compositor():
     yt_idv_modes = {m for m, fn in operators.RENDERER_MODES.items() if fn.__module__.endswith("yt_idv_renderer")}
     assert yt_idv_modes == operators.YT_IDV_RENDERER_MODES
     assert {"YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_THRESHOLD_FOG"} <= yt_idv_modes
+
+
+def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_props):
+    scene = clean_scene_with_props
+    camera = bpy.data.objects.new("Camera", bpy.data.cameras.new("Camera"))
+    scene.collection.objects.link(camera)
+    scene.camera = camera
+    scene.render.engine = "BLENDER_EEVEE"
+    monkeypatch.setattr(operators, "_get_prefs", lambda context: SimpleNamespace(renderer_mode="YT_IDV_MAX_INTENSITY", verbose_logging=False))
+    with pytest.raises(RuntimeError, match="need the Cycles render engine"):
+        operators.render_current_frame(bpy.context)

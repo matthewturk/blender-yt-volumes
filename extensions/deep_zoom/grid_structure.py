@@ -2,10 +2,13 @@
 
     python grid_structure.py DATASET OUT.npz
     python grid_structure.py --loader file.py:func OUT.npz
+    python grid_structure.py --scene SCENE.zip OUT.npz
 
-Run it with any Python that has yt. It writes float64 `left`/`right` edges in
-unitary coordinates and integer `level`s, one row per grid, so the authoring
-Blender can draw the hierarchy without yt; `load` needs only numpy.
+It writes float64 `left`/`right` edges in unitary coordinates and integer
+`level`s, one row per box, so the authoring Blender can draw the hierarchy
+without yt. A dataset needs yt; a yt_idv scene saved with SceneGraph.save
+needs only numpy, and gives its blocks (kd-tree bricks) with levels from
+their cell sizes. `load` needs only numpy.
 """
 
 import argparse
@@ -22,6 +25,26 @@ def grid_structure(ds):
         "right": index.grid_right_edge.to("unitary").d.astype(np.float64),
         "level": np.asarray(index.grid_levels, dtype=np.int32).ravel(),
     }
+
+
+def scene_structure(path):
+    """`{"left", "right", "level"}` for the blocks of a saved yt_idv scene;
+    levels are log2 of the coarsest cell size over each block's.
+    """
+    import io
+    import json
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        doc = json.loads(archive.read("scene.json"))
+        collections = [d["attributes"] for d in doc["data_objects"] if "_unscaled_edges" in d.get("attributes", {})]
+        if not collections:
+            raise ValueError(f"{path} has no block collection saved with its float64 edges")
+        edges = [np.load(io.BytesIO(archive.read(a["_unscaled_edges"]["__array__"]))) for a in collections]
+    left, right, dx = (np.concatenate([e[i] for e in edges]) for i in range(3))
+    cell = dx.max(axis=1)
+    level = np.round(np.log2(cell.max() / cell)).astype(np.int32)
+    return {"left": left, "right": right, "level": level}
 
 
 def save(ds, path):
@@ -54,9 +77,15 @@ def main(argv=None):
     parser.add_argument("dataset", nargs="?", help="anything yt.load accepts")
     parser.add_argument("out")
     parser.add_argument("--loader", help='"module:function" or "file.py:function" returning a dataset')
+    parser.add_argument("--scene", help="a yt_idv scene saved with SceneGraph.save (needs only numpy)")
     args = parser.parse_args(argv)
-    if bool(args.dataset) == bool(args.loader):
-        parser.error("give exactly one of DATASET or --loader")
+    if sum(bool(v) for v in (args.dataset, args.loader, args.scene)) != 1:
+        parser.error("give exactly one of DATASET, --loader or --scene")
+    if args.scene:
+        structure = scene_structure(args.scene)
+        np.savez(args.out, **structure)
+        print(f"wrote {args.out}: {len(structure['level'])} blocks, levels 0-{structure['level'].max()}")
+        return 0
     if args.loader:
         ds = _resolve_loader(args.loader)()
     else:

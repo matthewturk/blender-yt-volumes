@@ -73,10 +73,13 @@ class DeepZoomSettings(bpy.types.PropertyGroup):
         update=_redraw,
     )
     show_grid_map: bpy.props.BoolProperty(name="Grid Map", default=True, update=_redraw)
-    map_min_size: bpy.props.FloatProperty(name="Smallest", default=0.02, min=0.0, update=_redraw)
-    map_max_size: bpy.props.FloatProperty(name="Largest", default=50.0, min=0.0, update=_redraw)
+    map_min_size: bpy.props.FloatProperty(name="Smallest", default=0.1, min=0.0, update=_redraw)
+    map_max_size: bpy.props.FloatProperty(name="Largest", default=6.0, min=0.0, update=_redraw)
     map_max_distance: bpy.props.FloatProperty(name="Reach", default=50.0, min=0.0, update=_redraw)
-    map_max_count: bpy.props.IntProperty(name="Max Boxes", default=4000, min=1, update=_redraw)
+    map_max_count: bpy.props.IntProperty(
+        name="Max Boxes", default=600, min=1, update=_redraw,
+        description="Draw at most this many boxes, the nearest the anchor first",
+    )
     map_thickness: bpy.props.FloatProperty(name="Line Width", default=0.004, min=0.0, update=_redraw)
 
 
@@ -530,6 +533,32 @@ class DEEPZOOM_OT_add_shot(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def finest_box_center(scene):
+    """Center of the finest box in the grid structure, float64 unitary, or None."""
+    grids = _grids(_settings(scene).grid_file)
+    if grids is None:
+        return None
+    finest = np.argmax(grids["level"])
+    return (grids["left"][finest] + grids["right"][finest]) / 2.0
+
+
+class DEEPZOOM_OT_anchor_finest(bpy.types.Operator):
+    """Anchor the selected shot at the center of the finest grid box"""
+
+    bl_idname = "deep_zoom.anchor_finest"
+    bl_label = "Anchor at Finest Grid"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = _settings(context.scene)
+        center = finest_box_center(context.scene)
+        if center is None or not settings.shots:
+            self.report({"ERROR"}, "needs a grid structure file and a shot")
+            return {"CANCELLED"}
+        settings.shots[settings.active_shot_index].anchor = shot_space.format_anchor(center)
+        return {"FINISHED"}
+
+
 class DEEPZOOM_OT_remove_shot(bpy.types.Operator):
     """Remove the selected shot"""
 
@@ -707,7 +736,9 @@ class DEEPZOOM_PT_panel(bpy.types.Panel):
         side.operator(DEEPZOOM_OT_remove_shot.bl_idname, icon="REMOVE", text="")
         side.operator(DEEPZOOM_OT_jump_to_shot.bl_idname, icon="PLAY", text="")
         if settings.shots:
-            col.prop(settings.shots[settings.active_shot_index], "anchor")
+            row = col.row(align=True)
+            row.prop(settings.shots[settings.active_shot_index], "anchor")
+            row.operator(DEEPZOOM_OT_anchor_finest.bl_idname, text="", icon="SNAP_VOLUME")
         playing = active_shot(scene)
         if playing is not None:
             col.label(text=f"Playing: {playing.name}")
@@ -744,6 +775,7 @@ CLASSES = (
     DeepZoomShot,
     DeepZoomSettings,
     DEEPZOOM_OT_add_shot,
+    DEEPZOOM_OT_anchor_finest,
     DEEPZOOM_OT_remove_shot,
     DEEPZOOM_OT_jump_to_shot,
     DEEPZOOM_OT_dive,

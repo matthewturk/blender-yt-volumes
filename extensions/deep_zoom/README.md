@@ -39,7 +39,8 @@ It needs nothing beyond what Blender ships (numpy).
    a few units from the origin.
 4. **Steer by the grid map.** The *DeepZoomGridMap* object shows the grid
    boxes that are near the current scale (between *Smallest* and *Largest*
-   world units, within *Reach* of the anchor), colored by level. It is
+   world units, within *Reach* of the anchor, the *Max Boxes* nearest it),
+   colored by level. It is
    rebuilt from float64 every frame, so at zoom 12 you still see the level-40
    grids at a size you can work with. It renders in Cycles too.
 5. **Re-anchor** where you want the dive to go: put the 3D cursor on it and

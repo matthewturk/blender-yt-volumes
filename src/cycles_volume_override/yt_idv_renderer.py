@@ -22,7 +22,8 @@ flying in needs the target near the world origin, where float32 is precise.
 Spherical data: the volume object's inscribed sphere is the data's outer
 radius, its local +z the pole (theta = 0) and +x longitude 0 (phi = 0).
 
-Volume source: the `IsolatedGalaxy` sample by default.
+Volume source: the object's Dataset Path (a yt dataset, or a scene saved with
+SceneGraph.save), else the `IsolatedGalaxy` sample.
 `custom_params["yt_idv_volume_provider"]` (`"module.submodule:function"`)
 names a callable `provider(ctx: VolumeSetupContext) -> VolumeSetupResult`,
 called once per flagged object per frame. `ctx.previous_scene`/`previous_ds`
@@ -61,6 +62,7 @@ import hashlib
 import importlib
 import inspect
 import math
+import types
 
 import numpy as np
 
@@ -199,12 +201,45 @@ def _resolve_volume_provider(spec):
         ) from exc
 
 
+def _parse_field(spec):
+    """`"density"` or `"gas, density"` as a yt field name or tuple."""
+    parts = [p.strip() for p in str(spec).split(",")]
+    return tuple(parts) if len(parts) == 2 else parts[0]
+
+
 def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
-    """Default provider: the IsolatedGalaxy sample, built once."""
-    if ctx.previous_scene is not None:
-        return VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=False)
-    ds, data_source = _load_sample_source()
-    scene = ctx.render_context.add_scene(data_source, SAMPLE_FIELD, no_ghost=True)
+    """Default provider: the object's Dataset Path, built once.
+
+    A `.zip` (or kind `yt_idv_scene`) is a scene saved with SceneGraph.save,
+    scaled so its saved bbox fills the volume box; anything else goes to
+    yt.load, rendering custom_params `yt_idv_field` (default density). Without
+    a path, the IsolatedGalaxy sample.
+    """
+    path = ctx.dataset.dataset_path
+    source = path or SAMPLE_DATASET_NAME
+    previous = ctx.previous_scene
+    if previous is not None:
+        if getattr(previous, "_cycles_yt_source", None) == source:
+            return VolumeSetupResult(scene=previous, ds=ctx.previous_ds, changed=False)
+        for collection in _block_collections(previous):
+            collection.release()
+    if not path:
+        ds, data_source = _load_sample_source()
+        scene = ctx.render_context.add_scene(data_source, SAMPLE_FIELD, no_ghost=True)
+    elif path.endswith(".zip") or ctx.dataset.dataset_kind == "yt_idv_scene":
+        from yt_idv.scene_graph import SceneGraph
+
+        scene = SceneGraph.load(path)
+        scale_scene_to_subset(scene)
+        # the renderer reads only ds.domain_center, in unitary units
+        ds = types.SimpleNamespace(domain_center=np.full(3, 0.5))
+    else:
+        import yt
+
+        ds = yt.load(path)
+        field = _parse_field(ctx.custom_params.get("yt_idv_field", SAMPLE_FIELD))
+        scene = ctx.render_context.add_scene(ds.all_data(), field, no_ghost=True)
+    scene._cycles_yt_source = source
     return VolumeSetupResult(scene=scene, ds=ds, changed=True)
 
 
@@ -991,13 +1026,17 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     request = dataclasses.replace(request, volume=_shot_space_volume(scene, request.volume, custom_params))
     camera_world = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
     model_frame = apply_zoom(scene, custom_params, request.volume, camera_world)
+    camera_unitary = _camera_unitary(scene, request.volume, model_frame, camera_world)
     context = {
         "frame": request.frame.frame_number,
-        "camera": _camera_unitary(scene, request.volume, model_frame, camera_world),
+        "camera": camera_unitary,
+        "value": None if camera_unitary is None else _field_value_at(scene, camera_unitary),
         "ds": ds,
     }
     for component in scene.components:
         configure_component(component, dict(custom_params, _context=context))
+        if custom_params.get("yt_idv_rescale_colormap"):
+            component._cmap_bounds_invalid = True
     scene.camera.update(
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
@@ -1145,13 +1184,36 @@ def _camera_unitary(scene, volume, model_frame, camera_world):
     return model * collection.applied_scale_ratio + np.asarray(collection.applied_scale_offset, dtype=np.float64)
 
 
+def _field_value_at(scene, point):
+    """The field at unitary `point`, from the block textures (nearest texel),
+    in the field's own units; None outside every block.
+    """
+    for collection in _block_collections(scene):
+        if _is_spherical(collection) or not hasattr(collection, "_get_unscaled_edges"):
+            continue
+        left, right, dx = collection._get_unscaled_edges()
+        inside = np.nonzero(np.all((left <= point) & (point < right), axis=1))[0]
+        if inside.size == 0:
+            continue
+        block = inside[np.argmin(dx[inside].max(axis=1))]  # the finest, if blocks overlap
+        data = np.asarray(collection.texture_objects[block].data)
+        # textures are vertex-centered: texel i sits at left + i * dx
+        index = np.clip(np.round((point - left[block]) / dx[block]).astype(int), 0, np.array(data.shape) - 1)
+        value = float(data[tuple(index)])
+        if collection._textures_are_normalized:
+            value = value * collection.val_range + collection.min_val
+        return value
+    return None
+
+
 def _configure_yt_transfer_function(component, custom_params):
     """A yt ColorTransferFunction from `yt_idv_yt_tf`, converted for this
     component's blocks with yt_idv.tf_conversion (yt-project/yt_idv#288).
 
     A function taking no arguments is converted once per set of blocks and
     settings. One taking an argument gets a context dict every frame: `frame`,
-    `camera` (unitary float64 position) and `ds`.
+    `camera` (unitary float64 position), `value` (the field there, from the
+    blocks; None outside them) and `ds`.
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
@@ -1169,8 +1231,17 @@ def _configure_yt_transfer_function(component, custom_params):
     if applied is not None and applied[0] == key and not per_frame:
         return
     tf = make(custom_params.get("_context", {})) if per_frame else make()
-    # thin yt layers need a finer table than the 1024-texel default
-    converted = convert_yt_transfer_function(tf, component.data, ray_length, nbins=4096)
+    try:
+        # thin yt layers need a finer table than the 1024-texel default
+        converted = convert_yt_transfer_function(tf, component.data, ray_length, nbins=4096)
+    except ValueError as exc:
+        if "zero everywhere" not in str(exc):
+            raise
+        # nothing to draw: a range above every normalized value discards all samples
+        component.render_method = "transfer_function"
+        component.tf_min, component.tf_max = 2.0, 3.0
+        _yt_tf_applied.pop(id(component), None)
+        return
     apply_converted_transfer_function(component, converted)
     if applied is not None:
         applied[1]["transfer_function"].release()

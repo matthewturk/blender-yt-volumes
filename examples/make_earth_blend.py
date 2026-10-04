@@ -68,6 +68,7 @@ def build(path, frames, spin=False, graticule_deg=30, tilt_deg=23.44, fps=24):
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, frames
     scene.render.fps = fps
+    scene.render.engine = "CYCLES"  # yt_idv modes need it
     scene.render.resolution_x, scene.render.resolution_y = 1280, 720
     scene.view_settings.view_transform = "Standard"
     world = bpy.data.worlds.new("World")

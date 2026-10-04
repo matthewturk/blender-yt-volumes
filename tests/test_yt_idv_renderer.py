@@ -402,7 +402,7 @@ class _FakeRenderContext:
 
     def add_scene(self, data_source, field, **kwargs):
         self.add_scene_calls.append((data_source, field, kwargs))
-        return f"scene[{field}]#{len(self.add_scene_calls)}"
+        return types.SimpleNamespace(label=f"scene[{field}]#{len(self.add_scene_calls)}", components=[])
 
 
 def _request_with(custom_params=None, dataset_id="obj", camera_overrides=None, render_size=4):
@@ -453,8 +453,9 @@ def test_default_volume_provider_builds_once_then_reuses_previous_scene(monkeypa
     monkeypatch.setattr(yir, "_load_sample_source", lambda: ("fake-ds", "fake-data-source"))
     rc = _FakeRenderContext()
 
+    no_path = types.SimpleNamespace(dataset_path=None, dataset_kind="")
     first = yir._default_volume_provider(yir.VolumeSetupContext(
-        render_context=rc, dataset=None, custom_params={}, frame=None,
+        render_context=rc, dataset=no_path, custom_params={}, frame=None,
         previous_scene=None, previous_ds=None,
     ))
     assert first.changed is True
@@ -462,12 +463,34 @@ def test_default_volume_provider_builds_once_then_reuses_previous_scene(monkeypa
     assert len(rc.add_scene_calls) == 1  # real work happened
 
     second = yir._default_volume_provider(yir.VolumeSetupContext(
-        render_context=rc, dataset=None, custom_params={}, frame=None,
+        render_context=rc, dataset=no_path, custom_params={}, frame=None,
         previous_scene=first.scene, previous_ds=first.ds,
     ))
     assert second.changed is False
     assert second.scene == first.scene
     assert len(rc.add_scene_calls) == 1  # NOT called again -- reused, not rebuilt
+
+
+def test_default_volume_provider_loads_the_dataset_path_and_reloads_when_it_changes(monkeypatch):
+    loaded = []
+    fake_yt = types.ModuleType("yt")
+    fake_yt.load = lambda path: loaded.append(path) or types.SimpleNamespace(all_data=lambda: f"all[{path}]")
+    monkeypatch.setitem(sys.modules, "yt", fake_yt)
+    rc = _FakeRenderContext()
+
+    def provide(path, previous=None, params=None):
+        return yir._default_volume_provider(yir.VolumeSetupContext(
+            render_context=rc, dataset=types.SimpleNamespace(dataset_path=path, dataset_kind=""),
+            custom_params=params or {}, frame=None,
+            previous_scene=previous and previous.scene, previous_ds=previous and previous.ds,
+        ))
+
+    first = provide("/data/a", params={"yt_idv_field": "gas, temperature"})
+    assert loaded == ["/data/a"]
+    assert rc.add_scene_calls[-1][:2] == ("all[/data/a]", ("gas", "temperature"))
+    assert provide("/data/a", first).changed is False
+    second = provide("/data/b", first)
+    assert second.changed is True and loaded == ["/data/a", "/data/b"]
 
 
 def test_get_volume_scene_uses_default_provider_when_custom_params_unset(monkeypatch, _clean_yir_state):
@@ -1384,3 +1407,18 @@ def test_planes_are_bounded_relative_to_the_target_in_a_zoom_frame():
     assert to_target == pytest.approx(1.5, rel=1e-6)
     assert kwargs["far_plane"] == pytest.approx(yir.FAR_REACH * to_target)
     assert kwargs["near_plane"] == pytest.approx(yir.NEAR_FRACTION * to_target)
+
+
+def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():
+    # one block over [0, 1]^3 with 2 cells per side, so 3 vertex texels per side
+    data = np.arange(27, dtype="f4").reshape(3, 3, 3) / 26.0
+    collection = types.SimpleNamespace(
+        _yt_geom_str="cartesian",
+        _get_unscaled_edges=lambda: (np.zeros((1, 3)), np.ones((1, 3)), np.full((1, 3), 0.5)),
+        texture_objects={0: types.SimpleNamespace(data=data)},
+        _textures_are_normalized=True, val_range=26.0, min_val=100.0,
+    )
+    scene = _block_scene(collection)
+    # (0.9, 0.1, 0.6) is nearest vertex (2, 0, 1): flat index 19
+    assert yir._field_value_at(scene, np.array([0.9, 0.1, 0.6])) == pytest.approx(119.0)
+    assert yir._field_value_at(scene, np.array([1.5, 0.5, 0.5])) is None

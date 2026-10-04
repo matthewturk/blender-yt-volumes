@@ -58,6 +58,13 @@ def test_visible_boxes_keeps_boxes_near_the_current_scale():
     assert sorted(index.tolist()) == [7, 8, 9, 10]
 
 
+def test_visible_boxes_prefers_the_nearest_when_capped():
+    left = np.array([[5.0, 0, 0], [1.0, 0, 0], [3.0, 0, 0]]) / 2e8 + ANCHOR
+    right = left + 1.0 / 2e8
+    _, _, index = shot_space.visible_boxes(left, right, ANCHOR, zoom=8.0, max_count=2)
+    assert index.tolist() == [1, 2]
+
+
 def test_box_edges_and_faces_have_cube_topology():
     left, right = np.zeros((2, 3)), np.ones((2, 3))
     verts, edges = shot_space.box_edges(left, right)
@@ -135,11 +142,11 @@ def test_grid_map_draws_the_boxes_near_the_current_scale(scene, tmp_path):
     scene.deep_zoom.zoom = 8.0
     obj = bpy.data.objects[authoring.GRID_MAP_NAME]
     assert not obj.hide_render
-    assert len(obj.data.vertices) == 4 * 8  # levels 7-10, as in visible_boxes
-    assert len(obj.data.polygons) == 4 * 6
+    assert len(obj.data.vertices) == 2 * 8  # levels 8-9: 2 and 0.2 units, within the 0.1-6 default
+    assert len(obj.data.polygons) == 2 * 6
     fractions = np.empty(len(obj.data.vertices), dtype=np.float32)
     obj.data.attributes["level_fraction"].data.foreach_get("value", fractions)
-    assert sorted(set(np.round(fractions * 14).astype(int))) == [7, 8, 9, 10]
+    assert sorted(set(np.round(fractions * 14).astype(int))) == [8, 9]
     scene.deep_zoom.show_grid_map = False
     assert obj.hide_render
 

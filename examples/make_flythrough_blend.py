@@ -20,6 +20,11 @@ camera:
   literally. The worker rescales yt_idv to the camera's distance each frame.
   Cycles objects near the target stay registered with the data at any depth,
   but Blender clips them closer than 1e-6 world units to the camera.
+- --deep-zoom: a Deep Zoom extension scene, for editing in Blender. One shot
+  anchored at the target, the camera keyed along the path's direction at
+  --radius world units, and the approach in the zoom curve, so the images are
+  the same. The volume's Dataset Path is the scene, so F12 works in the GUI;
+  --grids adds the grid map.
 """
 
 import argparse
@@ -67,6 +72,9 @@ def parse_args():
         help="closest the Blender camera gets, in box widths; default --distance",
     )
     p.add_argument("--fly", action="store_true", help="fly the camera all the way in; see above")
+    p.add_argument("--deep-zoom", action="store_true", help="write a Deep Zoom extension scene; see above")
+    p.add_argument("--radius", type=float, default=3.0, help="--deep-zoom: the camera's distance from the anchor, world units")
+    p.add_argument("--grids", help="--deep-zoom: grid structure .npz for the grid map")
     p.add_argument("--target", type=float, nargs=3, help="in the scaled box; default the densest cell")
     p.add_argument("--width", type=int, default=1920)
     p.add_argument("--height", type=int, default=1080)
@@ -134,7 +142,7 @@ def plan(args, fly):
     )
     return (
         np.array(positions), np.asarray(distances), target, target_unitary,
-        low, high, component.render_method, component.colormap.colormap_name,
+        low, high, component.render_method, component.colormap.colormap_name, data.applied_scale_ratio,
     )
 
 
@@ -148,6 +156,7 @@ def build_blend(path, positions, distances, target, floor, width, height, fly=Fa
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, len(positions)
+    scene.render.engine = "CYCLES"  # yt_idv modes need it
     scene.render.resolution_x, scene.render.resolution_y = width, height
     scene.view_settings.view_transform = "Standard"
     world = bpy.data.worlds.new("World")
@@ -191,19 +200,91 @@ def build_blend(path, positions, distances, target, floor, width, height, fly=Fa
     return levels
 
 
+def build_deep_zoom_blend(path, args, positions, distances, target, target_unitary, box_ratio, fov_deg=45.0):
+    """A Deep Zoom shot-space scene with the same images as the path."""
+    import bpy
+    import mathutils
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extensions"))
+    import deep_zoom
+    from deep_zoom import authoring, shot_space
+
+    from cycles_volume_override import properties
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    deep_zoom.register()
+    properties.register()
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, len(positions)
+    scene.render.engine = "CYCLES"  # yt_idv modes need it
+    scene.render.resolution_x, scene.render.resolution_y = args.width, args.height
+    scene.view_settings.view_transform = "Standard"
+    world = bpy.data.worlds.new("World")
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    scene.world = world
+
+    # in shot space the volume's transform plays no part
+    volume = bpy.data.objects.new("Volume", None)
+    volume.empty_display_type = "CUBE"
+    scene.collection.objects.link(volume)
+    volume.volume_override.is_volume_override = True
+    volume.volume_override.dataset_path = os.path.abspath(args.scene)
+
+    settings = scene.deep_zoom
+    settings.enabled = True
+    if args.grids:
+        settings.grid_file = os.path.abspath(args.grids)
+    authoring.add_shot(scene, target_unitary, 1, "Flythrough")
+
+    focus = bpy.data.objects.new("Focus", None)
+    scene.collection.objects.link(focus)
+    camera_data = bpy.data.cameras.new("Camera")
+    camera_data.sensor_fit = "VERTICAL"  # yt_idv's fov is vertical
+    camera_data.angle_y = math.radians(fov_deg)
+    camera_data.clip_start = 0.01
+    camera = bpy.data.objects.new("Camera", camera_data)
+    scene.collection.objects.link(camera)
+    scene.camera = camera
+    track = camera.constraints.new("TRACK_TO")
+    track.target = focus
+    track.track_axis = "TRACK_NEGATIVE_Z"
+    track.up_axis = "UP_Y"  # world z stays up, as in the flythrough
+
+    for k, (position, distance) in enumerate(zip(positions, distances)):
+        # the path's distance, in unitary lengths, becomes the zoom
+        settings.zoom = math.log10(args.radius / (settings.world_scale * distance * box_ratio))
+        scene.keyframe_insert("deep_zoom.zoom", frame=k + 1)
+        camera.location = mathutils.Vector((position - target) / distance * args.radius)
+        camera.keyframe_insert("location", frame=k + 1)
+    report = authoring.check_path(scene, camera)
+    flagged = sum(1 for kinds in report.values() if kinds)
+    scene.frame_set(1)
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    print(f"deep zoom scene: zoom {authoring.zoom_at(scene, 1):.2f} to "
+          f"{authoring.zoom_at(scene, len(positions)):.2f}, check_path flags {flagged} frames")
+
+
 def _toml_curve(rows, indent="  "):
     return "[\n" + ",\n".join(f"{indent}[{', '.join(repr(float(v)) if i else str(int(v)) for i, v in enumerate(r))}]" for r in rows) + ",\n]"
 
 
 def write_config(path, args, blend, target_unitary, levels, low, high, render_method, colormap):
-    n = len(levels)
+    n = len(low)
     keys = sorted(set(range(0, n, args.cmap_every)) | {n - 1})
     cmap_rows = [[k + 1, low[k], high[k]] for k in keys]
-    zoom_rows = [[k + 1, levels[k]] for k in range(n)]
+    if levels is None:
+        # a Deep Zoom scene carries its own zoom
+        extensions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extensions", "deep_zoom")
+        extensions = f'\nextensions = ["{os.path.normpath(extensions_dir)}"]'
+        zoom = ""
+    else:
+        extensions = ""
+        zoom_rows = [[k + 1, levels[k]] for k in range(n)]
+        zoom = f"\n[zoom]\ntarget = [{', '.join(repr(float(v)) for v in target_unitary)}]\nlevel = {_toml_curve(zoom_rows)}\n"
     mode = RENDER_MODES.get(render_method)
     if mode is None:
         raise SystemExit(f"no render_volume mode for render_method {render_method!r}")
-    target = ", ".join(repr(float(v)) for v in target_unitary)
     with open(path, "w") as f:
         f.write(f"""# Written by examples/make_flythrough_blend.py from {os.path.basename(args.scene)}.
 #   python -m cycles_volume_override.render_volume {os.path.basename(path)}
@@ -213,7 +294,7 @@ scene = "{os.path.abspath(args.scene)}"
 
 [blender]
 file = "{os.path.basename(blend)}"
-volume = "Volume"
+volume = "Volume"{extensions}
 frames = "1-{n}"
 output = "{os.path.basename(path)[:-5]}_frames/frame_"
 resolution = [{args.width}, {args.height}]
@@ -225,27 +306,25 @@ mode = "{mode}"
 colormap = "{colormap}"
 cmap_interpolation = "log"
 cmap_range = {_toml_curve(cmap_rows)}
-
-[zoom]
-target = [{target}]
-level = {_toml_curve(zoom_rows)}
-""")
+{zoom}""")
 
 
 def main():
     args = parse_args()
     fly = _load_flythrough(args.flythrough)
     floor = args.floor if args.floor is not None else args.distance
-    positions, distances, target, target_unitary, low, high, render_method, colormap = plan(args, fly)
+    positions, distances, target, target_unitary, low, high, render_method, colormap, box_ratio = plan(args, fly)
     blend, config = f"{args.out}.blend", f"{args.out}.toml"
-    levels = build_blend(
-        os.path.abspath(blend), positions, distances, target, floor, args.width, args.height, fly=args.fly,
-    )
+    if args.deep_zoom:
+        build_deep_zoom_blend(os.path.abspath(blend), args, positions, distances, target, target_unitary, box_ratio)
+        levels = None
+    else:
+        levels = build_blend(
+            os.path.abspath(blend), positions, distances, target, floor, args.width, args.height, fly=args.fly,
+        )
     write_config(config, args, blend, target_unitary, levels, low, high, render_method, colormap)
-    print(
-        f"wrote {blend} and {config}: {len(positions)} frames, distance "
-        f"{distances[0]:.3g} to {distances[-1]:.3g} box widths, zoom level up to {max(levels):.2f}"
-    )
+    print(f"wrote {blend} and {config}: {len(positions)} frames, distance "
+          f"{distances[0]:.3g} to {distances[-1]:.3g} box widths")
 
 
 if __name__ == "__main__":
