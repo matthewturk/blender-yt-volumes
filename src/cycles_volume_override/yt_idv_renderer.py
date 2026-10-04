@@ -59,6 +59,7 @@ yt_idv gotchas handled here or in the required yt_idv patches:
 import dataclasses
 import hashlib
 import importlib
+import inspect
 import math
 
 import numpy as np
@@ -101,6 +102,10 @@ MIP_ALPHA_RAMP_POWER = 0.15  # < 1 keeps more of the faint halo visible
 MIP_ALPHA_NBINS = 256
 
 SUBSET_BOUNDS_TOLERANCE = 1e-4  # model-space slack when checking scaled bounds
+# With a zoom or shot frame the camera is ~1 model unit from the target; these
+# bound the planes relative to that distance.
+FAR_REACH = 1e3
+NEAR_FRACTION = 1e-3
 
 _dataset_cache = {}  # dataset name -> (ds, data_source)
 _render_context_cache = {}  # (backend, width, height) -> rc
@@ -108,6 +113,7 @@ _volume_scene_cache = {}  # dataset_id -> (scene, ds, render_context_key)
 _render_result_cache = {}  # dataset_id -> last RenderResult
 _transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
+_yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
@@ -813,6 +819,13 @@ def _registered_camera_kwargs(
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
     corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
+    planes = _near_far_planes(position, corners=corners)
+    if model_frame is not None:
+        # Deep in a zoom the domain is ~1e9 model units away; yt_idv rebuilds
+        # rays from the inverse projection in float32, so bound far/near.
+        to_target = float(np.linalg.norm(position))
+        planes["far_plane"] = min(planes["far_plane"], FAR_REACH * to_target)
+        planes["near_plane"] = min(max(planes["near_plane"], NEAR_FRACTION * to_target), planes["far_plane"] / 2)
 
     return {
         "position": position.astype("f4"),
@@ -820,7 +833,7 @@ def _registered_camera_kwargs(
         "up": up.astype("f4"),
         "fov": fov_deg,
         "aspect_ratio": aspect_ratio,
-        **_near_far_planes(position, corners=corners),
+        **planes,
     }
 
 
@@ -975,11 +988,16 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     rc.scene = scene
 
     custom_params = request.volume.custom_params or {}
-    for component in scene.components:
-        configure_component(component, custom_params)
     request = dataclasses.replace(request, volume=_shot_space_volume(scene, request.volume, custom_params))
     camera_world = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
     model_frame = apply_zoom(scene, custom_params, request.volume, camera_world)
+    context = {
+        "frame": request.frame.frame_number,
+        "camera": _camera_unitary(scene, request.volume, model_frame, camera_world),
+        "ds": ds,
+    }
+    for component in scene.components:
+        configure_component(component, dict(custom_params, _context=context))
     scene.camera.update(
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
@@ -1095,6 +1113,73 @@ def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
     `TF_FOG_VALUE_MIN`, alpha ramping up to `TF_FOG_ALPHA_MAX`.
     """
     return _render_with_yt_idv(request, _configure_threshold_fog)
+
+
+def _resolve_callable(spec):
+    """`"module:function"` or `"path/to/file.py:function"` as a callable."""
+    target, sep, name = spec.rpartition(":")
+    if not sep or not target:
+        raise ValueError(f"{spec!r} is not 'module:function' or 'file.py:function'")
+    if target.endswith(".py"):
+        import importlib.util
+        import os
+
+        module_spec = importlib.util.spec_from_file_location(os.path.splitext(os.path.basename(target))[0], target)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+    else:
+        module = importlib.import_module(target)
+    return getattr(module, name)
+
+
+def _camera_unitary(scene, volume, model_frame, camera_world):
+    """The camera's position in the dataset's unitary coordinates, float64,
+    or None for a scene without blocks.
+    """
+    collections = _block_collections(scene)
+    if not collections or _is_spherical(collections[0]):
+        return None
+    A, b = _world_to_model(volume, model_frame)
+    model = A @ (camera_world - b)
+    collection = collections[0]
+    return model * collection.applied_scale_ratio + np.asarray(collection.applied_scale_offset, dtype=np.float64)
+
+
+def _configure_yt_transfer_function(component, custom_params):
+    """A yt ColorTransferFunction from `yt_idv_yt_tf`, converted for this
+    component's blocks with yt_idv.tf_conversion (yt-project/yt_idv#288).
+
+    A function taking no arguments is converted once per set of blocks and
+    settings. One taking an argument gets a context dict every frame: `frame`,
+    `camera` (unitary float64 position) and `ds`.
+    """
+    from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
+
+    spec = custom_params.get("yt_idv_yt_tf")
+    if not spec:
+        raise ValueError("the yt Transfer Function mode needs yt_idv_yt_tf (Preferences > yt Transfer Function)")
+    sample_factor = float(custom_params.get("yt_idv_yt_tf_sample_factor", 0.0))
+    if sample_factor > 0:
+        component.sample_factor = sample_factor
+    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 1.0))
+    make = _resolve_callable(spec)
+    per_frame = bool(inspect.signature(make).parameters)
+    key = (id(component.data), spec, ray_length)
+    applied = _yt_tf_applied.get(id(component))
+    if applied is not None and applied[0] == key and not per_frame:
+        return
+    tf = make(custom_params.get("_context", {})) if per_frame else make()
+    # thin yt layers need a finer table than the 1024-texel default
+    converted = convert_yt_transfer_function(tf, component.data, ray_length, nbins=4096)
+    apply_converted_transfer_function(component, converted)
+    if applied is not None:
+        applied[1]["transfer_function"].release()
+    _yt_tf_applied[id(component)] = (key, converted)
+
+
+def yt_idv_yt_transfer_function_renderer(request: RenderRequest) -> RenderResult:
+    """`RENDERER_MODES["YT_IDV_YT_TRANSFER_FUNCTION"]`: a yt-built transfer function."""
+    return _render_with_yt_idv(request, _configure_yt_transfer_function)
 
 
 def _configure_projection(component, custom_params):

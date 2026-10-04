@@ -1369,3 +1369,18 @@ def test_shot_space_registers_data_and_camera_together_at_any_zoom():
         # where yt_idv draws the feature: model = (unitary - offset) / ratio
         data_model = (point - np.asarray(collection.applied_scale_offset)) / collection.applied_scale_ratio
         np.testing.assert_allclose(camera_model, data_model, rtol=1e-9)
+
+
+def test_planes_are_bounded_relative_to_the_target_in_a_zoom_frame():
+    # Regression: deep in a zoom the far plane reached the whole domain, ~1e9
+    # model units, and float32 ray reconstruction broke down.
+    camera = _persp_camera(matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 3e-9], [0, 0, 0, 1]])
+    anchor = np.full(3, 0.5)
+    kwargs = yir._registered_camera_kwargs(
+        camera, _identity_volume(), _FakeDataset(), 100, 100,
+        model_bounds=(np.full(3, -1e9), np.full(3, 1e9)), model_frame=(anchor, 1e9),
+    )
+    to_target = np.linalg.norm(kwargs["position"])
+    assert to_target == pytest.approx(1.5, rel=1e-6)
+    assert kwargs["far_plane"] == pytest.approx(yir.FAR_REACH * to_target)
+    assert kwargs["near_plane"] == pytest.approx(yir.NEAR_FRACTION * to_target)

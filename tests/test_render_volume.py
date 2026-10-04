@@ -287,3 +287,9 @@ def test_file_loaders_resolve_against_the_config(tmp_path, blend):
     text = '[data]\nloader = "gen.py:load"\ntime_varying = true\n[blender]\nfile = "scene.blend"\nvolume = "V"\n'
     config = rv.load_config(_write(tmp_path, text))
     assert config["data"]["loader"] == f"{tmp_path / 'gen.py'}:load"
+
+
+def test_yt_transfer_function_files_resolve_against_the_config(tmp_path, blend):
+    text = _minimal() + '[render]\nmode = "YT_IDV_YT_TRANSFER_FUNCTION"\n[render.yt_idv]\nyt_tf = "tf.py:make"\n'
+    config = rv.load_config(_write(tmp_path, text))
+    assert config["render"]["yt_idv"]["yt_tf"] == f"{tmp_path / 'tf.py'}:make"

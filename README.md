@@ -239,6 +239,27 @@ scene settings automatically; `examples/deep_zoom_shots.toml` renders a
 two-shot dive into DeeplyNestedZoom authored by
 `examples/make_deep_zoom_shots_blend.py`.
 
+### yt transfer functions
+
+`render.mode = "YT_IDV_YT_TRANSFER_FUNCTION"` renders with a transfer function
+you build in yt, a `ColorTransferFunction` with grey opacity over log10 of
+the field. It is converted with yt_idv's `tf_conversion` (yt-project/yt_idv#288),
+so it renders as yt would. Name the function in `[render.yt_idv]`:
+
+    yt_tf = "my_tf.py:make"      # or "module:function"
+    yt_tf_ray_length = 0.03      # divides emission and opacity
+    yt_tf_sample_factor = 8      # thin layers need finer ray steps
+
+`make()` with no arguments is converted once. `make(context)` is called every
+frame with `frame`, `camera` (the camera's unitary float64 position) and `ds`,
+so a transfer function can follow the camera. `examples/dnz_shells_tf.py`
+hides isodensity layers sparser than the gas around the camera, which turns
+the DeeplyNestedZoom dive (`examples/deep_zoom_shots_tf.toml`) into a passage
+through nested shells, one per decade of zoom. In a zoom the near and far
+planes are bounded to 1e-3 and 1e3 times the camera's distance to the target:
+yt_idv rebuilds rays from the inverse projection in float32, and a domain-wide
+far plane there bands transfer-function renders.
+
 ### Spherical data
 
 For a dataset in yt's spherical geometry, flag an **Empty with Display Type

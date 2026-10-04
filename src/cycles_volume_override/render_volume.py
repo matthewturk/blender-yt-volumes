@@ -300,10 +300,12 @@ def _resolve_paths(config, base_dir, only=None):
     if blender.get("extensions") and (only is None or "blender.extensions" in only):
         blender["extensions"] = [_resolve(base_dir, path) for path in blender["extensions"]]
     data = config.get("data", {})
-    loader = data.get("loader")
-    if loader and ".py:" in loader and (only is None or "data.loader" in only):
-        path, _, name = loader.rpartition(":")
-        data["loader"] = f"{_resolve(base_dir, path)}:{name}"
+    yt_idv = config.get("render", {}).get("yt_idv", {})
+    for table, key, dotted in ((data, "loader", "data.loader"), (yt_idv, "yt_tf", "render.yt_idv.yt_tf")):
+        spec = table.get(key)
+        if spec and ".py:" in spec and (only is None or dotted in only):
+            path, _, name = spec.rpartition(":")
+            table[key] = f"{_resolve(base_dir, path)}:{name}"
     if data.get("series") and (only is None or "data.series" in only):
         series = data["series"]
         data["series"] = [_resolve(base_dir, p) for p in series] if isinstance(series, list) else _resolve(base_dir, series)

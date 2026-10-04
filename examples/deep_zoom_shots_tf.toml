@@ -1,0 +1,26 @@
+# The two-shot DeeplyNestedZoom dive with a yt transfer function: isodensity
+# shells, one per decade of zoom. Same .blend as deep_zoom_shots.toml (built
+# with --no-grid-map for a clean look).
+
+[data]
+path = "/data/yt_sample_data/DeeplyNestedZoom/DD0025/data0025"
+field = ["gas", "density"]
+no_ghost = true
+
+[blender]
+file = "deep_zoom_shots.blend"
+volume = "Volume"
+extensions = ["../extensions/deep_zoom"]
+frames = "1-240"
+output = "../renders/deep_zoom_shots_tf/frame_"
+resolution = [1280, 720]
+samples = 16
+device = "OPTIX"
+
+[render]
+mode = "YT_IDV_YT_TRANSFER_FUNCTION"
+
+[render.yt_idv]
+yt_tf = "dnz_shells_tf.py:make"
+yt_tf_ray_length = 0.03
+yt_tf_sample_factor = 8.0

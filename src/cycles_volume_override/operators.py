@@ -149,6 +149,21 @@ class YtIdvRenderSettings(bpy.types.PropertyGroup):
         description="Shape of the alpha ramp across the visible value range -- same meaning as Fog Ramp Power -- see yt_idv_renderer.py MIP_ALPHA_RAMP_POWER",
         default=0.15, min=0.01, max=10.0,
     )
+    yt_tf: bpy.props.StringProperty(
+        name="yt Transfer Function",
+        description="'module:function' or 'file.py:function' returning a yt ColorTransferFunction (grey opacity, log10 of the field), for the yt Transfer Function mode",
+        default="",
+    )
+    yt_tf_sample_factor: bpy.props.FloatProperty(
+        name="yt TF Sample Factor",
+        description="Ray samples per cell for the yt Transfer Function mode; thin layers need more. 0 keeps yt_idv's own",
+        default=0.0, min=0.0,
+    )
+    yt_tf_ray_length: bpy.props.FloatProperty(
+        name="yt TF Ray Length",
+        description="Divides the transfer function's emission and opacity; larger is fainter and more transparent",
+        default=1.0, min=1e-9,
+    )
 
     # --- Curve-driven alpha / image-driven color (shared by Threshold Fog
     # and MIP Alpha)
@@ -250,6 +265,7 @@ RENDERER_MODES = {
     "YT_IDV_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_transfer_function_renderer,
     "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
     "YT_IDV_THRESHOLD_FOG": yt_idv_renderer.yt_idv_threshold_fog_renderer,
+    "YT_IDV_YT_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_yt_transfer_function_renderer,
 }
 
 # Modes that create their own offscreen EGL context (see compositor_device in
@@ -271,6 +287,7 @@ class VolumeOverridePreferences(bpy.types.AddonPreferences):
             ("YT_IDV_MAX_INTENSITY_ALPHA", "yt_idv: Maximum Intensity, value-driven alpha (exploratory)", "Same Maximum Intensity Projection as above, but alpha is driven by the selected value itself (transparent at the low end of what's visible, opaque at the high end) instead of a binary presence flag. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
             ("YT_IDV_TRANSFER_FUNCTION", "yt_idv: Transfer Function (exploratory)", "Real yt_idv offscreen volume renderer with an actual transfer function -- isocontour layers at fixed densities in log space, yt.ColorTransferFunction.add_layers(). Same hardcoded dataset/depth-clip/camera registration as Maximum Intensity Projection -- see yt_idv_renderer.py module docstring."),
             ("YT_IDV_PROJECTION", "yt_idv: Projective Integration (exploratory)", "Real yt_idv offscreen volume renderer using unweighted line-of-sight integration (additive, not max) -- tends to look smoother/less speckled than Maximum Intensity Projection. Same hardcoded dataset/depth-clip/camera registration -- see yt_idv_renderer.py module docstring."),
+            ("YT_IDV_YT_TRANSFER_FUNCTION", "yt_idv: yt Transfer Function", "A yt ColorTransferFunction you build (Preferences > yt Transfer Function), converted to yt_idv's so it renders as yt would"),
             ("YT_IDV_THRESHOLD_FOG", "yt_idv: Threshold Fog (exploratory)", "Real yt_idv offscreen volume renderer with a continuous transfer function -- fully transparent below a density threshold, alpha ramps up above it for a hazy/foggy look, instead of isocontour lines. Same hardcoded dataset/depth-clip/camera registration as the other yt_idv modes -- see yt_idv_renderer.py module docstring."),
         ],
         default="STUB",
@@ -488,6 +505,9 @@ def _yt_idv_custom_params():
         "yt_idv_mip_alpha_colormap": s.mip_alpha_colormap,
         "yt_idv_mip_alpha_max": s.mip_alpha_max,
         "yt_idv_mip_alpha_ramp_power": s.mip_alpha_ramp_power,
+        "yt_idv_yt_tf": s.yt_tf,
+        "yt_idv_yt_tf_ray_length": s.yt_tf_ray_length,
+        "yt_idv_yt_tf_sample_factor": s.yt_tf_sample_factor,
     }
     # Only present when selected; the renderer falls back to ramp/named colormap.
     if s.alpha_source == "CURVE":
