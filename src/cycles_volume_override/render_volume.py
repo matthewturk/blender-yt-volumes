@@ -45,6 +45,7 @@ DEFAULTS = {
         "samples": None,
         "device": "OPTIX",
         "work_dir": None,
+        "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
     "render": {
         "mode": "YT_IDV_MAX_INTENSITY",
@@ -295,6 +296,9 @@ def _resolve_paths(config, base_dir, only=None):
         value = config.get(section, {}).get(key)
         if value and (only is None or f"{section}.{key}" in only):
             config[section][key] = _resolve(base_dir, value)
+    blender = config.get("blender", {})
+    if blender.get("extensions") and (only is None or "blender.extensions" in only):
+        blender["extensions"] = [_resolve(base_dir, path) for path in blender["extensions"]]
     data = config.get("data", {})
     loader = data.get("loader")
     if loader and ".py:" in loader and (only is None or "data.loader" in only):
@@ -506,6 +510,9 @@ def _configure_blender(config):
             raise ConfigError(f"render.yt_idv.{key} is not a yt_idv preference")
         setattr(prefs.yt_idv, key, value)
 
+    for path in blender["extensions"]:
+        _register_extension(path)
+
     obj = bpy.data.objects.get(blender["volume"])
     if obj is None:
         raise ConfigError(f"no object named {blender['volume']!r} in {blender['file']}")
@@ -527,6 +534,18 @@ def _configure_blender(config):
 
     configure_cycles_device(scene, blender["device"])
     return scene, temp_work_dir
+
+
+def _register_extension(path):
+    """Import and register the extension package at directory `path`."""
+    import importlib
+
+    parent, name = os.path.split(os.path.normpath(path))
+    if not os.path.isfile(os.path.join(path, "__init__.py")):
+        raise ConfigError(f"blender.extensions: {path!r} is not a Python package")
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    importlib.import_module(name).register()
 
 
 def configure_cycles_device(scene, device_type):

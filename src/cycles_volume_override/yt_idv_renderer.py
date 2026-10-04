@@ -346,6 +346,31 @@ def _zoom_target_unitary(spec, collection):
 SPHERICAL_MODEL_FRAME = (np.full(3, 0.5), 2.0)
 
 
+def _shot_space_volume(scene, volume, custom_params):
+    """`volume` registered in shot space when `custom_params` asks for it.
+
+    Shot space (see `shot_space`) puts the zoom target at the world origin,
+    `yt_idv_shot_space` world units per unitary length at zoom 0. The
+    registration is built here in float64 and replaces the volume object's
+    own float32 matrix, which plays no part.
+    """
+    world_scale = custom_params.get("yt_idv_shot_space")
+    spec = custom_params.get("yt_idv_zoom_target")
+    collections = _block_collections(scene)
+    if not world_scale or not spec or not collections:
+        return volume
+    base_offset, base_ratio = _base_transform(collections[0])
+    anchor = (_zoom_target_unitary(spec, collections[0]) - base_offset) / base_ratio
+    local_min, local_extent = _bbox_local_min_extent(volume.bounding_box_local)
+    per_cube = float(world_scale) * base_ratio  # world units per volume-cube width
+    linear = per_cube / local_extent
+    matrix = np.eye(4)
+    matrix[:3, :3] = np.diag(linear)
+    # world = per_cube * (cube - anchor), with cube = (local - local_min) / extent
+    matrix[:3, 3] = -linear * local_min - per_cube * anchor
+    return dataclasses.replace(volume, matrix_world=matrix.tolist())
+
+
 def apply_zoom(scene, custom_params, volume=None, camera_world=None):
     """Set each block collection's transform for the zoom in `custom_params`.
 
@@ -952,6 +977,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     custom_params = request.volume.custom_params or {}
     for component in scene.components:
         configure_component(component, custom_params)
+    request = dataclasses.replace(request, volume=_shot_space_volume(scene, request.volume, custom_params))
     camera_world = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
     model_frame = apply_zoom(scene, custom_params, request.volume, camera_world)
     scene.camera.update(

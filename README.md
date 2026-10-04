@@ -227,6 +227,18 @@ unit from the target in model space, and maps world to model coordinates
 relative to the target in float64. `examples/make_flythrough_blend.py` turns
 `flythrough_densest.py`'s camera paths into either kind of scene (`--fly`).
 
+### Authoring deep camera paths: the Deep Zoom extension
+
+`extensions/deep_zoom` is a self-contained Blender extension for designing
+camera paths through deeply nested data. It works in shot space, a float64
+anchor at the world origin plus an animatable zoom, so the camera stays at
+ordinary sizes at any depth. It provides shots, a grid map of the AMR
+hierarchy, re-anchor and rescale cuts, a path check that says where they're
+needed, and float64 path export. See its README. This renderer picks up its
+scene settings automatically; `examples/deep_zoom_shots.toml` renders a
+two-shot dive into DeeplyNestedZoom authored by
+`examples/make_deep_zoom_shots_blend.py`.
+
 ### Spherical data
 
 For a dataset in yt's spherical geometry, flag an **Empty with Display Type

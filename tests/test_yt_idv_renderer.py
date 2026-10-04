@@ -1309,3 +1309,63 @@ def test_spherical_registration_maps_the_inscribed_sphere_to_the_unit_sphere():
     )
     np.testing.assert_allclose(kwargs["position"], [0.0, 0.0, 3.0], atol=1e-6)
     np.testing.assert_allclose(kwargs["focus"], [0.0, 0.0, 0.0], atol=1e-6)  # looking at the center
+
+
+# --- shot space -----------------------------------------------------------------
+
+
+def _deep_zoom_shot_space():
+    """The Deep Zoom extension's pure-math module, loaded from extensions/."""
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "extensions" / "deep_zoom" / "shot_space.py"
+    spec = importlib.util.spec_from_file_location("deep_zoom_shot_space", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shot_space_volume_maps_world_to_the_shot_space_formula():
+    shot_space = _deep_zoom_shot_space()
+
+    collection = _full_domain_collection()
+    scene = _block_scene(collection)
+    anchor = np.array([0.491507330198, 0.505260534, 0.490580561])
+    params = {"yt_idv_shot_space": 2.0, "yt_idv_zoom_target": shot_space.format_anchor(anchor)}
+    volume = yir._shot_space_volume(scene, _identity_volume(bounding_box_local=_cube_bbox()), params)
+    # at zoom 0 a unitary point lands at (point - anchor) * 2; check through the worker's own mapping
+    point = anchor + np.array([1e-3, -2e-3, 5e-4])
+    A, b = yir._world_to_model(volume)  # world -> unitary (full domain: cube = unitary)
+    world = shot_space.to_world(point, anchor, 0.0)
+    np.testing.assert_allclose(A @ (world - b), point, rtol=0, atol=1e-15)
+    # and the anchor is the world origin
+    np.testing.assert_allclose(A @ (np.zeros(3) - b), anchor, rtol=0, atol=1e-15)
+
+
+def test_shot_space_volume_leaves_ordinary_scenes_alone():
+    volume = _identity_volume()
+    assert yir._shot_space_volume(_block_scene(_full_domain_collection()), volume, {}) is volume
+
+
+def test_shot_space_registers_data_and_camera_together_at_any_zoom():
+    shot_space = _deep_zoom_shot_space()
+
+    anchor = np.array([0.491507330198, 0.505260534, 0.490580561])
+    point = anchor + np.array([3e-10, -1e-10, 2e-10])  # a feature 1e-10 from the anchor
+    for zoom in (0.0, 4.0, 9.5):
+        collection = _full_domain_collection()
+        scene = _block_scene(collection)
+        params = {
+            "yt_idv_shot_space": 2.0,
+            "yt_idv_zoom_target": shot_space.format_anchor(anchor),
+            "yt_idv_zoom_level": zoom,
+        }
+        volume = yir._shot_space_volume(scene, _identity_volume(bounding_box_local=_cube_bbox()), params)
+        camera_world = shot_space.to_world(point, anchor, zoom)  # a camera sitting on the feature
+        frame = yir.apply_zoom(scene, params, volume, camera_world)
+        A, b = yir._world_to_model(volume, frame)
+        camera_model = A @ (camera_world - b)
+        # where yt_idv draws the feature: model = (unitary - offset) / ratio
+        data_model = (point - np.asarray(collection.applied_scale_offset)) / collection.applied_scale_ratio
+        np.testing.assert_allclose(camera_model, data_model, rtol=1e-9)

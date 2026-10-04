@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "deep_zoom"
+version = "0.1.0"
+name = "Deep Zoom"
+tagline = "Author camera paths through deeply nested AMR data"
+maintainer = "Matthew Turk"
+type = "add-on"
+website = "https://github.com/matthewturk/cycles-yt"
+tags = ["Animation", "Camera", "Import-Export"]
+blender_version_min = "4.2.0"
+license = ["SPDX:BSD-3-Clause"]
+
+[permissions]
+files = "Read grid structure files and write camera paths"

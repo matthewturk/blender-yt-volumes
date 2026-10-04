@@ -1,0 +1,30 @@
+# A two-shot dive into DeeplyNestedZoom, authored with the Deep Zoom extension.
+#
+#   python extensions/deep_zoom/grid_structure.py /data/yt_sample_data/DeeplyNestedZoom/DD0025/data0025 examples/dnz_grids.npz
+#   python examples/make_deep_zoom_shots_blend.py examples/deep_zoom_shots.blend examples/dnz_grids.npz
+#   python -m cycles_volume_override.render_volume examples/deep_zoom_shots.toml
+#
+# The shots, zoom and grid map live in the .blend; registering the extension
+# makes the renderer pick them up.
+
+[data]
+path = "/data/yt_sample_data/DeeplyNestedZoom/DD0025/data0025"
+field = ["gas", "density"]
+no_ghost = true
+
+[blender]
+file = "deep_zoom_shots.blend"
+volume = "Volume"
+extensions = ["../extensions/deep_zoom"]
+frames = "1-240"
+output = "../renders/deep_zoom_shots/frame_"
+resolution = [1280, 720]
+samples = 16
+device = "OPTIX"
+
+[render]
+mode = "YT_IDV_MAX_INTENSITY"
+colormap = "inferno"
+cmap_range = [[1, 1e-20, 1e-16], [60, 1.1e-19, 1.3e-15], [120, 4.5e-15, 3.5e-8],
+              [180, 4.9e-9, 0.085], [240, 0.028, 1.0]]
+cmap_interpolation = "log"

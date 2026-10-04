@@ -527,9 +527,27 @@ def _empty_cube_bounding_box_local(obj):
     ]
 
 
+def _deep_zoom_params(scene):
+    """Shot-space custom_params from the Deep Zoom extension's scene settings,
+    or {} when it isn't installed or is off. Mirrors its volume_custom_params.
+    """
+    settings = getattr(scene, "deep_zoom", None)
+    if settings is None or not settings.enabled or not settings.shots:
+        return {}
+    frame = scene.frame_current
+    started = [s for s in settings.shots if s.frame_start <= frame]
+    shot = max(started, key=lambda s: s.frame_start) if started else min(settings.shots, key=lambda s: s.frame_start)
+    return {
+        "yt_idv_shot_space": settings.world_scale,
+        "yt_idv_zoom_target": shot.anchor,
+        "yt_idv_zoom_level": settings.zoom,
+    }
+
+
 def build_volume_params(obj):
     custom_params = obj.volume_override.to_custom_params()
     custom_params.update(_yt_idv_custom_params())
+    custom_params.update(_deep_zoom_params(bpy.context.scene))
     cache_key = properties.ensure_dataset_uuid(obj)
     return external_render.VolumeObjectParams(
         matrix_world=_matrix_to_list(obj.matrix_world),
