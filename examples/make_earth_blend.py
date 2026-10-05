@@ -65,7 +65,7 @@ def _circle_about(axis, angular_radius_deg, radius, n=128):
 
 def build(path, frames, spin=False, graticule_deg=30, tilt_deg=23.44, fps=24):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    from cycles_yt import properties, render_volume
+    from yt_volumes import properties, render_volume
 
     properties.register()
     scene = bpy.context.scene

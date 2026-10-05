@@ -67,7 +67,7 @@ os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_yt import external_render, operators, properties  # noqa: E402
+from yt_volumes import external_render, operators, properties  # noqa: E402
 
 
 def _bridge_render(request):
@@ -297,7 +297,7 @@ def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arb
 
     Not run by `main()`. Run in the yt_idv venv after a real run has written
     `bridge_request.json`/`bridge_depth.npy` to `work_dir`, with
-    `cycles_yt` importable (as in `ytidv_worker.py`; this file
+    `yt_volumes` importable (as in `ytidv_worker.py`; this file
     imports bpy at module level). Writes one PNG per combination.
     """
     import json
@@ -305,7 +305,7 @@ def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arb
     import numpy as np
     import yt
 
-    from cycles_yt import external_render, yt_idv_renderer as yir
+    from yt_volumes import external_render, yt_idv_renderer as yir
 
     with open(os.path.join(work_dir, "bridge_request.json")) as f:
         req = json.load(f)

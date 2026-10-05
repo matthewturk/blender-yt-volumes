@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from mathutils import Vector
 
-from cycles_yt import change_tracking, operators, properties
+from yt_volumes import change_tracking, operators, properties
 
 
 def _fake_obj(name, location):
@@ -225,10 +225,10 @@ def test_build_volume_params_accepts_a_sphere_empty_with_its_bounding_cube(clean
 def addon_enabled():
     # register_class alone doesn't populate preferences.addons[...]; a real enable does.
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.preferences.addon_enable(module="cycles_yt")
+    bpy.ops.preferences.addon_enable(module="yt_volumes")
     change_tracking.reset()
     yield bpy.context.scene
-    bpy.ops.preferences.addon_disable(module="cycles_yt")
+    bpy.ops.preferences.addon_disable(module="yt_volumes")
 
 
 def _flagged_cube():
@@ -250,7 +250,7 @@ def test_build_volume_params_includes_the_objects_look_settings(clean_scene_with
     assert params["yt_idv_fog_colormap"] == "inferno"
     assert params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
     # Untouched fields default to yt_idv_renderer's module constants.
-    from cycles_yt import yt_idv_renderer as yir
+    from yt_volumes import yt_idv_renderer as yir
     assert params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
     assert "yt_idv_cmap_range" not in params
 
@@ -450,7 +450,7 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
 def _fake_render_result(request):
     import numpy as np
 
-    from cycles_yt import external_render
+    from yt_volumes import external_render
 
     h, w = request.depth.data.shape
     return external_render.RenderResult(
@@ -472,7 +472,7 @@ def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(add
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_view_transform = []
@@ -498,7 +498,7 @@ def test_render_current_frame_remembers_the_colormap_range_once(addon_enabled, m
     scene.cycles.samples = 1
     _add_camera(scene, "PERSP", lens=50.0)
     props = _flagged_cube().volume_override
-    bpy.context.preferences.addons["cycles_yt"].preferences.work_dir = str(tmp_path)
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
     ranges = iter([(1.0, 2.0), (5.0, 6.0)])
 
     def fake_renderer(request):
@@ -526,7 +526,7 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
     prefs.verbose_logging = False
 
@@ -559,7 +559,7 @@ def test_render_current_frame_view_transform_warning_ignores_verbose_logging(add
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
     prefs.verbose_logging = False
 
@@ -586,7 +586,7 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
     box.volume_override.is_volume_override = True
     box.volume_override.renderer_mode = "SAMPLE_CONSTANT"
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
 
     operators.render_current_frame(bpy.context)
@@ -610,7 +610,7 @@ def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, mo
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_engine_during_render = []
@@ -640,7 +640,7 @@ def test_render_current_frame_enables_and_restores_use_persistent_data(addon_ena
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_persistent_data = []
@@ -672,7 +672,7 @@ def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(ad
     box.volume_override.is_volume_override = True
     box.hide_render = False
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_hide_render = []
@@ -702,7 +702,7 @@ def _setup_yt_idv_scene(scene, tmp_path, view_transform="AgX"):
     _add_camera(scene, "PERSP", lens=50.0)
     _flagged_cube()
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = str(tmp_path)
     return prefs
 
@@ -797,7 +797,7 @@ def _render_one_frame(scene, work_dir):
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+    prefs = bpy.context.preferences.addons["yt_volumes"].preferences
     prefs.work_dir = work_dir
     return prefs
 
@@ -875,7 +875,7 @@ def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_pa
     # Cycles' persistent-data cache.
     import numpy as np
 
-    from cycles_yt import external_render
+    from yt_volumes import external_render
 
     path_a = str(tmp_path / "a.exr")
     path_b = str(tmp_path / "b.exr")
@@ -912,7 +912,7 @@ def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp
     # deleted) file, reading back as (0, 0), so reuse never held per-frame.
     import numpy as np
 
-    from cycles_yt import external_render
+    from yt_volumes import external_render
 
     def result(value):
         return external_render.RenderResult(
@@ -939,7 +939,7 @@ def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp
 def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
     import numpy as np
 
-    from cycles_yt import external_render
+    from yt_volumes import external_render
 
     path_a = str(tmp_path / "depth_a.exr")
     path_b = str(tmp_path / "depth_b.exr")
@@ -993,3 +993,61 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
     monkeypatch.setattr(operators, "_gpu_backend", lambda: "OPENGL")
     with pytest.raises(RuntimeError, match="Vulkan GPU backend"):
         operators.render_current_frame(bpy.context)
+
+
+# --- EEVEE --------------------------------------------------------------------
+
+def _depth_seen_by_renderer(scene, engine, monkeypatch, tmp_path):
+    """Run the real two-pass pipeline with `engine` and return the depth the renderer got."""
+    scene.render.engine = engine
+    seen = []
+
+    def fake_renderer(request):
+        seen.append(request.depth)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    operators.render_current_frame(bpy.context)
+    return seen[0]
+
+
+def test_eevee_and_cycles_hand_the_renderer_the_same_depth(addon_enabled, monkeypatch, tmp_path):
+    # The renderer assumes planar depth with 1e10 for no hit, whichever engine made it.
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    scene.camera.location = (0.0, 0.0, 10.0)
+    bpy.ops.mesh.primitive_plane_add(size=6, location=(3.0, 0.0, 0.0))  # right half of the frame
+    monkeypatch.setattr(operators, "_gpu_backend", lambda: "VULKAN")
+
+    cycles = _depth_seen_by_renderer(scene, "CYCLES", monkeypatch, tmp_path)
+    eevee = _depth_seen_by_renderer(scene, "BLENDER_EEVEE", monkeypatch, tmp_path)
+
+    assert eevee.depth_convention == cycles.depth_convention == "PLANAR"
+    hit = cycles.data < 1e9
+    assert hit.any() and not hit.all()
+    np.testing.assert_array_equal(eevee.data < 1e9, hit)
+    np.testing.assert_allclose(eevee.data[hit], cycles.data[hit], rtol=1e-4)
+    np.testing.assert_allclose(cycles.data[hit], 10.0 * scene.unit_settings.scale_length, rtol=1e-4)
+    assert (eevee.data[~hit] == cycles.data[~hit]).all()
+
+
+def test_gpu_backend_falls_back_to_the_preference_before_gpu_init(monkeypatch):
+    import gpu
+
+    def not_initialized():
+        raise SystemError("GPU functions for drawing requires the gpu module to be initialized.")
+
+    monkeypatch.setattr(gpu.platform, "backend_type_get", not_initialized)
+    assert operators._gpu_backend() == bpy.context.preferences.system.gpu_backend
+
+
+@pytest.mark.parametrize("engine, camera_type, warns", [
+    ("BLENDER_EEVEE", "PANO", True),
+    ("BLENDER_EEVEE", "PERSP", False),
+    ("CYCLES", "PANO", False),
+])
+def test_engine_warning_flags_eevee_panoramas(clean_scene, engine, camera_type, warns):
+    scene = clean_scene
+    scene.render.engine = engine
+    _add_camera(scene, camera_type)
+    assert (operators._engine_warning(scene) is not None) == warns

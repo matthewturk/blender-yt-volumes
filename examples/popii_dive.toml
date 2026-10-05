@@ -4,7 +4,7 @@
 #   python extensions/deep_zoom/grid_structure.py --scene /data/PopII_prime/biggest_scene.zip examples/popii_blocks.npz
 #   python examples/make_deep_zoom_shots_blend.py examples/popii_dive.blend examples/popii_blocks.npz \
 #       --dataset /data/PopII_prime/biggest_scene.zip --first-anchor bbox --zooms 1.3 8 9 --cut 150 --no-grid-map
-#   python -m cycles_yt.render_volume examples/popii_dive.toml
+#   python -m yt_volumes.render_volume examples/popii_dive.toml
 
 [data]
 scene = "/data/PopII_prime/biggest_scene.zip"

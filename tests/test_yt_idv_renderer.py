@@ -14,9 +14,9 @@ import bpy
 import numpy as np
 import pytest
 
-from cycles_yt import change_tracking, operators
-from cycles_yt import yt_idv_renderer as yir
-from cycles_yt.external_render import (
+from yt_volumes import change_tracking, operators
+from yt_volumes import yt_idv_renderer as yir
+from yt_volumes.external_render import (
     CameraParams,
     DatasetParams,
     DepthBuffer,

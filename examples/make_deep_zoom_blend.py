@@ -20,7 +20,7 @@ DEFAULT_TARGET = (0.49150733, 0.50526053, 0.49058056)
 
 def build(path, target, frames):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    from cycles_yt import properties, render_volume
+    from yt_volumes import properties, render_volume
 
     properties.register()
     scene = bpy.context.scene

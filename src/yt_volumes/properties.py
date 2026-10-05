@@ -58,7 +58,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "Requires an Empty with Display Type 'Cube' ('Sphere' for "
             "spherical data) -- see "
             "operators.build_volume_params's docstring for why (an Empty "
-            "never renders in Cycles at all, so there's no need to hide it "
+            "never renders at all, so there's no need to hide it "
             "for pass 1, and a real mesh's own bound_box would double as "
             "the volume's registered extent even though that's not what "
             "you'd want)"

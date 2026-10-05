@@ -14,7 +14,7 @@ import types
 
 def _load_addon_module(name, path):
     """Load an add-on module without running the package's bpy-dependent `__init__.py`."""
-    spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", path)
+    spec = importlib.util.spec_from_file_location(f"yt_volumes.{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
@@ -34,9 +34,9 @@ def _matrix_world_pitched(pos, pitch_x_rad):
 
 
 def main():
-    pkg = types.ModuleType("cycles_yt")
+    pkg = types.ModuleType("yt_volumes")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules["cycles_yt"] = pkg
+    sys.modules["yt_volumes"] = pkg
 
     er = _load_addon_module("external_render", f"{ADDON_SRC}/external_render.py")
     yir = _load_addon_module("yt_idv_renderer", f"{ADDON_SRC}/yt_idv_renderer.py")
@@ -112,6 +112,6 @@ if __name__ == "__main__":
     import os
 
     ADDON_SRC = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "src", "cycles_yt")
+        os.path.join(os.path.dirname(__file__), "..", "..", "src", "yt_volumes")
     )
     main()

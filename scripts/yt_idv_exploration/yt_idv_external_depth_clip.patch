@@ -20,7 +20,7 @@ index 49dedd2..c6515fc 100644
      tf_log = traitlets.Bool(True)
      slice_position = traitlets.Tuple((0.5, 0.5, 0.5)).tag(trait=traitlets.CFloat())
      slice_normal = traitlets.Tuple((1.0, 0.0, 0.0)).tag(trait=traitlets.CFloat())
-+    # External depth clip (cycles-yt addition -- see
++    # External depth clip (yt-volumes addition -- see
 +    # ray_tracing.frag.glsl's own comment on the shader-side half of this):
 +    # lets a caller stop each ray's integration early at a per-pixel max
 +    # window-space depth, e.g. from an already-rendered opaque occluder.
@@ -80,7 +80,7 @@ index 0000000..12f3d6f
 --- /dev/null
 +++ b/yt_idv/shaders/apply_colormap_alpha.frag.glsl
 @@ -0,0 +1,41 @@
-+// Real feature addition (cycles-yt): identical to
++// Real feature addition (yt-volumes): identical to
 +// apply_colormap.frag.glsl EXCEPT it does NOT override color.a with the
 +// incoming framebuffer alpha (which for max_intensity/projection is just a
 +// binary "was anything found along this ray" flag, not tied to the actual
@@ -134,7 +134,7 @@ index 83a9533..8a15299 100644
 +// occluder rendered elsewhere), rather than always integrating out to the
 +// block's own bounding-box exit. use_external_depth_clip == 0 disables it
 +// (external_depth_tex is not sampled/read in that case). Added for
-+// cycles-yt's yt_idv integration -- see ray_tracing.frag.glsl.
++// yt-volumes's yt_idv integration -- see ray_tracing.frag.glsl.
 +uniform sampler2D external_depth_tex;
 +uniform float use_external_depth_clip;
 +
@@ -147,7 +147,7 @@ index 0000000..77e1208
 --- /dev/null
 +++ b/yt_idv/shaders/passthrough_alpha.frag.glsl
 @@ -0,0 +1,27 @@
-+// Real bug fix (cycles-yt): identical to passthrough.frag.glsl
++// Real bug fix (yt-volumes): identical to passthrough.frag.glsl
 +// EXCEPT it does not force `color.a = 1.0`. That override is appropriate
 +// for passthrough's other callers (opaque outlines/text/line overlays,
 +// where always-opaque is the intended look), but block_rendering's
@@ -160,7 +160,7 @@ index 0000000..77e1208
 +// exactly 1.0 everywhere a block was rasterized, RGB correctly (0,0,0) at
 +// genuinely-empty pixels -- i.e. transparent content rendered as solid
 +// black instead of see-through. See known_uniforms.inc.glsl-adjacent
-+// cycles-yt docs (`yt_idv_renderer.py`'s module docstring) for
++// yt-volumes docs (`yt_idv_renderer.py`'s module docstring) for
 +// the full story. Used ONLY for `component_shaders.block_rendering.
 +// transfer_function`'s `second_fragment` (both cartesian and octree
 +// variants) -- every other `second_fragment: passthrough` usage
@@ -182,7 +182,7 @@ index 567435f..5f08be8 100644
      float f_ndc_depth;
      float depth = 1.0;
  
-+    // External depth clip (cycles-yt addition): lets a caller
++    // External depth clip (yt-volumes addition): lets a caller
 +    // stop this ray's integration early at a per-pixel max window-space
 +    // depth (e.g. an already-rendered opaque occluder), rather than always
 +    // integrating all the way out to t1 (this block's own bounding-box
@@ -234,7 +234,7 @@ index 40ce595..997e176 100644
        blend_equation: func add
 +    apply_colormap_alpha:
 +      info:
-+        Real feature addition (cycles-yt) -- identical to
++        Real feature addition (yt-volumes) -- identical to
 +        apply_colormap EXCEPT it keeps the colormap texture's OWN alpha
 +        channel instead of overriding it with the incoming binary
 +        presence/absence flag, so a colormap with a real alpha gradient
@@ -254,7 +254,7 @@ index 40ce595..997e176 100644
        blend_equation: func add
 +    passthrough_alpha:
 +      info:
-+        Real bug fix (cycles-yt) -- identical to passthrough
++        Real bug fix (yt-volumes) -- identical to passthrough
 +        EXCEPT it preserves the first pass's own real alpha instead of
 +        forcing color.a = 1.0. Used ONLY as block_rendering.
 +        transfer_function's second_fragment; see passthrough_alpha.frag.glsl
@@ -274,7 +274,7 @@ index 40ce595..997e176 100644
 +    max_intensity_alpha:
 +      description:
 +        Maximum Intensity with a value-driven (not presence-driven) alpha --
-+        real feature addition (cycles-yt), see
++        real feature addition (yt-volumes), see
 +        apply_colormap_alpha.frag.glsl
 +      first_vertex: grid_position
 +      first_geometry: grid_expand

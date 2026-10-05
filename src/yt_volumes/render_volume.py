@@ -1,6 +1,6 @@
 """Render a yt dataset into a Blender scene from one TOML config file.
 
-    python -m cycles_yt.render_volume scene.toml [options]
+    python -m yt_volumes.render_volume scene.toml [options]
 
 The config names the dataset (and optional subset), the .blend file and the
 Empty-Cube object to replace with the volume, and how it should look.
@@ -519,18 +519,22 @@ def _configure_blender(config):
         if camera is None or camera.type != "CAMERA":
             raise ConfigError(f"blender.camera {blender['camera']!r} is not a camera object")
         scene.camera = camera
-    scene.render.engine = blender["engine"]
     if blender["resolution"]:
         scene.render.resolution_x, scene.render.resolution_y = blender["resolution"]
-    if blender["samples"] and blender["engine"] == "CYCLES":
-        scene.cycles.samples = blender["samples"]
+    scene.render.image_settings.file_format = "PNG"
+    configure_engine(scene, blender)
+    return scene, temp_work_dir
+
+
+def configure_engine(scene, blender):
+    """Set the render engine and its samples; the device only applies to Cycles."""
+    scene.render.engine = blender["engine"]
+    if blender["engine"] == "CYCLES":
+        if blender["samples"]:
+            scene.cycles.samples = blender["samples"]
+        configure_cycles_device(scene, blender["device"])
     elif blender["samples"]:
         scene.eevee.taa_render_samples = blender["samples"]
-    scene.render.image_settings.file_format = "PNG"
-
-    if blender["engine"] == "CYCLES":
-        configure_cycles_device(scene, blender["device"])
-    return scene, temp_work_dir
 
 
 def apply_render_settings(props, render):
@@ -643,7 +647,7 @@ def render(config):
 
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
-        prog="python -m cycles_yt.render_volume",
+        prog="python -m yt_volumes.render_volume",
         description="Render a yt dataset into a Blender scene's volume Empty.",
     )
     parser.add_argument("config", nargs="?", help="TOML config file (optional if options cover the required keys)")

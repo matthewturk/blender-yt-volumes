@@ -1,11 +1,11 @@
-# cycles-yt
+# yt-volumes
 
-A Blender add-on that renders flagged objects with an external volume
-renderer instead of Cycles: [yt_idv](https://github.com/yt-project/yt_idv),
-the GPU volume renderer for [yt](https://yt-project.org) datasets. The volume
-is depth-clipped against Cycles' Z pass and composited back in on F12 or
-animation render, so Cycles geometry and simulation data share one camera
-and occlude each other correctly. It handles deeply nested AMR data past
+A Blender add-on that renders flagged objects with
+[yt_idv](https://github.com/yt-project/yt_idv), the GPU volume renderer for
+[yt](https://yt-project.org) datasets, inside a Cycles or EEVEE render. The
+volume is depth-clipped against the render's Z pass and composited back in on
+F12 or animation render, so Blender geometry and simulation data share one
+camera and occlude each other correctly. It handles deeply nested AMR data past
 float32's precision, spherical data, time series, and yt transfer functions,
 interactively in Blender or in batch from a config file. A companion Blender
 extension, Deep Zoom (`extensions/deep_zoom`), authors camera paths through
@@ -23,7 +23,7 @@ git clone https://github.com/matthewturk/cycles-override.git && cd cycles-overri
 PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
 PYTHONPATH= uv run --group ytidv pytest -q
 PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend
-PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
+PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_volume \
     examples/render_volume.toml --frames 1 --set blender.device='"CUDA"'
 ```
 
@@ -32,7 +32,7 @@ yt's HiresIsolatedGalaxy sample (downloaded on first use), into the simple
 scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
 `HIP` or `CPU` for your GPU.
 
-**In Blender:** zip `src/cycles_yt/` and install it
+**In Blender:** zip `src/yt_volumes/` and install it
 (Preferences > Add-ons > Install from Disk), and install yt and yt_idv into
 Blender's own Python (`uv pip install --python <blender's python>
 "yt_idv @ git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
@@ -53,7 +53,7 @@ and install it as an extension. Render Engine must be Cycles.
 ## Contents
 
 ```
-src/cycles_yt/
+src/yt_volumes/
     __init__.py            bl_info, register()/unregister()
     properties.py          per-object flag, Dataset Path, zoom target/level, UI panel
     operators.py           two-pass render orchestration, preferences, F12 takeover
@@ -74,11 +74,11 @@ tests/                     pytest suite
 This is a classic (`bl_info`-style) add-on, not a pip package Blender
 installs for itself -- Blender doesn't consult `pyproject.toml`. Either:
 
-- Zip `src/cycles_yt/` and use Blender's *Install from Disk*, or
-- Symlink `src/cycles_yt/` into your Blender's addons directory
+- Zip `src/yt_volumes/` and use Blender's *Install from Disk*, or
+- Symlink `src/yt_volumes/` into your Blender's addons directory
   and enable it in Preferences > Add-ons.
 
-Then enable **cycles-yt** in Preferences.
+Then enable **yt-volumes** in Preferences.
 Its preferences panel has only **Working Directory** (where per-frame EXR
 intermediates go; default: system temp dir) and **Verbose Logging**.
 
@@ -93,6 +93,35 @@ renders its **Dataset Path**: anything `yt.load` reads, or a scene saved with
 yt_idv's `SceneGraph.save` (`.zip`); with no path, yt's IsolatedGalaxy
 sample. The field defaults to density; set it with an extra custom param
 `yt_idv_field` (e.g. `gas, temperature`).
+
+## Cycles or EEVEE
+
+Pass 1 (the scene's beauty and Z pass) renders with the scene's engine,
+Cycles or EEVEE; the volume always comes from yt_idv, so it looks the same
+either way. What can differ:
+
+- **Requirements.** EEVEE needs Blender's **Vulkan** GPU backend
+  (Preferences > System > GPU Backend, then restart; `blender -b
+  --gpu-backend vulkan` in batch). Under OpenGL, EEVEE's GL context and
+  yt_idv's EGL context can't share a process, and the render stops with an
+  error saying so. Cycles works under either backend.
+- **The geometry, not the volume.** EEVEE rasterizes: shadows, reflections,
+  refraction and indirect light are approximations, so meshes, lights and
+  materials look different, as in any EEVEE vs Cycles comparison. Nothing
+  refracts or casts shadows onto the volume in either engine (see "No
+  lighting/shadow interchange").
+- **Depth clipping.** With perspective cameras EEVEE's Z pass matches
+  Cycles' (planar depth, 1e10 where nothing is hit, values within about
+  1e-5 relative), so the volume cuts into geometry in the same place. Measured
+  on `examples/simple.blend` with the PopII scene: mean RGB difference
+  0.06/255, with differences only along the sphere's silhouette.
+- **Panoramic cameras.** EEVEE renders equirectangular panoramas, but its
+  depth differs from the exact panorama depth by a median 0.4% and up to a
+  few percent, and silhouettes shift by a pixel. The volume's clip can be
+  visibly off near occluders, so the add-on warns; use Cycles for panoramas.
+- **Settings.** `blender.samples` sets EEVEE's render samples; `device` and
+  the OptiX denoiser are Cycles-only. Cycles' persistent-data cache (and the
+  care taken not to invalidate it) doesn't apply to EEVEE.
 
 ## Sample renderer
 
@@ -231,8 +260,8 @@ custom harness: one TOML file names the dataset (plus optional subset), the
 `.blend` file, the Empty-Cube object to replace, and the look.
 
 ```
-PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume examples/render_volume.toml
-PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
+PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_volume examples/render_volume.toml
+PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_volume \
     --sample IsolatedGalaxy --blend scene.blend --volume "Volume 1" --frames 1-10 \
     --set data.subset.kind='"sphere"' --set data.subset.radius='[20, "kpc"]'
 ```
@@ -241,14 +270,10 @@ PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
 file, `--set section.key=value` reaches any key (values parse as TOML), and
 `--check` prints the merged config without rendering. `[render]` keys
 override the volume's own settings in the `.blend`; with no `[render]` the
-`.blend` renders exactly as authored in the GUI.
-
-`blender.engine = "BLENDER_EEVEE"` renders pass 1 with EEVEE instead of
-Cycles. That needs Blender's Vulkan GPU backend (`blender -b --gpu-backend
-vulkan`, or Preferences > System > GPU Backend): under OpenGL, EEVEE's GL
-context and yt_idv's EGL context can't coexist in one process. EEVEE's Z pass
-uses the same conventions as Cycles' (planar, 1e10 for no hit). Each run gets its own
+`.blend` renders exactly as authored in the GUI. Each run gets its own
 temporary `work_dir` unless one is set, so concurrent runs don't collide.
+`blender.engine = "BLENDER_EEVEE"` renders with EEVEE (see "Cycles or EEVEE";
+run Blender with `-b --gpu-backend vulkan`).
 
 ### Deep zooms past float32
 
@@ -336,7 +361,7 @@ maps frames to outputs: by simulation time or by output index, with optional
 has the details.
 
 ```
-PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_series examples/render_series.toml --dry-run
+PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_series examples/render_series.toml --dry-run
 ```
 
 Consecutive frames that show the same output form a segment, and each segment
@@ -726,23 +751,25 @@ is the real-depth-clip redo, but only for a single still frame.
 
 ### Per-frame pipeline (F12 / animation render)
 
-1. `operators.render_current_frame()` hides flagged objects from the main
-   scene (`hide_render`, not deletion) and runs **Pass 1**: a real Cycles
-   render with `view_layer.use_pass_z = True`, its compositor set (by
+1. `operators.render_current_frame()` runs **Pass 1**: a render with the
+   scene's engine (Cycles, or EEVEE under the Vulkan backend) with
+   `view_layer.use_pass_z = True`, its compositor set (by
    `compositor_build.build_pass1_capture_graph`) to do nothing but write
-   Combined and Z to full-float EXR via File Output nodes.
+   Combined and Z to full-float EXR via File Output nodes. Flagged objects
+   are Empties, which never render, so nothing needs hiding.
 2. Reads the Z EXR back into a `DepthBuffer` (`operators.read_depth_buffer`).
 3. Builds one `RenderRequest` per flagged object (camera intrinsics +
    extrinsics, the depth buffer, that object's transform/bbox/custom_params,
-   frame number) and calls `render_volume()`. Each `RenderResult.rgba` is
-   written to its own full-float EXR.
+   frame number) and calls the renderer for that object's `renderer_mode`.
+   Each `RenderResult.rgba` is written to its own full-float EXR.
 4. Rebuilds the compositor (`compositor_build.build_or_update_graph`) as
    `Image(beauty EXR) -> chained Alpha Over per volume (farthest first) ->
-   Composite`, then runs **Pass 2**: `scene.render.engine` temporarily
-   swapped to Workbench, `write_still=True`. This is what actually produces
-   the saved output file.
-5. Object visibility and `scene.render.engine` are restored in a `finally`,
-   whether or not any step above raised.
+   Composite`, then runs **Pass 2** with the same engine and
+   `write_still=True`. The graph has no Render Layers node, so nothing is
+   rendered again; this pass produces the saved output file.
+5. Scene settings the pipeline forces (Z pass, persistent data, CPU
+   compositor, Standard view transform) are restored in a `finally`, or once
+   at the end of a `render_session`.
 
 ### Why two render passes, not one
 
@@ -760,13 +787,13 @@ Resolution: two internal render calls per frame, both triggered by our own
 operator (the spec's "or an overridden render operator" option, chosen over
 handlers alone for exactly this reason):
 
-- **Pass 1** (real Cycles): produces the Z pass; its own compositor output
-  is discarded, we only want the two EXRs it writes to disk.
-- **Pass 2** (Workbench, essentially free): its compositor graph reads
-  *everything* from EXRs via Image nodes -- no live Render Layers dependency
-  -- so pass 2's actual 3D render is irrelevant and can run on a cheap
-  rasterizer purely to make Blender execute the compositor and write the
-  real output file.
+- **Pass 1** (Cycles or EEVEE): produces the Z pass; its own compositor
+  output is discarded, we only want the two EXRs it writes to disk.
+- **Pass 2** (same engine, essentially free): its compositor graph reads
+  *everything* from EXRs via Image nodes -- no Render Layers node -- so
+  nothing is rendered again; the pass only makes Blender run the compositor
+  and write the output file. It keeps pass 1's engine because switching
+  engines in between invalidates Cycles' persistent-data cache.
 
 ### F12 takeover
 
@@ -1115,14 +1142,14 @@ replacement for it.
   its hard switch would produce artifacts wherever a solid partially
   occludes/interpenetrates the volume. Depth-clipped integration bound +
   premultiplied Alpha Over instead.
-- **Viewport/Eevee preview**: out of scope, F12/animation-render only.
+- **Viewport preview**: out of scope, F12/animation-render only (with
+  Cycles or EEVEE, see "Cycles or EEVEE").
 - **Motion blur matching**: out of scope.
 
 ## Test scenes to verify depth-clipped integration
 
-Build these once the real `render_volume()` is wired in (or with the debug
-fake renderer enabled, to confirm the *pipeline* mechanics independent of
-the real renderer's correctness):
+Build these with a yt_idv mode, or with `SAMPLE_CONSTANT` to check the
+*pipeline* mechanics independent of yt_idv:
 
 - **(a) Volume behind a solid mesh**: a cube between the camera and the
   flagged volume object. Expect the cube to fully occlude the volume behind

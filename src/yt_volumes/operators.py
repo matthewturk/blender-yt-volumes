@@ -5,7 +5,8 @@ Two passes are needed because Blender's compositor runs inside the same
 `render.render()` call that produces the Z pass, so one call can't both
 produce this frame's depth and composite a volume render made from it.
 
-  Pass 1: Cycles renders beauty + Z, written to EXR by a File Output graph.
+  Pass 1: the scene's engine (Cycles, or EEVEE under the Vulkan GPU
+  backend) renders beauty + Z, written to EXR by a File Output graph.
   Between passes: read Z back, call the renderer per flagged object, write
   each result to EXR, and build an Image -> Alpha Over -> Composite graph.
   Pass 2: renders again (same engine) purely to run that compositor graph
@@ -158,7 +159,7 @@ def _get_prefs(context):
 
 def _work_dir(context):
     prefs = _get_prefs(context)
-    d = prefs.work_dir or os.path.join(tempfile.gettempdir(), "cycles_yt")
+    d = prefs.work_dir or os.path.join(tempfile.gettempdir(), "yt_volumes")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -300,8 +301,8 @@ def _empty_cube_bounding_box_local(obj):
     """The 8 local-space corners `[-size, +size]^3` of a flagged Empty-Cube or
     Empty-Sphere, `size` being its `empty_display_size`.
 
-    Flagged objects must be such Empties: Empties never appear in a Cycles
-    render, so they needn't be hidden for pass 1 (toggling `hide_render`
+    Flagged objects must be such Empties: Empties never appear in a render,
+    so they needn't be hidden for pass 1 (toggling `hide_render`
     per frame invalidates Cycles' persistent-data cache). A sphere stands in
     for spherical data, its radius the data's outer radius. Raises otherwise.
     """
@@ -440,8 +441,8 @@ def build_frame_params(scene):
 
 
 # --- Depth read-back --------------------------------------------------------
-# Cycles Z is planar (distance along the view axis, not ray length); 1e10
-# marks no-hit pixels; Image.pixels rows start at the bottom.
+# Z is planar (distance along the view axis, not ray length) in Cycles and
+# EEVEE alike; 1e10 marks no-hit pixels; Image.pixels rows start at the bottom.
 
 DEPTH_CONVENTION = "PLANAR"
 DEPTH_NO_HIT_VALUE = 1e10
@@ -611,6 +612,17 @@ def _gpu_backend():
         return bpy.context.preferences.system.gpu_backend
 
 
+def _engine_warning(scene):
+    """A warning for engine/camera combinations whose depth is only approximate, or None."""
+    if scene.render.engine != "CYCLES" and scene.camera.data.type == "PANO":
+        return (
+            f"{scene.render.engine} with a panoramic camera: its Z pass differs from the "
+            "panorama's exact depth by up to a few percent, so the volume's depth clip "
+            "can be off near occluders. Use Cycles for panoramic renders."
+        )
+    return None
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
@@ -630,6 +642,9 @@ def render_current_frame(context):
             f"backend (Preferences > System > GPU Backend, then restart); otherwise "
             f"switch Render Properties > Render Engine to Cycles"
         )
+    warning = _engine_warning(scene)
+    if warning:
+        _log(f"WARNING: {warning}")
     verbose = prefs.verbose_logging
     log = _log if verbose else (lambda *a, **k: None)
     step = _StepTimer if verbose else _NullStepTimer
@@ -676,7 +691,7 @@ def render_current_frame(context):
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
-        # --- Pass 1: real Cycles beauty + Z ---------------------------------
+        # --- Pass 1: beauty + Z from the scene's engine ----------------------
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
                 scene, frame_dir, scene.frame_current,
@@ -754,9 +769,7 @@ def _show_render_result(context):
 
 
 class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
-    """Render with volume override: Cycles + Z pass -> external volume
-    renderer -> depth-clipped Alpha Over composite -> saved output.
-    """
+    """Render with the scene's engine plus yt_idv volumes, depth-clipped and composited."""
 
     bl_idname = "render.volume_override"
     bl_label = "Render (with Volume Override)"

@@ -29,9 +29,9 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 ADDON_SRC_PARENT = os.path.join(REPO_ROOT, "src")
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_yt import operators  # noqa: E402
-from cycles_yt import yt_idv_renderer as yir  # noqa: E402
-from cycles_yt.external_render import (  # noqa: E402
+from yt_volumes import operators  # noqa: E402
+from yt_volumes import yt_idv_renderer as yir  # noqa: E402
+from yt_volumes.external_render import (  # noqa: E402
     DatasetParams,
     DepthBuffer,
     FrameParams,

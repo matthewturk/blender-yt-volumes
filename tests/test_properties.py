@@ -1,7 +1,7 @@
 import bpy
 import pytest
 
-from cycles_yt import properties
+from yt_volumes import properties
 
 
 @pytest.fixture

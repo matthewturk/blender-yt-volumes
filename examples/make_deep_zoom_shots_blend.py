@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import deep_zoom  # noqa: E402
 from deep_zoom import authoring, grid_structure, shot_space  # noqa: E402
 
-from cycles_yt import properties, render_volume  # noqa: E402
+from yt_volumes import properties, render_volume  # noqa: E402
 
 RADIUS = 3.0
 

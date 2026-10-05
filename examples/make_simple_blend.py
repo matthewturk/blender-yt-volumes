@@ -17,7 +17,7 @@ import mathutils
 
 def build(path, frames=120):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    from cycles_yt import properties, render_volume
+    from yt_volumes import properties, render_volume
 
     properties.register()
     scene = bpy.context.scene

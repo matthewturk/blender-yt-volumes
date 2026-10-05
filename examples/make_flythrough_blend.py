@@ -7,7 +7,7 @@ point --flythrough at your copy.
 
 Writes OUT_PREFIX.blend and OUT_PREFIX.toml; render with
 
-    python -m cycles_yt.render_volume OUT_PREFIX.toml
+    python -m yt_volumes.render_volume OUT_PREFIX.toml
 
 The path, target and colormap plan come from flythrough_densest.py's own
 functions, run once here against the saved scene. In Blender the volume box is
@@ -161,7 +161,7 @@ def build_blend(path, positions, distances, target, floor, width, height, look, 
     import bpy
     import mathutils
 
-    from cycles_yt import properties, render_volume
+    from yt_volumes import properties, render_volume
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     properties.register()
@@ -221,7 +221,7 @@ def build_deep_zoom_blend(path, args, positions, distances, target, target_unita
     import deep_zoom
     from deep_zoom import authoring, shot_space
 
-    from cycles_yt import properties, render_volume
+    from yt_volumes import properties, render_volume
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     deep_zoom.register()
@@ -305,7 +305,7 @@ def write_config(path, args, blend, target_unitary, levels, low, high, render_me
     mode = render_mode(render_method)
     with open(path, "w") as f:
         f.write(f"""# Written by examples/make_flythrough_blend.py from {os.path.basename(args.scene)}.
-#   python -m cycles_yt.render_volume {os.path.basename(path)}
+#   python -m yt_volumes.render_volume {os.path.basename(path)}
 
 [data]
 scene = "{os.path.abspath(args.scene)}"

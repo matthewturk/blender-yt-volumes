@@ -10,7 +10,7 @@ import math
 import numpy as np
 import yt
 
-ADDON_SRC = "/home/mturk/yt/cycles-yt/src/cycles_yt"
+ADDON_SRC = "/home/mturk/yt/cycles-yt/src/yt_volumes"
 
 
 def _load_addon_modules():
@@ -18,12 +18,12 @@ def _load_addon_modules():
     import sys
     import types
 
-    pkg = types.ModuleType("cycles_yt")
+    pkg = types.ModuleType("yt_volumes")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules.setdefault("cycles_yt", pkg)
+    sys.modules.setdefault("yt_volumes", pkg)
 
     def load(name):
-        spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", f"{ADDON_SRC}/{name}.py")
+        spec = importlib.util.spec_from_file_location(f"yt_volumes.{name}", f"{ADDON_SRC}/{name}.py")
         mod = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = mod
         spec.loader.exec_module(mod)

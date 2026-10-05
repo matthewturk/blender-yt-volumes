@@ -34,10 +34,14 @@ a little — not an expert, not a beginner.
 ## Gotchas when debugging
 
 - Don't run a test render while another render is running: they share
-  `work_dir` (`/tmp/cycles_yt`) and `render_session` sweeps
+  `work_dir` (`/tmp/yt_volumes`) and `render_session` sweeps
   leftover `frame_*` directories. Set `prefs.work_dir` to a private directory.
 - Checking output for the volume: compare RGB only. PNGs are RGBA, and the
   constant alpha channel hides large RGB differences in a plain mean.
+- EEVEE needs the real Blender (`-b --gpu-backend vulkan`, the venv's
+  site-packages on `sys.path`): under OpenGL, which the pip `bpy` uses, EEVEE
+  and yt_idv's EGL context can't share a process. Tests with a fake renderer
+  can still use EEVEE in the pip `bpy`.
 - Per-frame slowdowns are almost always Cycles' persistent-data cache being
   invalidated. Timestamp `bpy.app.handlers.render_stats` and look for
   "Synchronizing object" / "Updating Lights | Computing tree" to see which

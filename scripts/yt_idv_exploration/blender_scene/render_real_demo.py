@@ -42,7 +42,7 @@ os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_yt import operators, properties  # noqa: E402
+from yt_volumes import operators, properties  # noqa: E402
 
 
 class _StubPrefs:

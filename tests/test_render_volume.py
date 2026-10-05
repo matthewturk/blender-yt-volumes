@@ -3,7 +3,7 @@ import types
 import numpy as np
 import pytest
 
-from cycles_yt import render_volume as rv
+from yt_volumes import render_volume as rv
 
 
 @pytest.fixture
@@ -70,6 +70,7 @@ def test_options_alone_are_enough_without_a_config_file(blend, monkeypatch):
     (_minimal() + '[data.subset]\nkind = "cylinder"\n', "data.subset.kind"),
     (_minimal() + '[data.subset]\nkind = "sphere"\n', "needs radius"),
     (_minimal() + 'colour = "red"\n', "unknown config keys: blender.colour"),
+    (_minimal() + 'engine = "BLENDER_WORKBENCH"\n', "blender.engine must be one of"),
 ])
 def test_validation_errors(tmp_path, blend, text, message):
     with pytest.raises(rv.ConfigError, match=message):
@@ -210,7 +211,7 @@ def test_cmap_validation(tmp_path, blend, extra, message):
 def volume_props():
     import bpy
 
-    from cycles_yt import properties
+    from yt_volumes import properties
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     properties.register()
@@ -333,3 +334,24 @@ def test_yt_transfer_function_files_resolve_against_the_config(tmp_path, blend):
     text = _minimal() + '[render]\nmode = "YT_IDV_YT_TRANSFER_FUNCTION"\n[render.yt_idv]\nyt_tf = "tf.py:make"\n'
     config = rv.load_config(_write(tmp_path, text))
     assert config["render"]["yt_idv"]["yt_tf"] == f"{tmp_path / 'tf.py'}:make"
+
+
+@pytest.mark.parametrize("engine", ["CYCLES", "BLENDER_EEVEE"])
+def test_configure_engine_sets_the_engines_own_samples(monkeypatch, engine):
+    import bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    devices = []
+    monkeypatch.setattr(rv, "configure_cycles_device", lambda scene, device: devices.append(device))
+    cycles_default, eevee_default = scene.cycles.samples, scene.eevee.taa_render_samples
+
+    rv.configure_engine(scene, {**rv.DEFAULTS["blender"], "engine": engine, "samples": 7})
+
+    assert scene.render.engine == engine
+    if engine == "CYCLES":
+        assert (scene.cycles.samples, scene.eevee.taa_render_samples) == (7, eevee_default)
+        assert devices == ["OPTIX"]
+    else:
+        assert (scene.cycles.samples, scene.eevee.taa_render_samples) == (cycles_default, 7)
+        assert devices == []

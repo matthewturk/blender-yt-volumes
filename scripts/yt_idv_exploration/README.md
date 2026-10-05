@@ -1,6 +1,6 @@
 # yt_idv exploration
 
-Retained exploration for `src/cycles_yt/yt_idv_renderer.py`
+Retained exploration for `src/yt_volumes/yt_idv_renderer.py`
 (the `YT_IDV_MAX_INTENSITY`/`YT_IDV_TRANSFER_FUNCTION` renderer modes) --
 everything here was actually run, not just written; see each script's
 docstring for what it confirmed and `images/` for the actual output.

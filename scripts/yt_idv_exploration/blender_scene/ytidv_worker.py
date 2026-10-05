@@ -34,12 +34,12 @@ import sys
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ADDON_SRC = os.path.normpath(os.path.join(HERE, "..", "..", "..", "src", "cycles_yt"))
+ADDON_SRC = os.path.normpath(os.path.join(HERE, "..", "..", "..", "src", "yt_volumes"))
 
 
 def _load_addon_module(name, path):
     """Load one add-on submodule, skipping the package's bpy-dependent __init__."""
-    spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", path)
+    spec = importlib.util.spec_from_file_location(f"yt_volumes.{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
@@ -47,9 +47,9 @@ def _load_addon_module(name, path):
 
 
 def _addon_modules():
-    pkg = types.ModuleType("cycles_yt")
+    pkg = types.ModuleType("yt_volumes")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules.setdefault("cycles_yt", pkg)
+    sys.modules.setdefault("yt_volumes", pkg)
     external_render = _load_addon_module("external_render", os.path.join(ADDON_SRC, "external_render.py"))
     yt_idv_renderer = _load_addon_module("yt_idv_renderer", os.path.join(ADDON_SRC, "yt_idv_renderer.py"))
     return external_render, yt_idv_renderer

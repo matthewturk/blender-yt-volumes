@@ -1,4 +1,4 @@
-# python -m cycles_yt.render_volume examples/render_volume.toml
+# python -m yt_volumes.render_volume examples/render_volume.toml
 # Relative paths resolve against this file's directory.
 
 [data]

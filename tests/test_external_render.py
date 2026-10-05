@@ -1,6 +1,6 @@
 import numpy as np
 
-from cycles_yt import external_render as er
+from yt_volumes import external_render as er
 
 IDENTITY_4X4 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
 

@@ -1,7 +1,7 @@
 [project]
-name = "cycles-yt"
+name = "yt-volumes"
 version = "0.1.0"
-description = "Blender add-on: render yt datasets with yt_idv inside Cycles renders, depth-clipped and composited on F12."
+description = "Blender add-on: render yt datasets with yt_idv inside Cycles or EEVEE renders, depth-clipped and composited on F12."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 # Pinned to match the pip-installable `bpy` dev/test dependency below (bpy

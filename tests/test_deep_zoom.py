@@ -12,7 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "extensions
 import deep_zoom  # noqa: E402
 from deep_zoom import authoring, shot_space  # noqa: E402
 
-from cycles_yt import operators  # noqa: E402
+from yt_volumes import operators  # noqa: E402
 
 ANCHOR = np.array([0.491507330198, 0.505260534, 0.490580561])
 
@@ -169,7 +169,7 @@ def test_exported_path_is_the_camera_in_unitary_float64(scene, tmp_path):
     np.testing.assert_allclose(last["forward"], [0.0, 0.0, -1.0], atol=1e-6)  # an unrotated camera
 
 
-def test_cycles_yt_renders_the_playing_shot(scene):
+def test_yt_volumes_renders_the_playing_shot(scene):
     assert operators._deep_zoom_params(scene) == {}
     authoring.add_shot(scene, ANCHOR, 1, "Wide")
     authoring.add_shot(scene, "max", 30, "Peak")

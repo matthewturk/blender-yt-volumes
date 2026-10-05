@@ -219,7 +219,7 @@ def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
     source = path or SAMPLE_DATASET_NAME
     previous = ctx.previous_scene
     if previous is not None:
-        if getattr(previous, "_cycles_yt_source", None) == source:
+        if getattr(previous, "_yt_volumes_source", None) == source:
             return VolumeSetupResult(scene=previous, ds=ctx.previous_ds, changed=False)
         for collection in _block_collections(previous):
             collection.release()
@@ -239,7 +239,7 @@ def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
         ds = yt.load(path)
         field = _parse_field(ctx.custom_params.get("yt_idv_field", SAMPLE_FIELD))
         scene = ctx.render_context.add_scene(ds.all_data(), field, no_ghost=True)
-    scene._cycles_yt_source = source
+    scene._yt_volumes_source = source
     return VolumeSetupResult(scene=scene, ds=ds, changed=True)
 
 
@@ -330,10 +330,10 @@ def _base_transform(collection):
     """The `(offset, ratio)` that maps the collection into the volume cube,
     recorded the first time a zoom changes it.
     """
-    base = getattr(collection, "_cycles_yt_base_transform", None)
+    base = getattr(collection, "_yt_volumes_base_transform", None)
     if base is None:
         base = (np.asarray(collection.applied_scale_offset, dtype=np.float64), float(collection.applied_scale_ratio))
-        collection._cycles_yt_base_transform = base
+        collection._yt_volumes_base_transform = base
     return base
 
 
@@ -367,14 +367,14 @@ def _densest_cell_unitary(collection):
 def _zoom_target_unitary(spec, collection):
     """`"max"` or `"x, y, z"` as a float64 (3,) unitary position."""
     if spec.strip().lower() == "max":
-        cached = getattr(collection, "_cycles_yt_zoom_max", None)
+        cached = getattr(collection, "_yt_volumes_zoom_max", None)
         if cached is None:
             if collection.data_source is None:
                 cached = _densest_cell_unitary(collection)
             else:
                 position = collection.data_source.argmax(collection.field)
                 cached = np.array([float(p.to("unitary")) for p in position])
-            collection._cycles_yt_zoom_max = cached
+            collection._yt_volumes_zoom_max = cached
         return cached
     values = spec.replace(",", " ").split()
     if len(values) != 3:
@@ -429,7 +429,7 @@ def apply_zoom(scene, custom_params, volume=None, camera_world=None):
         return SPHERICAL_MODEL_FRAME
     if not spec:
         for collection in _block_collections(scene):
-            base = getattr(collection, "_cycles_yt_base_transform", None)
+            base = getattr(collection, "_yt_volumes_base_transform", None)
             if base is not None:
                 _set_model_transform(collection, *base)
         return None
@@ -904,7 +904,7 @@ def _near_far_planes(position, margin=0.1, corners=_UNIT_CUBE_CORNERS):
 
 
 def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=None):
-    """Convert Cycles' PLANAR `request.depth` to yt_idv window-space depth.
+    """Convert the PLANAR `request.depth` to yt_idv window-space depth.
 
     Reconstructs world hit points from the Blender camera rays, maps them into
     model space via the object registration, and projects them through
@@ -1005,7 +1005,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     """Render `request` with yt_idv; `configure_component(component,
     custom_params)` sets up each scene component.
 
-    Renders square and center-crops, padding the Cycles depth clip onto the
+    Renders square and center-crops, padding the depth clip onto the
     same square canvas. Returns the cached result without `rc.run()` if
     nothing affecting the image changed.
     """

@@ -2,8 +2,8 @@ import bpy
 import numpy as np
 import pytest
 
-from cycles_yt import external_render as er
-from cycles_yt import operators, sample_renderers
+from yt_volumes import external_render as er
+from yt_volumes import operators, sample_renderers
 
 RES_X, RES_Y = 33, 25  # odd dims -> a pixel sits exactly on the optical axis
 CENTER_COL, CENTER_ROW = 16, 12

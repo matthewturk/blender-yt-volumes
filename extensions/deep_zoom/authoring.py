@@ -68,7 +68,7 @@ class DeepZoomSettings(bpy.types.PropertyGroup):
     active_shot_index: bpy.props.IntProperty(default=0)
     grid_file: bpy.props.StringProperty(
         name="Grid Structure",
-        description=".npz written by cycles_yt.grid_structure",
+        description=".npz written by yt_volumes.grid_structure",
         subtype="FILE_PATH",
         update=_redraw,
     )
@@ -482,7 +482,7 @@ def camera_path(scene, camera=None, frame_start=None, frame_end=None):
         scene.frame_set(saved)
     data = camera.data
     return {
-        "format": "cycles-yt deep-zoom path 1",
+        "format": "yt-volumes deep-zoom path 1",
         "coordinates": "unitary",
         "world_scale": settings.world_scale,
         "shots": [{"name": s.name, "anchor": s.anchor, "frame_start": s.frame_start} for s in settings.shots],

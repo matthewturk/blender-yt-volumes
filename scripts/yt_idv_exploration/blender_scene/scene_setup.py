@@ -44,7 +44,7 @@ def configure_volume(props):
     Add more assignments here as needed (tf_value_min/max, fog_value_min/max,
     mip_alpha_max, ...).
     """
-    from cycles_yt import render_volume
+    from yt_volumes import render_volume
 
     render_volume.apply_render_settings(props, {
         "mode": RENDERER_MODE, "colormap": COLORMAP, "reset_cmap_each_frame": RESET_CMAP_EACH_FRAME,
@@ -57,7 +57,7 @@ def setup_volume(ctx):
     The scene is built on the first call and reused afterwards. Add cut
     regions, derived fields, etc. here.
     """
-    from cycles_yt.yt_idv_renderer import VolumeSetupResult, scale_scene_to_subset
+    from yt_volumes.yt_idv_renderer import VolumeSetupResult, scale_scene_to_subset
 
     if ctx.previous_scene is not None:
         if RESET_CMAP_EACH_FRAME:

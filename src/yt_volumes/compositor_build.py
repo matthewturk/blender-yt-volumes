@@ -1,4 +1,4 @@
-"""Compositor node graph: the Cycles beauty (read back from EXR) composited
+"""Compositor node graph: the pass-1 beauty (read back from EXR) composited
 with N external volume layers via a chain of premultiplied Alpha Over nodes.
 
 Supports both compositor scripting APIs, detected at runtime:

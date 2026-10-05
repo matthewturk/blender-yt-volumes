@@ -66,7 +66,7 @@ It needs nothing beyond what Blender ships (numpy).
 
 ## Rendering
 
-cycles-yt renders flagged volumes in shot space whenever this
+yt-volumes renders flagged volumes in shot space whenever this
 extension is enabled: it reads the scene's `deep_zoom` settings and builds the
 volume's registration in float64. Headless, list the extension in the config:
 

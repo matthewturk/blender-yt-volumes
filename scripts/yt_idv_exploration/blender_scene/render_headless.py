@@ -25,7 +25,7 @@ sys.path.insert(0, ADDON_SRC_PARENT)
 sys.path.insert(0, HERE)  # so SCENE_SETUP_MODULE resolves as an importable module
 
 import bpy  # noqa: E402
-from cycles_yt import operators  # noqa: E402
+from yt_volumes import operators  # noqa: E402
 
 BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
@@ -42,10 +42,10 @@ scene_setup = __import__(SCENE_SETUP_MODULE)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 bpy.ops.wm.open_mainfile(filepath=BLEND_PATH)
-bpy.ops.preferences.addon_enable(module="cycles_yt")
+bpy.ops.preferences.addon_enable(module="yt_volumes")
 
 scene = bpy.context.scene
-prefs = bpy.context.preferences.addons["cycles_yt"].preferences
+prefs = bpy.context.preferences.addons["yt_volumes"].preferences
 prefs.verbose_logging = True
 
 # Flags the volume object here because the test file doesn't; drop this if

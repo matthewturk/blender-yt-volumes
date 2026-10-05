@@ -26,7 +26,7 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "src")))
-from cycles_yt import operators, properties  # noqa: E402
+from yt_volumes import operators, properties  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.join(HERE, "ytidv_worker.py")
