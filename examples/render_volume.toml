@@ -27,7 +27,8 @@ frames = "1-1"        # N, "N-M", or [N, M]; default: the .blend's frame range
 output = "../renders/frame_"   # PNG path prefix; the frame number is appended
 resolution = [1920, 1080]      # default: the .blend's
 samples = 32                   # Cycles samples; default: the .blend's
-device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU
+device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU (Cycles only)
+# engine = "BLENDER_EEVEE"     # default "CYCLES"; EEVEE needs Blender's Vulkan GPU backend
 # work_dir = "/tmp/my_work"    # default: a fresh temp directory per run
 
 # Every [render] key is optional and overrides the volume's own settings in

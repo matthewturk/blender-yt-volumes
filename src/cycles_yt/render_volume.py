@@ -43,7 +43,8 @@ DEFAULTS = {
         "output": "renders/frame_",
         "resolution": None,
         "samples": None,
-        "device": "OPTIX",
+        "device": "OPTIX",  # Cycles only
+        "engine": "CYCLES",  # or "BLENDER_EEVEE" (needs Blender's Vulkan GPU backend)
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
@@ -70,6 +71,7 @@ DEFAULTS = {
 }
 
 SUBSET_KINDS = ("region", "sphere", "box")
+ENGINES = ("CYCLES", "BLENDER_EEVEE")
 DEVICES = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI", "CPU")
 COLORMAP_PROPERTY = {
     "YT_IDV_MAX_INTENSITY": "colormap",
@@ -268,6 +270,8 @@ def validate(config, series=False):
             raise ConfigError(f"blender.{key} is required")
     if not os.path.isfile(blender["file"]):
         raise ConfigError(f"blender.file {blender['file']!r} does not exist")
+    if blender["engine"] not in ENGINES:
+        raise ConfigError(f"blender.engine must be one of {ENGINES}")
     if blender["device"] not in DEVICES:
         raise ConfigError(f"blender.device must be one of {DEVICES}")
     start_end = parse_frames(blender["frames"])
@@ -515,14 +519,17 @@ def _configure_blender(config):
         if camera is None or camera.type != "CAMERA":
             raise ConfigError(f"blender.camera {blender['camera']!r} is not a camera object")
         scene.camera = camera
-    scene.render.engine = "CYCLES"
+    scene.render.engine = blender["engine"]
     if blender["resolution"]:
         scene.render.resolution_x, scene.render.resolution_y = blender["resolution"]
-    if blender["samples"]:
+    if blender["samples"] and blender["engine"] == "CYCLES":
         scene.cycles.samples = blender["samples"]
+    elif blender["samples"]:
+        scene.eevee.taa_render_samples = blender["samples"]
     scene.render.image_settings.file_format = "PNG"
 
-    configure_cycles_device(scene, blender["device"])
+    if blender["engine"] == "CYCLES":
+        configure_cycles_device(scene, blender["device"])
     return scene, temp_work_dir
 
 

@@ -241,7 +241,13 @@ PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
 file, `--set section.key=value` reaches any key (values parse as TOML), and
 `--check` prints the merged config without rendering. `[render]` keys
 override the volume's own settings in the `.blend`; with no `[render]` the
-`.blend` renders exactly as authored in the GUI. Each run gets its own
+`.blend` renders exactly as authored in the GUI.
+
+`blender.engine = "BLENDER_EEVEE"` renders pass 1 with EEVEE instead of
+Cycles. That needs Blender's Vulkan GPU backend (`blender -b --gpu-backend
+vulkan`, or Preferences > System > GPU Backend): under OpenGL, EEVEE's GL
+context and yt_idv's EGL context can't coexist in one process. EEVEE's Z pass
+uses the same conventions as Cycles' (planar, 1e10 for no hit). Each run gets its own
 temporary `work_dir` unless one is set, so concurrent runs don't collide.
 
 ### Deep zooms past float32

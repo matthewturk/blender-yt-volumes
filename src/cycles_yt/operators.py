@@ -599,6 +599,18 @@ class render_session:
         return False  # never swallow exceptions
 
 
+def _gpu_backend():
+    """The GPU backend Blender is running on ("OPENGL", "VULKAN", ...), not the
+    preference, which only applies after a restart.
+    """
+    import gpu
+
+    try:
+        return gpu.platform.backend_type_get()
+    except SystemError:  # background mode before the GPU module initializes
+        return bpy.context.preferences.system.gpu_backend
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
@@ -610,12 +622,13 @@ def render_current_frame(context):
     prefs = _get_prefs(context)
     flagged = properties.flagged_objects(scene)
     uses_yt_idv = any(obj.volume_override.renderer_mode in YT_IDV_RENDERER_MODES for obj in flagged)
-    if uses_yt_idv and scene.render.engine != "CYCLES":
-        # EEVEE holds a GPU context through pass 1, and yt_idv's own EGL
-        # context then fails with EGL_BAD_ACCESS.
+    if uses_yt_idv and scene.render.engine != "CYCLES" and _gpu_backend() != "VULKAN":
+        # Under the OpenGL backend EEVEE holds a GL context, and yt_idv's EGL
+        # context then fails with EGL_BAD_ACCESS (or EEVEE dies with X BadAccess).
         raise RuntimeError(
-            f"yt_idv renderer modes need the Cycles render engine (this scene uses "
-            f"{scene.render.engine}); switch Render Properties > Render Engine to Cycles"
+            f"yt_idv renderer modes with {scene.render.engine} need Blender's Vulkan GPU "
+            f"backend (Preferences > System > GPU Backend, then restart); otherwise "
+            f"switch Render Properties > Render Engine to Cycles"
         )
     verbose = prefs.verbose_logging
     log = _log if verbose else (lambda *a, **k: None)

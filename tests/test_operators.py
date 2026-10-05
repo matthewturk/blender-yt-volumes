@@ -990,5 +990,6 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
     scene.render.engine = "BLENDER_EEVEE"
     _flagged_cube()
     monkeypatch.setattr(operators, "_get_prefs", lambda context: SimpleNamespace(verbose_logging=False))
-    with pytest.raises(RuntimeError, match="need the Cycles render engine"):
+    monkeypatch.setattr(operators, "_gpu_backend", lambda: "OPENGL")
+    with pytest.raises(RuntimeError, match="Vulkan GPU backend"):
         operators.render_current_frame(bpy.context)
