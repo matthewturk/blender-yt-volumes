@@ -17,7 +17,7 @@ half_width = 50       # region; a bare number is in `units`, or use [50, "kpc"]
 # left_edge = [0.4, 0.4, 0.4]   # box
 # right_edge = [0.6, 0.6, 0.6]
 units = "kpc"
-scale = true          # stretch the subset to fill the volume box (needs yt_idv#276)
+scale = true          # stretch the subset to fill the volume box
 
 [blender]
 file = "simple.blend"   # python examples/make_simple_blend.py examples/simple.blend

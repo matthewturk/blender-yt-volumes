@@ -14,11 +14,12 @@ deep hierarchies.
 ## Quick start
 
 Needs Python 3.13 (the `bpy` module used for tests and batch renders is
-Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL.
+Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL. yt_idv
+comes from its `main` branch, which has the scene transforms, bindless
+textures and transfer function conversion this relies on.
 
 ```
 git clone https://github.com/matthewturk/cycles-override.git && cd cycles-override
-scripts/setup_yt_idv.sh                 # yt_idv + the open PRs this needs, into ./yt_idv
 PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
 PYTHONPATH= uv run --group ytidv pytest -q
 PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend
@@ -33,8 +34,8 @@ scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
 
 **In Blender:** zip `src/cycles_volume_override/` and install it
 (Preferences > Add-ons > Install from Disk), and install yt and yt_idv into
-Blender's own Python (`uv pip install --python <blender's python> ./yt_idv
-pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
+Blender's own Python (`uv pip install --python <blender's python>
+"yt_idv @ git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
 and install it as an extension. Render Engine must be Cycles.
 
 **Examples** (each script's docstring has the commands):
@@ -63,7 +64,6 @@ src/cycles_volume_override/
     compositor_build.py    compositor graphs for the two passes
     scene_sync.py, change_tracking.py, handlers.py, sample_renderers.py
 extensions/deep_zoom/      the Deep Zoom authoring extension (see its README)
-patches/yt_idv/            the yt_idv patches scripts/setup_yt_idv.sh applies
 examples/                  configs and scene builders (above)
 scripts/                   verification tools and the original yt_idv exploration
 tests/                     pytest suite
@@ -225,11 +225,11 @@ group -- see "Development & testing" below; it's no longer a separate
 Python/venv story from your real Blender's install, just a separate
 `pip`/`uv` invocation.
 
-**The external depth clip needs yt_idv `main` or newer** (yt-project/yt_idv#247,
-now merged); older releases import and render fine but have no depth clip, and
-`set_external_depth_clip` raises rather than silently doing nothing. Subset
-scaling and deep zooms additionally need yt-project/yt_idv#287 (scene
-transforms) -- see pyproject.toml's `ytidv` group for the checkout recipe.
+**Use yt_idv `main`.** The external depth clip (yt-project/yt_idv#247), scene
+transforms for subset scaling and deep zooms (#287), bindless textures (#285)
+and the transfer function conversion (#288) are all newer than the latest
+release. Older versions import and render, but `set_external_depth_clip` and
+`scale_scene_to_subset` raise rather than silently doing nothing.
 
 ### Rendering from a config file
 

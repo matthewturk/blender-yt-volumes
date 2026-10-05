@@ -25,16 +25,10 @@ dev = [
     "openexr>=3.4.13",
 ]
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
-# real yt_idv, installed alongside `bpy` in this same Python-3.13 venv from a
-# local checkout at ./yt_idv (gitignored; resolved via `[tool.uv.sources]`).
-# yt_idv from a local checkout at ./yt_idv. It needs open upstream PRs
-# (284-288, #287 required) and two fixes; set the checkout up with
-#
-#     scripts/setup_yt_idv.sh
-#
-# which applies patches/yt_idv/ to a pinned upstream commit (see the README
-# there). The install is not editable: after changing the checkout, run
-# `uv sync --group ytidv --reinstall-package yt_idv`.
+# real yt_idv, from its `main` branch (see `[tool.uv.sources]`): this needs
+# yt_idv's scene transforms (yt-project/yt_idv#287), bindless textures (#285)
+# and transfer function conversion (#288), which aren't in a release yet.
+# uv.lock pins a commit of main; `uv lock --upgrade-package yt_idv` moves it.
 ytidv = [
     "yt_idv",
     # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
@@ -48,7 +42,9 @@ ytidv = [
 package = true
 
 [tool.uv.sources]
-yt_idv = { path = "yt_idv" }
+yt_idv = { git = "https://github.com/yt-project/yt_idv.git", branch = "main" }
+# to develop against a local checkout instead:
+# yt_idv = { path = "yt_idv" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
