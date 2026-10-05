@@ -1,7 +1,7 @@
 # Fly into DeeplyNestedZoom's density peak, 12 orders of magnitude.
 #
 #   python examples/make_deep_zoom_blend.py examples/deep_zoom.blend
-#   python -m cycles_volume_override.render_volume examples/deep_zoom.toml
+#   python -m cycles_yt.render_volume examples/deep_zoom.toml
 #
 # Same keys as render_volume.toml, plus [zoom].
 

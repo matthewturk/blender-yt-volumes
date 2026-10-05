@@ -1,6 +1,6 @@
 """Animate a yt dataset series through a Blender scene, one output at a time.
 
-    python -m cycles_volume_override.render_series series.toml [options]
+    python -m cycles_yt.render_series series.toml [options]
 
 Takes a `render_volume` config whose `[data]` names a `series` (glob or list
 of paths) or a `simulation` instead of one dataset, plus a `[time]` table
@@ -129,7 +129,7 @@ def discover_outputs(data, time_config):
 
 
 def _run_segment(config_path, report_path):
-    cmd = [sys.executable, "-m", "cycles_volume_override.render_volume", config_path, "--report", report_path]
+    cmd = [sys.executable, "-m", "cycles_yt.render_volume", config_path, "--report", report_path]
     child = subprocess.Popen(cmd)
     try:
         return child.wait()
@@ -223,14 +223,14 @@ def run(config, outputs, skip_existing=False, dry_run=False):
                     print(f"[render_series] colormap range pinned to {cmap_range}", flush=True)
     except SegmentFailed as exc:
         print(f"[render_series] segment failed (exit {exc.code}); rerun with: "
-              f"python -m cycles_volume_override.render_volume {exc.config_path}", file=sys.stderr)
+              f"python -m cycles_yt.render_volume {exc.config_path}", file=sys.stderr)
         return exc.code
     return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="python -m cycles_volume_override.render_series",
+        prog="python -m cycles_yt.render_series",
         description="Animate a yt dataset series through a Blender scene.",
     )
     parser.add_argument("config", help="TOML config with data.series or data.simulation")

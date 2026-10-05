@@ -37,7 +37,7 @@ Render contexts, datasets, scenes and results are cached at module level and
 never torn down.
 
 Shading knobs are read from `custom_params` (`yt_idv_*` keys, filled from the
-add-on Preferences by `operators.build_volume_params`), falling back to the
+object's Volume Override properties by `operators.build_volume_params`), falling back to the
 module constants below, which are tuned for IsolatedGalaxy density.
 
 yt_idv gotchas handled here or in the required yt_idv patches:
@@ -522,11 +522,16 @@ def _render_signature_changed(
     dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool, render_mode: str = ""
 ) -> bool:
     """True if the provider reported a change or the render signature differs
-    from this object's last render.
+    from this object's last successful render.
     """
     signature = _render_signature(request, render_size, render_mode)
-    version = change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature)
+    version = change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature, record=False)
     return volume_changed or version.changed
+
+
+def _record_render_signature(dataset_id: str, request: RenderRequest, render_size: int, render_mode: str = ""):
+    signature = _render_signature(request, render_size, render_mode)
+    change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature)
 
 
 def _to_texture2d_axis_convention(depth):
@@ -1017,12 +1022,15 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         if cached_result is not None:
             return cached_result
         # No cached result yet; render anyway.
+    # Dropped up front so a render that raises can't leave a stale result to reuse.
+    _render_result_cache.pop(dataset_id, None)
 
     # rc.run() renders rc.scene, which another object sharing this context may
     # have replaced.
     rc.scene = scene
 
     custom_params = request.volume.custom_params or {}
+    signed_request = request
     request = dataclasses.replace(request, volume=_shot_space_volume(scene, request.volume, custom_params))
     camera_world = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
     model_frame = apply_zoom(scene, custom_params, request.volume, camera_world)
@@ -1035,8 +1043,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     }
     for component in scene.components:
         configure_component(component, dict(custom_params, _context=context))
-        if custom_params.get("yt_idv_rescale_colormap"):
-            component._cmap_bounds_invalid = True
+        _apply_colormap_range(component, custom_params)
     scene.camera.update(
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
@@ -1057,13 +1064,43 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         rgba=np.ascontiguousarray(image),
         alpha_mode="PREMULTIPLIED",  # approximation
         color_space="LINEAR",
+        cmap_range=_component_cmap_range(scene),
     )
     _render_result_cache[dataset_id] = result
+    _record_render_signature(dataset_id, signed_request, render_size, render_mode)
     return result
+
+
+def _apply_colormap_range(component, custom_params):
+    """Refit the colormap range this render, or pin it to the volume's
+    remembered `yt_idv_cmap_range`. Fixed bounds (`fixed_cmap_min/max`) win.
+    """
+    remembered = custom_params.get("yt_idv_cmap_range")
+    if custom_params.get("yt_idv_rescale_colormap") or remembered is None:
+        component._cmap_bounds_invalid = True
+    elif component.fixed_cmap_min is None and component.fixed_cmap_max is None:
+        component.cmap_min, component.cmap_max = (float(v) for v in remembered)
+        component._cmap_bounds_invalid = False
+
+
+def _component_cmap_range(scene):
+    """`(min, max)` of the first component with a colormap range, or None."""
+    for component in scene.components:
+        low, high = getattr(component, "cmap_min", None), getattr(component, "cmap_max", None)
+        if low is not None and high is not None:
+            return (float(low), float(high))
+    return None
+
+
+def _set_colormap_name(component, custom_params):
+    name = custom_params.get("yt_idv_colormap")
+    if name and component.colormap.colormap_name != name:
+        component.colormap.colormap_name = name
 
 
 def _configure_max_intensity(component, custom_params):
     component.render_method = "max_intensity"
+    _set_colormap_name(component, custom_params)
 
 
 def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
@@ -1255,6 +1292,7 @@ def yt_idv_yt_transfer_function_renderer(request: RenderRequest) -> RenderResult
 
 def _configure_projection(component, custom_params):
     component.render_method = "projection"
+    _set_colormap_name(component, custom_params)
 
 
 def yt_idv_projection_renderer(request: RenderRequest) -> RenderResult:

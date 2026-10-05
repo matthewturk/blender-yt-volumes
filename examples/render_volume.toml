@@ -1,4 +1,4 @@
-# python -m cycles_volume_override.render_volume examples/render_volume.toml
+# python -m cycles_yt.render_volume examples/render_volume.toml
 # Relative paths resolve against this file's directory.
 
 [data]
@@ -30,14 +30,16 @@ samples = 32                   # Cycles samples; default: the .blend's
 device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU
 # work_dir = "/tmp/my_work"    # default: a fresh temp directory per run
 
+# Every [render] key is optional and overrides the volume's own settings in
+# the .blend; leave a key out to keep what the .blend has.
 [render]
 mode = "YT_IDV_MAX_INTENSITY_ALPHA"  # or YT_IDV_MAX_INTENSITY, _PROJECTION, _TRANSFER_FUNCTION, _THRESHOLD_FOG
 colormap = "arbre"
 # cmap_range = [4.5e-06, 0.78]  # fix the colormap range; default: auto-scale on the first frame
 # cmap_range = [[1, 1e-5, 0.4], [250, 1e-3, 0.8]]  # or a [frame, min, max] curve
 # cmap_interpolation = "log"    # between curve keys: "linear" (default) or "log"
-reset_cmap_each_frame = false
+reset_cmap_each_frame = false  # the volume's Rescale Colormap Every Render
 
-# Any Preferences > yt_idv setting.
+# Any volume look setting (properties.LOOK_SETTINGS).
 [render.yt_idv]
 mip_alpha_max = 0.7

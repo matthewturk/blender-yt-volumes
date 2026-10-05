@@ -8,9 +8,8 @@ Run with:
         scripts/yt_idv_exploration/blender_scene/render_headless.py
 
 Dataset, field, renderer mode, and colormap live in `scene_setup.py`; edit
-that file for routine scene changes, not this one. Add-on Preferences
-(e.g. `renderer_mode`) are not stored in the .blend file, so they are
-applied from `scene_setup.configure_preferences` on every run.
+that file for routine scene changes, not this one. The look is applied to
+the volume from `scene_setup.configure_volume` on every run.
 
 The `ERROR Invalid operator call 'RENDER_OT_view_show'` line in the log is
 harmless (there is no Image Editor to show the result in headlessly).
@@ -26,7 +25,7 @@ sys.path.insert(0, ADDON_SRC_PARENT)
 sys.path.insert(0, HERE)  # so SCENE_SETUP_MODULE resolves as an importable module
 
 import bpy  # noqa: E402
-from cycles_volume_override import operators  # noqa: E402
+from cycles_yt import operators  # noqa: E402
 
 BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
@@ -36,19 +35,18 @@ FRAMES = range(
     int(os.environ.get("RENDER_START_FRAME", 1)),
     int(os.environ.get("RENDER_END_FRAME", 250)) + 1,
 )
-SCENE_SETUP_MODULE = "scene_setup"  # module with configure_preferences/setup_volume
+SCENE_SETUP_MODULE = "scene_setup"  # module with configure_volume/setup_volume
 
 scene_setup = __import__(SCENE_SETUP_MODULE)
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
 bpy.ops.wm.open_mainfile(filepath=BLEND_PATH)
-bpy.ops.preferences.addon_enable(module="cycles_volume_override")
+bpy.ops.preferences.addon_enable(module="cycles_yt")
 
 scene = bpy.context.scene
-prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
+prefs = bpy.context.preferences.addons["cycles_yt"].preferences
 prefs.verbose_logging = True
-scene_setup.configure_preferences(prefs)
 
 # Flags the volume object here because the test file doesn't; drop this if
 # your .blend already has it flagged. Flagged volume objects must be an
@@ -65,7 +63,7 @@ if cube.type != "EMPTY" or cube.empty_display_type != "CUBE":
         "re-save before running this script."
     )
 cube.volume_override.is_volume_override = True
-cube.volume_override.density_scale = 3.0
+scene_setup.configure_volume(cube.volume_override)
 cube.volume_override.yt_idv_volume_provider = f"{SCENE_SETUP_MODULE}:setup_volume"
 
 scene.render.engine = "CYCLES"

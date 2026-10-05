@@ -2,8 +2,8 @@ import bpy
 import numpy as np
 import pytest
 
-from cycles_volume_override import external_render as er
-from cycles_volume_override import operators, sample_renderers
+from cycles_yt import external_render as er
+from cycles_yt import operators, sample_renderers
 
 RES_X, RES_Y = 33, 25  # odd dims -> a pixel sits exactly on the optical axis
 CENTER_COL, CENTER_ROW = 16, 12
@@ -45,7 +45,6 @@ def _volume_params(density_scale=0.4, color=(1.0, 1.0, 1.0)):
         params_version=er.VersionInfo(hash="x", changed=True),
         dataset=er.DatasetParams(
             dataset_id="obj", dataset_kind="", dataset_path=None,
-            requested_time=1.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
             is_blender_volume_sequence=False, sequence_frame_start=None,
             sequence_frame_duration=None, sequence_frame_offset=None,
             sequence_mode=None, resolved_sequence_frame=None, grid_names=[],

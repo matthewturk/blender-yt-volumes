@@ -1,8 +1,7 @@
 """Interface between this add-on and the external volume renderer.
 
-Everything reaches the renderer through `render_volume()`, so swapping the
-in-process call for a subprocess or network transport is a one-function
-change. Prefer adding renderer-specific inputs to
+A renderer is a function `RenderRequest -> RenderResult`, one per renderer
+mode (`operators.RENDERER_MODES`). Prefer adding renderer-specific inputs to
 `VolumeObjectParams.custom_params` over growing these dataclasses.
 
 The renderer is self-emissive: no lighting or shadow data is passed.
@@ -137,14 +136,6 @@ class DatasetParams:
     dataset_kind: str  # free-form: "yt" | "vdb" | "hdf5" | "" (unset) | anything your loaders recognize
     dataset_path: str | None  # absolute path/URI; None if unset
 
-    # --- Blender frame -> dataset time mapping ---
-    # `requested_time` is not snapped to a real timestep; that's the
-    # renderer's job. It is excluded from `version`'s hash since it changes
-    # every frame.
-    requested_time: float
-    time_units: str  # "FRAME_INDEX" | "SECONDS" | "REDSHIFT" | "CUSTOM"
-    mapping_policy: str  # "DIRECT" | "AFFINE" | "MANUAL" -- see properties.py
-
     # Set only for Blender `Volume` objects (VDB sequences); None/False
     # otherwise. `resolved_sequence_frame` follows Blender's documented
     # sequence semantics but is not verified against a real render.
@@ -188,31 +179,4 @@ class RenderResult:
     alpha_mode: str  # "PREMULTIPLIED" -- fixed, must match compositor
     color_space: str  # "LINEAR" -- fixed, must match compositor
     #                    (no view transform applied by the renderer)
-
-
-def render_volume(request: RenderRequest) -> RenderResult:
-    """Stub for the real external volume renderer.
-
-    Called once per flagged object per frame and must return synchronously.
-    """
-    raise NotImplementedError(
-        "render_volume() is a stub -- wire in the real external volume "
-        "renderer here. See README 'external_render.py contract'."
-    )
-
-
-def debug_fake_render_volume(request: RenderRequest) -> RenderResult:
-    """Debug stand-in (enabled via add-on preference): a flat translucent
-    premultiplied color filling the frame.
-    """
-    import numpy as np
-
-    h, w = request.depth.data.shape
-    rgba = np.zeros((h, w, 4), dtype=np.float32)
-    color = request.volume.custom_params.get("color", (1.0, 0.0, 0.0))
-    alpha = 0.25
-    rgba[..., 0] = color[0] * alpha
-    rgba[..., 1] = color[1] * alpha
-    rgba[..., 2] = color[2] * alpha
-    rgba[..., 3] = alpha
-    return RenderResult(rgba=rgba, alpha_mode="PREMULTIPLIED", color_space="LINEAR")
+    cmap_range: tuple | None = None  # (min, max) the colormap used, remembered on the volume

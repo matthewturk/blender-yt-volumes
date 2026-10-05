@@ -67,7 +67,7 @@ os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_volume_override import external_render, operators, properties  # noqa: E402
+from cycles_yt import external_render, operators, properties  # noqa: E402
 
 
 def _bridge_render(request):
@@ -297,7 +297,7 @@ def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arb
 
     Not run by `main()`. Run in the yt_idv venv after a real run has written
     `bridge_request.json`/`bridge_depth.npy` to `work_dir`, with
-    `cycles_volume_override` importable (as in `ytidv_worker.py`; this file
+    `cycles_yt` importable (as in `ytidv_worker.py`; this file
     imports bpy at module level). Writes one PNG per combination.
     """
     import json
@@ -305,7 +305,7 @@ def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arb
     import numpy as np
     import yt
 
-    from cycles_volume_override import external_render, yt_idv_renderer as yir
+    from cycles_yt import external_render, yt_idv_renderer as yir
 
     with open(os.path.join(work_dir, "bridge_request.json")) as f:
         req = json.load(f)
@@ -331,8 +331,8 @@ def sweep_mip_alpha_params(work_dir=WORK_DIR, colormaps=("dusk", "viridis", "arb
     )
     version = external_render.VersionInfo(hash="x", changed=True)
     dataset = external_render.DatasetParams(
-        dataset_id="obj1", dataset_kind="yt", dataset_path=None, requested_time=0.0,
-        time_units="FRAME_INDEX", mapping_policy="DIRECT", is_blender_volume_sequence=False,
+        dataset_id="obj1", dataset_kind="yt", dataset_path=None,
+        is_blender_volume_sequence=False,
         sequence_frame_start=None, sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[], version=version,
     )

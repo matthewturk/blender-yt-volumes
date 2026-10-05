@@ -150,7 +150,7 @@ def sphere_shaped_clip_test():
     import sys
     sys.path.insert(0, "/home/mturk/yt/cycles-yt/src")
     try:
-        from cycles_volume_override import yt_idv_renderer as yir
+        from cycles_yt import yt_idv_renderer as yir
         yir.set_external_depth_clip(scene, window_depth)
     except ImportError:
         # standalone fallback if the add-on source isn't on sys.path here

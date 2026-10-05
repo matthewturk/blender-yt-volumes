@@ -65,6 +65,9 @@ def _circle_about(axis, angular_radius_deg, radius, n=128):
 
 def build(path, frames, spin=False, graticule_deg=30, tilt_deg=23.44, fps=24):
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    from cycles_yt import properties, render_volume
+
+    properties.register()
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, frames
     scene.render.fps = fps
@@ -79,6 +82,7 @@ def build(path, frames, spin=False, graticule_deg=30, tilt_deg=23.44, fps=24):
     earth_empty = bpy.data.objects.new("Earth", None)
     earth_empty.empty_display_type = "SPHERE"
     earth_empty.empty_display_size = 1.0
+    render_volume.apply_render_settings(earth_empty.volume_override, {"mode": "YT_IDV_MAX_INTENSITY_ALPHA", "colormap": "inferno"})
     scene.collection.objects.link(earth_empty)
     if spin:
         # the axis leans sideways from the camera, like a desk globe

@@ -14,9 +14,9 @@ import bpy
 import numpy as np
 import pytest
 
-from cycles_volume_override import change_tracking, operators
-from cycles_volume_override import yt_idv_renderer as yir
-from cycles_volume_override.external_render import (
+from cycles_yt import change_tracking, operators
+from cycles_yt import yt_idv_renderer as yir
+from cycles_yt.external_render import (
     CameraParams,
     DatasetParams,
     DepthBuffer,
@@ -126,7 +126,6 @@ def _identity_volume(bounding_box_local=None, matrix_world=None):
     version = VersionInfo(hash="x", changed=True)
     dataset = DatasetParams(
         dataset_id="obj", dataset_kind="", dataset_path=None,
-        requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
         is_blender_volume_sequence=False, sequence_frame_start=None,
         sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[],
@@ -575,13 +574,19 @@ def test_render_signature_changed_true_on_first_call(_clean_yir_state):
 
 def test_render_signature_changed_false_when_nothing_changed(_clean_yir_state):
     request = _request_with()
-    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)  # records the baseline
+    yir._record_render_signature("obj", request, render_size=4)
     assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=False) is False
+
+
+def test_render_signature_changed_does_not_record(_clean_yir_state):
+    request = _request_with()
+    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=False) is True
 
 
 def test_render_signature_changed_true_when_camera_moves(_clean_yir_state):
     request = _request_with()
-    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    yir._record_render_signature("obj", request, render_size=4)
     moved = _request_with(camera_overrides={
         "matrix_world": [[1, 0, 0, 9], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
     })
@@ -591,20 +596,20 @@ def test_render_signature_changed_true_when_camera_moves(_clean_yir_state):
 def test_render_signature_changed_true_when_depth_buffer_content_differs(_clean_yir_state):
     # e.g. an occluder moved while the camera stayed put.
     request = _request_with()
-    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    yir._record_render_signature("obj", request, render_size=4)
     request.depth.data[0, 0] = 1.0
     assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=False) is True
 
 
 def test_render_signature_changed_forced_true_when_volume_provider_reports_changed(_clean_yir_state):
     request = _request_with()
-    yir._render_signature_changed("obj", request, render_size=4, volume_changed=False)
+    yir._record_render_signature("obj", request, render_size=4)
     assert yir._render_signature_changed("obj", request, render_size=4, volume_changed=True) is True
 
 
 def test_render_signature_changed_when_render_mode_changes(_clean_yir_state):
     request = _request_with()
-    yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity")
+    yir._record_render_signature("obj", request, 4, render_mode="_configure_max_intensity")
     assert yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity") is False
     assert yir._render_signature_changed("obj", request, 4, False, render_mode="_configure_max_intensity_alpha") is True
 
@@ -665,6 +670,45 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
     result3 = yir._render_with_yt_idv(moved, configure)
     assert fake_rc.run_calls == 2  # camera moved -- real re-render happened
     assert result3 is not result1
+
+
+def test_render_with_yt_idv_retries_after_a_failed_render(monkeypatch, _clean_yir_state):
+    render_size = 4
+
+    class _FlakyRc:
+        run_calls = 0
+
+        def run(self):
+            self.run_calls += 1
+            if self.run_calls == 1:
+                raise RuntimeError("GL error")
+            return np.ones((render_size, render_size, 4), dtype=np.float32)
+
+    rc = _FlakyRc()
+    monkeypatch.setattr(yir, "_get_volume_scene", lambda request, rsize: (rc, _FakeYtIdvScene(), _FakeDataset(), False))
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera, model_shift=None: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
+    request = _request_with(render_size=render_size)
+
+    with pytest.raises(RuntimeError):
+        yir._render_with_yt_idv(request, lambda component, custom_params: None)
+    result = yir._render_with_yt_idv(request, lambda component, custom_params: None)
+
+    assert rc.run_calls == 2
+    assert result.rgba.max() == 1.0
+
+
+@pytest.mark.parametrize("params, invalid, bounds", [
+    ({}, True, (None, None)),  # nothing remembered: fit this render
+    ({"yt_idv_cmap_range": (1.0, 2.0)}, False, (1.0, 2.0)),
+    ({"yt_idv_cmap_range": (1.0, 2.0), "yt_idv_rescale_colormap": True}, True, (None, None)),
+])
+def test_apply_colormap_range(params, invalid, bounds):
+    component = types.SimpleNamespace(fixed_cmap_min=None, fixed_cmap_max=None, cmap_min=None,
+                                      cmap_max=None, _cmap_bounds_invalid=None)
+    yir._apply_colormap_range(component, params)
+    assert component._cmap_bounds_invalid is invalid
+    assert (component.cmap_min, component.cmap_max) == bounds
 
 
 def test_render_with_yt_idv_reasserts_rc_scene_when_objects_share_a_context(monkeypatch, _clean_yir_state):

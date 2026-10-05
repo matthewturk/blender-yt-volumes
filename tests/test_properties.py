@@ -1,7 +1,7 @@
 import bpy
 import pytest
 
-from cycles_volume_override import properties
+from cycles_yt import properties
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
-    obj.volume_override.density_scale = 2.5
+    obj.volume_override.tf_n_layers = 7
     obj.volume_override.dataset_path = "/tmp/dataset"
     obj.volume_override.dataset_kind = "yt"
     extra = obj.volume_override.custom_params_extra.add()
@@ -24,9 +24,9 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     extra.value = "density"
 
     params = obj.volume_override.to_custom_params()
-    assert params["density_scale"] == 2.5
+    assert params["yt_idv_tf_n_layers"] == 7
+    assert params["renderer_mode"] == "YT_IDV_MAX_INTENSITY"
     assert params["field_name"] == "density"
-    assert len(params["absorption"]) == 3
     # dataset identity is tracked separately by build_dataset_params().
     assert "dataset_path" not in params
     assert "dataset_kind" not in params

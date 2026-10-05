@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from cycles_volume_override import render_series as rs
-from cycles_volume_override import render_volume as rv
+from cycles_yt import render_series as rs
+from cycles_yt import render_volume as rv
 
 TIME = {"by": "time", "units": "Myr", "keys": None, "pick": "nearest"}
 

@@ -38,19 +38,17 @@ FIXED_CMAP_MIN = FIXED_CMAP_MAX = None
 RESET_CMAP_EACH_FRAME = False
 
 
-def configure_preferences(prefs):
-    """Set add-on Preferences; called once after the add-on is enabled.
+def configure_volume(props):
+    """Set the volume's look (its Volume Override properties); called once per run.
 
-    Add more `prefs.yt_idv.*` assignments here as needed (tf_value_min/max,
-    fog_value_min/max, mip_alpha_max, ...).
+    Add more assignments here as needed (tf_value_min/max, fog_value_min/max,
+    mip_alpha_max, ...).
     """
-    prefs.renderer_mode = RENDERER_MODE
-    if RENDERER_MODE == "YT_IDV_TRANSFER_FUNCTION":
-        prefs.yt_idv.tf_colormap = COLORMAP
-    elif RENDERER_MODE == "YT_IDV_THRESHOLD_FOG":
-        prefs.yt_idv.fog_colormap = COLORMAP
-    elif RENDERER_MODE == "YT_IDV_MAX_INTENSITY_ALPHA":
-        prefs.yt_idv.mip_alpha_colormap = COLORMAP
+    from cycles_yt import render_volume
+
+    render_volume.apply_render_settings(props, {
+        "mode": RENDERER_MODE, "colormap": COLORMAP, "reset_cmap_each_frame": RESET_CMAP_EACH_FRAME,
+    })
 
 
 def setup_volume(ctx):
@@ -59,7 +57,7 @@ def setup_volume(ctx):
     The scene is built on the first call and reused afterwards. Add cut
     regions, derived fields, etc. here.
     """
-    from cycles_volume_override.yt_idv_renderer import VolumeSetupResult, scale_scene_to_subset
+    from cycles_yt.yt_idv_renderer import VolumeSetupResult, scale_scene_to_subset
 
     if ctx.previous_scene is not None:
         if RESET_CMAP_EACH_FRAME:
@@ -83,10 +81,7 @@ def setup_volume(ctx):
     if SCALE_SUBSET:
         scale_scene_to_subset(scene)  # no-op for the full domain
 
-    # MAX_INTENSITY/PROJECTION modes take their colormap from here; the other
-    # modes set it via configure_preferences() and ignore colormap_name.
     for component in scene.components:
-        component.colormap.colormap_name = COLORMAP
         component._cmap_bounds_invalid = True
         if not RESET_CMAP_EACH_FRAME:
             # Applied after yt_idv's auto-scan, so these override it.

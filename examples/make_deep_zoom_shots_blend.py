@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import deep_zoom  # noqa: E402
 from deep_zoom import authoring, grid_structure, shot_space  # noqa: E402
 
-from cycles_volume_override import properties  # noqa: E402
+from cycles_yt import properties, render_volume  # noqa: E402
 
 RADIUS = 3.0
 
@@ -72,6 +72,7 @@ def build(path, grids_path, grid_map=True, dataset=None, first_anchor=None, zoom
     volume.empty_display_type = "CUBE"
     scene.collection.objects.link(volume)
     volume.volume_override.is_volume_override = True
+    render_volume.apply_render_settings(volume.volume_override, {"mode": "YT_IDV_MAX_INTENSITY", "colormap": "inferno"})
     if dataset:
         # for F12 in the GUI; render_volume configs name the dataset themselves
         volume.volume_override.dataset_path = os.path.abspath(dataset)

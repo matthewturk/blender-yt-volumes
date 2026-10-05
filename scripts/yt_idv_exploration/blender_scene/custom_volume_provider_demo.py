@@ -29,9 +29,9 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 ADDON_SRC_PARENT = os.path.join(REPO_ROOT, "src")
 sys.path.insert(0, ADDON_SRC_PARENT)
 
-from cycles_volume_override import operators  # noqa: E402
-from cycles_volume_override import yt_idv_renderer as yir  # noqa: E402
-from cycles_volume_override.external_render import (  # noqa: E402
+from cycles_yt import operators  # noqa: E402
+from cycles_yt import yt_idv_renderer as yir  # noqa: E402
+from cycles_yt.external_render import (  # noqa: E402
     DatasetParams,
     DepthBuffer,
     FrameParams,
@@ -68,7 +68,6 @@ def _request(dataset_id, matrix_world, custom_params):
         params_version=version,
         dataset=DatasetParams(
             dataset_id=dataset_id, dataset_kind="", dataset_path=None,
-            requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
             is_blender_volume_sequence=False, sequence_frame_start=None,
             sequence_frame_duration=None, sequence_frame_offset=None,
             sequence_mode=None, resolved_sequence_frame=None, grid_names=[],

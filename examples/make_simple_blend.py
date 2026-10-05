@@ -17,6 +17,9 @@ import mathutils
 
 def build(path, frames=120):
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    from cycles_yt import properties, render_volume
+
+    properties.register()
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, frames
     scene.render.engine = "CYCLES"  # yt_idv modes need it
@@ -30,6 +33,9 @@ def build(path, frames=120):
     volume = bpy.data.objects.new("Volume", None)
     volume.empty_display_type = "CUBE"
     scene.collection.objects.link(volume)
+    render_volume.apply_render_settings(
+        volume.volume_override, {"mode": "YT_IDV_MAX_INTENSITY_ALPHA", "colormap": "arbre"},
+    )
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.45, location=(0.7, -0.7, 0.3))
     bpy.ops.object.shade_smooth()

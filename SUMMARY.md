@@ -21,7 +21,7 @@ real yt_idv volume renderer -- see "yt_idv integration" below.
 
 | File | What it does |
 |---|---|
-| `src/cycles_volume_override/__init__.py` | `bl_info`, register/unregister |
+| `src/cycles_yt/__init__.py` | `bl_info`, register/unregister |
 | `properties.py` | Object flag + shading knobs + `dataset_path`/`dataset_kind` + time-mapping fields, UI panel |
 | `external_render.py` | **The frozen contract** -- all dataclasses (`CameraParams`, `DepthBuffer`, `VolumeObjectParams`, `DatasetParams`, `VersionInfo`, `RenderRequest`/`RenderResult`) + stubbed `render_volume()` |
 | `scene_sync.py` | Hidden sync scene, main-scene visibility toggle for flagged objects |

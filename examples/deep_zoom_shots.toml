@@ -2,7 +2,7 @@
 #
 #   python extensions/deep_zoom/grid_structure.py /data/yt_sample_data/DeeplyNestedZoom/DD0025/data0025 examples/dnz_grids.npz
 #   python examples/make_deep_zoom_shots_blend.py examples/deep_zoom_shots.blend examples/dnz_grids.npz
-#   python -m cycles_volume_override.render_volume examples/deep_zoom_shots.toml
+#   python -m cycles_yt.render_volume examples/deep_zoom_shots.toml
 #
 # The shots, zoom and grid map live in the .blend; registering the extension
 # makes the renderer pick them up.

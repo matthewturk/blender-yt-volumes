@@ -11,11 +11,11 @@ def setup_volume(ctx):
     """Load IsolatedGalaxy directly and reuse the scene on later calls."""
     calls.append(ctx.previous_scene is not None)
     if ctx.previous_scene is not None:
-        from cycles_volume_override.yt_idv_renderer import VolumeSetupResult
+        from cycles_yt.yt_idv_renderer import VolumeSetupResult
         return VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=False)
 
     import yt
-    from cycles_volume_override.yt_idv_renderer import VolumeSetupResult
+    from cycles_yt.yt_idv_renderer import VolumeSetupResult
 
     ds = yt.load_sample("IsolatedGalaxy")
     data_source = ds.all_data()

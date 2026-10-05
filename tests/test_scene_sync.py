@@ -3,7 +3,7 @@
 import bpy
 import pytest
 
-from cycles_volume_override import scene_sync
+from cycles_yt import scene_sync
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 # The synthetic mantle's plumes rising while the globe turns once, at 30 fps.
 #
 #   python examples/make_earth_blend.py examples/earth_spin.blend --spin --frames 250 --graticule 15 --fps 30
-#   python -m cycles_volume_override.render_volume examples/earth_spin.toml
+#   python -m cycles_yt.render_volume examples/earth_spin.toml
 
 [data]
 loader = "spherical_earth.py:load"

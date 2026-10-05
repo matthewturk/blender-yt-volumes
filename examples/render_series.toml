@@ -1,4 +1,4 @@
-# python -m cycles_volume_override.render_series examples/render_series.toml [--dry-run]
+# python -m cycles_yt.render_series examples/render_series.toml [--dry-run]
 # Same keys as render_volume.toml, except [data] names a series and [time]
 # maps frames to its outputs. Each run of frames showing one output renders
 # in its own process.

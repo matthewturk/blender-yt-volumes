@@ -14,7 +14,7 @@ import types
 
 def _load_addon_module(name, path):
     """Load an add-on module without running the package's bpy-dependent `__init__.py`."""
-    spec = importlib.util.spec_from_file_location(f"cycles_volume_override.{name}", path)
+    spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
@@ -34,9 +34,9 @@ def _matrix_world_pitched(pos, pitch_x_rad):
 
 
 def main():
-    pkg = types.ModuleType("cycles_volume_override")
+    pkg = types.ModuleType("cycles_yt")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules["cycles_volume_override"] = pkg
+    sys.modules["cycles_yt"] = pkg
 
     er = _load_addon_module("external_render", f"{ADDON_SRC}/external_render.py")
     yir = _load_addon_module("yt_idv_renderer", f"{ADDON_SRC}/yt_idv_renderer.py")
@@ -68,7 +68,6 @@ def main():
     version = er.VersionInfo(hash="x", changed=True)
     dataset = er.DatasetParams(
         dataset_id="obj1", dataset_kind="yt", dataset_path=None,
-        requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
         is_blender_volume_sequence=False, sequence_frame_start=None,
         sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[],
@@ -113,6 +112,6 @@ if __name__ == "__main__":
     import os
 
     ADDON_SRC = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "src", "cycles_volume_override")
+        os.path.join(os.path.dirname(__file__), "..", "..", "src", "cycles_yt")
     )
     main()

@@ -24,13 +24,17 @@ a little — not an expert, not a beginner.
   `PYTHONPATH= uv run --group ytidv python scripts/yt_idv_exploration/blender_scene/render_headless.py`
   — limit frames with `RENDER_START_FRAME`/`RENDER_END_FRAME`. Frame 1 pays a
   multi-minute dataset load. Scene/dataset/look changes go in `scene_setup.py`.
-- For quick pipeline experiments, set `renderer_mode = "SAMPLE_CONSTANT"` to
-  skip yt_idv entirely (seconds per run instead of minutes).
+- For quick pipeline experiments, set the volume's
+  `volume_override.renderer_mode = "SAMPLE_CONSTANT"` to skip yt_idv entirely
+  (seconds per run instead of minutes).
+- The look (renderer mode, colormaps, TFs, remembered colormap range) lives on
+  the volume object and is saved in the .blend; add-on prefs hold only
+  `work_dir` and `verbose_logging`. `render_volume`'s `[render]` overrides it.
 
 ## Gotchas when debugging
 
 - Don't run a test render while another render is running: they share
-  `work_dir` (`/tmp/cycles_volume_override`) and `render_session` sweeps
+  `work_dir` (`/tmp/cycles_yt`) and `render_session` sweeps
   leftover `frame_*` directories. Set `prefs.work_dir` to a private directory.
 - Checking output for the volume: compare RGB only. PNGs are RGBA, and the
   constant alpha channel hides large RGB differences in a plain mean.

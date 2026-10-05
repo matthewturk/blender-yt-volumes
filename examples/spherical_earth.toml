@@ -2,7 +2,7 @@
 # graticule and hotspot rings drawn by Cycles.
 #
 #   python examples/make_earth_blend.py examples/earth.blend
-#   python -m cycles_volume_override.render_volume examples/spherical_earth.toml
+#   python -m cycles_yt.render_volume examples/spherical_earth.toml
 
 [data]
 loader = "spherical_earth.py:load"   # any "module:function" or "file.py:function" returning a dataset

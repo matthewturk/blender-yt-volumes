@@ -1,7 +1,7 @@
 [project]
-name = "cycles-volume-override"
+name = "cycles-yt"
 version = "0.1.0"
-description = "Blender add-on: per-object render-engine override (Cycles + external volume renderer), composited via depth-clipped Alpha Over."
+description = "Blender add-on: render yt datasets with yt_idv inside Cycles renders, depth-clipped and composited on F12."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 # Pinned to match the pip-installable `bpy` dev/test dependency below (bpy

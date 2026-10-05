@@ -7,7 +7,7 @@ point --flythrough at your copy.
 
 Writes OUT_PREFIX.blend and OUT_PREFIX.toml; render with
 
-    python -m cycles_volume_override.render_volume OUT_PREFIX.toml
+    python -m cycles_yt.render_volume OUT_PREFIX.toml
 
 The path, target and colormap plan come from flythrough_densest.py's own
 functions, run once here against the saved scene. In Blender the volume box is
@@ -154,14 +154,17 @@ def plan(args, fly):
     )
 
 
-def build_blend(path, positions, distances, target, floor, width, height, fly=False, fov_deg=45.0):
+def build_blend(path, positions, distances, target, floor, width, height, look, fly=False, fov_deg=45.0):
     """The scene: the volume Empty, a focus Empty at the target, and a camera
     keyed every frame. Returns the zoom level per frame.
     """
     import bpy
     import mathutils
 
+    from cycles_yt import properties, render_volume
+
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    properties.register()
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, len(positions)
     scene.render.engine = "CYCLES"  # yt_idv modes need it
@@ -176,6 +179,7 @@ def build_blend(path, positions, distances, target, floor, width, height, fly=Fa
     volume.empty_display_type = "CUBE"
     volume.empty_display_size = 1.0
     scene.collection.objects.link(volume)
+    render_volume.apply_render_settings(volume.volume_override, look)
     # world position of the target, and of the box's center
     origin = np.zeros(3) if fly else 2.0 * target - 1.0
     volume.location = mathutils.Vector(origin - (2.0 * target - 1.0))
@@ -208,7 +212,7 @@ def build_blend(path, positions, distances, target, floor, width, height, fly=Fa
     return levels
 
 
-def build_deep_zoom_blend(path, args, positions, distances, target, target_unitary, box_ratio, fov_deg=45.0):
+def build_deep_zoom_blend(path, args, positions, distances, target, target_unitary, box_ratio, look, fov_deg=45.0):
     """A Deep Zoom shot-space scene with the same images as the path."""
     import bpy
     import mathutils
@@ -217,7 +221,7 @@ def build_deep_zoom_blend(path, args, positions, distances, target, target_unita
     import deep_zoom
     from deep_zoom import authoring, shot_space
 
-    from cycles_volume_override import properties
+    from cycles_yt import properties, render_volume
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     deep_zoom.register()
@@ -238,6 +242,7 @@ def build_deep_zoom_blend(path, args, positions, distances, target, target_unita
     scene.collection.objects.link(volume)
     volume.volume_override.is_volume_override = True
     volume.volume_override.dataset_path = os.path.abspath(args.scene)
+    render_volume.apply_render_settings(volume.volume_override, look)
 
     settings = scene.deep_zoom
     settings.enabled = True
@@ -277,6 +282,13 @@ def _toml_curve(rows, indent="  "):
     return "[\n" + ",\n".join(f"{indent}[{', '.join(repr(float(v)) if i else str(int(v)) for i, v in enumerate(r))}]" for r in rows) + ",\n]"
 
 
+def render_mode(render_method):
+    mode = RENDER_MODES.get(render_method)
+    if mode is None:
+        raise SystemExit(f"no render_volume mode for render_method {render_method!r}")
+    return mode
+
+
 def write_config(path, args, blend, target_unitary, levels, low, high, render_method, colormap):
     n = len(low)
     keys = sorted(set(range(0, n, args.cmap_every)) | {n - 1})
@@ -290,12 +302,10 @@ def write_config(path, args, blend, target_unitary, levels, low, high, render_me
         extensions = ""
         zoom_rows = [[k + 1, levels[k]] for k in range(n)]
         zoom = f"\n[zoom]\ntarget = [{', '.join(repr(float(v)) for v in target_unitary)}]\nlevel = {_toml_curve(zoom_rows)}\n"
-    mode = RENDER_MODES.get(render_method)
-    if mode is None:
-        raise SystemExit(f"no render_volume mode for render_method {render_method!r}")
+    mode = render_mode(render_method)
     with open(path, "w") as f:
         f.write(f"""# Written by examples/make_flythrough_blend.py from {os.path.basename(args.scene)}.
-#   python -m cycles_volume_override.render_volume {os.path.basename(path)}
+#   python -m cycles_yt.render_volume {os.path.basename(path)}
 
 [data]
 scene = "{os.path.abspath(args.scene)}"
@@ -323,12 +333,13 @@ def main():
     floor = args.floor if args.floor is not None else args.distance
     positions, distances, target, target_unitary, low, high, render_method, colormap, box_ratio = plan(args, fly)
     blend, config = f"{args.out}.blend", f"{args.out}.toml"
+    look = {"mode": render_mode(render_method), "colormap": colormap}
     if args.deep_zoom:
-        build_deep_zoom_blend(os.path.abspath(blend), args, positions, distances, target, target_unitary, box_ratio)
+        build_deep_zoom_blend(os.path.abspath(blend), args, positions, distances, target, target_unitary, box_ratio, look)
         levels = None
     else:
         levels = build_blend(
-            os.path.abspath(blend), positions, distances, target, floor, args.width, args.height, fly=args.fly,
+            os.path.abspath(blend), positions, distances, target, floor, args.width, args.height, look, fly=args.fly,
         )
     write_config(config, args, blend, target_unitary, levels, low, high, render_method, colormap)
     print(f"wrote {blend} and {config}: {len(positions)} frames, distance "

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from mathutils import Vector
 
-from cycles_volume_override import change_tracking, operators, properties
+from cycles_yt import change_tracking, operators, properties
 
 
 def _fake_obj(name, location):
@@ -165,11 +165,11 @@ def test_build_volume_params_dataset_and_params_version_are_independent(clean_sc
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
-    obj.volume_override.density_scale = 1.0
+    obj.volume_override.fog_alpha_max = 0.5
 
     operators.build_volume_params(obj)  # first call, establishes history
 
-    obj.volume_override.density_scale = 2.0  # cheap param changes, dataset doesn't
+    obj.volume_override.fog_alpha_max = 0.6  # cheap param changes, dataset doesn't
     second = operators.build_volume_params(obj)
     assert second.params_version.changed is True
     assert second.dataset.version.changed is False
@@ -221,83 +221,94 @@ def test_build_volume_params_accepts_a_sphere_empty_with_its_bounding_cube(clean
     np.testing.assert_allclose(corners.max(axis=0), 2.0)
 
 
-def test_build_volume_params_has_no_yt_idv_keys_when_addon_not_enabled(clean_scene_with_props):
-    # Only `properties` is registered, so preferences.addons[...] raises KeyError.
-    bpy.ops.object.empty_add(type='CUBE')
-    obj = bpy.context.active_object
-    obj.volume_override.is_volume_override = True
-
-    params = operators.build_volume_params(obj)
-
-    assert not any(k.startswith("yt_idv_") for k in params.custom_params)
-
-
 @pytest.fixture
 def addon_enabled():
     # register_class alone doesn't populate preferences.addons[...]; a real enable does.
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.preferences.addon_enable(module="cycles_volume_override")
+    bpy.ops.preferences.addon_enable(module="cycles_yt")
     change_tracking.reset()
     yield bpy.context.scene
-    bpy.ops.preferences.addon_disable(module="cycles_volume_override")
+    bpy.ops.preferences.addon_disable(module="cycles_yt")
 
 
-def test_build_volume_params_includes_yt_idv_settings_when_addon_enabled(addon_enabled):
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.yt_idv.fog_colormap = "inferno"
-    prefs.yt_idv.fog_ramp_power = 0.42
-
+def _flagged_cube():
     bpy.ops.object.empty_add(type='CUBE')
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
+    return obj
 
-    params = operators.build_volume_params(obj)
 
-    assert params.custom_params["yt_idv_fog_colormap"] == "inferno"
-    assert params.custom_params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
+def test_build_volume_params_includes_the_objects_look_settings(clean_scene_with_props):
+    obj = _flagged_cube()
+    obj.volume_override.renderer_mode = "YT_IDV_THRESHOLD_FOG"
+    obj.volume_override.fog_colormap = "inferno"
+    obj.volume_override.fog_ramp_power = 0.42
+
+    params = operators.build_volume_params(obj).custom_params
+
+    assert params["renderer_mode"] == "YT_IDV_THRESHOLD_FOG"
+    assert params["yt_idv_fog_colormap"] == "inferno"
+    assert params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
     # Untouched fields default to yt_idv_renderer's module constants.
-    from cycles_volume_override import yt_idv_renderer as yir
-    assert params.custom_params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
+    from cycles_yt import yt_idv_renderer as yir
+    assert params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
+    assert "yt_idv_cmap_range" not in params
 
 
-def test_yt_idv_custom_params_omits_curve_and_image_keys_by_default(addon_enabled):
-    params = operators._yt_idv_custom_params()
+def test_look_change_changes_the_params_hash(clean_scene_with_props):
+    obj = _flagged_cube()
+    first = operators.build_volume_params(obj).params_version.hash
+    obj.volume_override.rescale_colormap = True
+    assert operators.build_volume_params(obj).params_version.hash != first
+
+
+def test_remembered_colormap_range_is_passed_and_cleared_by_a_mode_change(clean_scene_with_props):
+    obj = _flagged_cube()
+    props = obj.volume_override
+    props.colormap_range = (0.25, 4.0)
+    props.colormap_range_set = True
+    assert operators.build_volume_params(obj).custom_params["yt_idv_cmap_range"] == pytest.approx((0.25, 4.0))
+
+    props.renderer_mode = "YT_IDV_PROJECTION"
+
+    assert props.colormap_range_set is False
+    assert "yt_idv_cmap_range" not in operators.build_volume_params(obj).custom_params
+
+
+def test_yt_idv_custom_params_omits_curve_and_image_keys_by_default(clean_scene_with_props):
+    params = operators._yt_idv_custom_params(_flagged_cube())
     assert "yt_idv_alpha_curve" not in params
     assert "yt_idv_color_image_rgba" not in params
 
 
-def test_get_or_create_alpha_curve_node_is_stable_across_calls(addon_enabled):
-    node1 = operators._get_or_create_alpha_curve_node()
-    node1.mapping.initialize()
-    node1.mapping.curves[0].points.new(0.5, 0.75)
-    node1.mapping.update()
+def test_selecting_curve_alpha_creates_a_per_object_curve(clean_scene_with_props):
+    first, second = _flagged_cube(), _flagged_cube()
+    first.volume_override.alpha_source = "CURVE"
+    second.volume_override.alpha_source = "CURVE"
 
-    node2 = operators._get_or_create_alpha_curve_node()
-
-    # Compare .as_pointer(): bpy wrappers aren't cached, so `is` is unreliable.
-    assert node2.name == node1.name
-    assert node2.as_pointer() == node1.as_pointer()
-    assert len(node2.mapping.curves[0].points) == 3
+    assert first.volume_override.alpha_curve is not None
+    assert first.volume_override.alpha_curve != second.volume_override.alpha_curve
 
 
-def test_evaluate_alpha_curve_default_is_linear(addon_enabled):
-    values = operators._evaluate_alpha_curve(nbins=5)
+def test_evaluate_alpha_curve_default_is_linear(clean_scene_with_props):
+    obj = _flagged_cube()
+    obj.volume_override.alpha_source = "CURVE"
+    values = operators._evaluate_alpha_curve(obj.volume_override.alpha_curve, nbins=5)
     assert values == pytest.approx([0.0, 0.25, 0.5, 0.75, 1.0], abs=1e-3)
 
 
-def test_yt_idv_custom_params_includes_alpha_curve_when_selected(addon_enabled):
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.yt_idv.alpha_source = "CURVE"
+def test_yt_idv_custom_params_includes_alpha_curve_when_selected(clean_scene_with_props):
+    obj = _flagged_cube()
+    obj.volume_override.alpha_source = "CURVE"
 
-    params = operators._yt_idv_custom_params()
+    params = operators._yt_idv_custom_params(obj)
 
-    assert "yt_idv_alpha_curve" in params
     assert len(params["yt_idv_alpha_curve"]) == 256
     assert params["yt_idv_alpha_curve"][0] == pytest.approx(0.0, abs=1e-3)
     assert params["yt_idv_alpha_curve"][-1] == pytest.approx(1.0, abs=1e-3)
 
 
-def test_sample_image_as_1d_rgba_averages_rows_and_resamples_width(addon_enabled):
+def test_sample_image_as_1d_rgba_averages_rows_and_resamples_width(clean_scene_with_props):
     import numpy as np
 
     img = bpy.data.images.new("vo_test_gradient", width=4, height=2, alpha=True, float_buffer=True)
@@ -327,7 +338,7 @@ def test_sample_image_as_1d_rgba_raises_on_zero_sized_image():
         operators._sample_image_as_1d_rgba(_FakeZeroSizedImage())
 
 
-def test_yt_idv_custom_params_includes_color_image_rgba_when_selected(addon_enabled):
+def test_yt_idv_custom_params_includes_color_image_rgba_when_selected(clean_scene_with_props):
     import numpy as np
 
     img = bpy.data.images.new("vo_test_gradient2", width=4, height=1, alpha=True, float_buffer=True)
@@ -335,29 +346,17 @@ def test_yt_idv_custom_params_includes_color_image_rgba_when_selected(addon_enab
     data[..., 2] = np.linspace(0.0, 1.0, 4)[None, :]
     data[..., 3] = 1.0
     img.pixels.foreach_set(data.ravel())
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.yt_idv.color_source = "IMAGE"
-    prefs.yt_idv.color_image_name = img.name
+    obj = _flagged_cube()
+    obj.volume_override.color_source = "IMAGE"
+    obj.volume_override.color_image = img
 
     try:
-        params = operators._yt_idv_custom_params()
-        assert "yt_idv_color_image_rgba" in params
+        params = operators._yt_idv_custom_params(obj)
         assert len(params["yt_idv_color_image_rgba"]) == 256
         assert params["yt_idv_color_image_rgba"][0][2] == pytest.approx(0.0, abs=1e-3)
         assert params["yt_idv_color_image_rgba"][-1][2] == pytest.approx(1.0, abs=1e-3)
     finally:
         bpy.data.images.remove(img)
-
-
-def test_yt_idv_custom_params_ignores_stale_color_image_name(addon_enabled):
-    # Image renamed/deleted after selection: fall back silently, don't raise mid-render.
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.yt_idv.color_source = "IMAGE"
-    prefs.yt_idv.color_image_name = "does_not_exist_anywhere"
-
-    params = operators._yt_idv_custom_params()
-
-    assert "yt_idv_color_image_rgba" not in params
 
 
 @pytest.mark.parametrize(
@@ -382,54 +381,18 @@ def test_resolve_sequence_frame_no_duration_returns_none():
     assert operators.resolve_sequence_frame(0, 0, 0, "CLIP", 5) is None
 
 
-# --- Time mapping (requested_time) ------------------------------------------
-
-def _flagged_cube(scene):
-    bpy.ops.object.empty_add(type='CUBE')
-    obj = bpy.context.active_object
-    obj.volume_override.is_volume_override = True
-    return obj
-
-
-def test_resolve_requested_time_direct_matches_scene_frame(clean_scene_with_props):
-    obj = _flagged_cube(clean_scene_with_props)
-    obj.volume_override.mapping_policy = "DIRECT"
-    clean_scene_with_props.frame_set(7)
-    assert operators.resolve_requested_time(obj) == 7.0
-
-
-def test_resolve_requested_time_affine_applies_scale_and_offset(clean_scene_with_props):
-    obj = _flagged_cube(clean_scene_with_props)
-    obj.volume_override.mapping_policy = "AFFINE"
-    obj.volume_override.time_scale = 2.0
-    obj.volume_override.time_offset = 100.0
-    clean_scene_with_props.frame_set(7)
-    assert operators.resolve_requested_time(obj) == pytest.approx(114.0)  # 7*2+100
-
-
-def test_resolve_requested_time_manual_reads_property_directly(clean_scene_with_props):
-    obj = _flagged_cube(clean_scene_with_props)
-    obj.volume_override.mapping_policy = "MANUAL"
-    obj.volume_override.manual_time = 42.5
-    clean_scene_with_props.frame_set(999)  # irrelevant under MANUAL
-    assert operators.resolve_requested_time(obj) == pytest.approx(42.5)
-
-
-def test_requested_time_change_does_not_flip_dataset_version_changed(clean_scene_with_props):
+def test_advancing_frames_does_not_flip_dataset_version_changed(clean_scene_with_props):
     """Advancing frames must not look like a dataset change (forcing a reload)."""
-    obj = _flagged_cube(clean_scene_with_props)
+    obj = _flagged_cube()
     obj.volume_override.dataset_path = "/data/sim_001"
-    obj.volume_override.mapping_policy = "DIRECT"
     cache_key = properties.ensure_dataset_uuid(obj)
 
     clean_scene_with_props.frame_set(1)
     first = operators.build_dataset_params(obj, cache_key)
-    assert first.requested_time == 1.0
-
     clean_scene_with_props.frame_set(2)
     second = operators.build_dataset_params(obj, cache_key)
-    assert second.requested_time == 2.0
-    assert second.version.changed is False  # only requested_time moved
+
+    assert second.version.changed is False
     assert second.version.hash == first.version.hash
 
 
@@ -487,7 +450,7 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
 def _fake_render_result(request):
     import numpy as np
 
-    from cycles_volume_override import external_render
+    from cycles_yt import external_render
 
     h, w = request.depth.data.shape
     return external_render.RenderResult(
@@ -509,8 +472,7 @@ def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(add
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_view_transform = []
@@ -527,6 +489,30 @@ def test_render_current_frame_forces_standard_view_transform_for_yt_idv_mode(add
     assert scene.view_settings.view_transform == "AgX"  # restored afterward, untouched
 
 
+def test_render_current_frame_remembers_the_colormap_range_once(addon_enabled, monkeypatch, tmp_path):
+    import dataclasses
+
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    props = _flagged_cube().volume_override
+    bpy.context.preferences.addons["cycles_yt"].preferences.work_dir = str(tmp_path)
+    ranges = iter([(1.0, 2.0), (5.0, 6.0)])
+
+    def fake_renderer(request):
+        return dataclasses.replace(_fake_render_result(request), cmap_range=next(ranges))
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+    operators.render_current_frame(bpy.context)
+
+    assert props.colormap_range_set
+    assert tuple(props.colormap_range) == pytest.approx((1.0, 2.0))
+
+
 def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled, monkeypatch, tmp_path, capsys):
     scene = addon_enabled
     scene.render.resolution_x = 16
@@ -540,8 +526,7 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
     prefs.verbose_logging = False
 
@@ -574,8 +559,7 @@ def test_render_current_frame_view_transform_warning_ignores_verbose_logging(add
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
     prefs.verbose_logging = False
 
@@ -600,9 +584,9 @@ def test_render_current_frame_does_not_touch_view_transform_for_non_yt_idv_mode(
     bpy.ops.object.empty_add(type='CUBE')
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
+    box.volume_override.renderer_mode = "SAMPLE_CONSTANT"
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "SAMPLE_CONSTANT"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
 
     operators.render_current_frame(bpy.context)
@@ -626,8 +610,7 @@ def test_render_current_frame_does_not_switch_engine_for_pass2(addon_enabled, mo
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_engine_during_render = []
@@ -657,8 +640,7 @@ def test_render_current_frame_enables_and_restores_use_persistent_data(addon_ena
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_persistent_data = []
@@ -690,8 +672,7 @@ def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(ad
     box.volume_override.is_volume_override = True
     box.hide_render = False
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
 
     seen_hide_render = []
@@ -719,9 +700,9 @@ def _setup_yt_idv_scene(scene, tmp_path, view_transform="AgX"):
     scene.cycles.samples = 1
     scene.view_settings.view_transform = view_transform
     _add_camera(scene, "PERSP", lens=50.0)
+    _flagged_cube()
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = str(tmp_path)
     return prefs
 
@@ -816,8 +797,7 @@ def _render_one_frame(scene, work_dir):
     box = bpy.context.active_object
     box.volume_override.is_volume_override = True
 
-    prefs = bpy.context.preferences.addons["cycles_volume_override"].preferences
-    prefs.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    prefs = bpy.context.preferences.addons["cycles_yt"].preferences
     prefs.work_dir = work_dir
     return prefs
 
@@ -890,45 +870,12 @@ def test_sweep_stale_frame_dirs_only_removes_frame_prefixed_directories(tmp_path
     )
 
 
-# --- opacity field / _apply_opacity -------------------------------------------
-
-def test_apply_opacity_is_a_noop_at_default_1_0():
-    import numpy as np
-    from cycles_volume_override import external_render
-
-    result = external_render.RenderResult(
-        rgba=np.ones((2, 2, 4), dtype="float32") * 0.8,
-        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-    )
-
-    out = operators._apply_opacity(result, 1.0)
-
-    assert out is result  # exact no-op, not just numerically equal
-
-
-def test_apply_opacity_scales_premultiplied_rgba_uniformly():
-    import numpy as np
-    from cycles_volume_override import external_render
-
-    result = external_render.RenderResult(
-        rgba=np.ones((2, 2, 4), dtype="float32") * 0.8,
-        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-    )
-
-    out = operators._apply_opacity(result, 0.5)
-
-    assert np.allclose(out.rgba, 0.4)
-    assert out.rgba.dtype == np.dtype("float32")
-    assert out.alpha_mode == "PREMULTIPLIED"
-    assert out.color_space == "LINEAR"
-
-
 def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_path):
     # Regression (perf): images.new() + remove() per call invalidated
     # Cycles' persistent-data cache.
     import numpy as np
 
-    from cycles_volume_override import external_render
+    from cycles_yt import external_render
 
     path_a = str(tmp_path / "a.exr")
     path_b = str(tmp_path / "b.exr")
@@ -965,7 +912,7 @@ def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp
     # deleted) file, reading back as (0, 0), so reuse never held per-frame.
     import numpy as np
 
-    from cycles_volume_override import external_render
+    from cycles_yt import external_render
 
     def result(value):
         return external_render.RenderResult(
@@ -992,7 +939,7 @@ def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp
 def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
     import numpy as np
 
-    from cycles_volume_override import external_render
+    from cycles_yt import external_render
 
     path_a = str(tmp_path / "depth_a.exr")
     path_b = str(tmp_path / "depth_b.exr")
@@ -1027,28 +974,6 @@ def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path
     assert np.allclose(depth_b.data, 3.0 * scale_length, atol=1e-4)
 
 
-def test_volume_override_opacity_field_defaults_to_1_0_and_is_keyframable(clean_scene_with_props):
-    # Lives on the Object, not AddonPreferences, because only the former is keyframable.
-    bpy.ops.object.empty_add(type='CUBE')
-    obj = bpy.context.active_object
-    obj.volume_override.is_volume_override = True
-    assert obj.volume_override.opacity == pytest.approx(1.0)
-
-    obj.volume_override.opacity = 0.0
-    obj.volume_override.keyframe_insert(data_path="opacity", frame=1)
-    obj.volume_override.opacity = 1.0
-    obj.volume_override.keyframe_insert(data_path="opacity", frame=21)
-
-    assert obj.animation_data is not None and obj.animation_data.action is not None
-
-    clean_scene_with_props.frame_set(1)
-    assert obj.volume_override.opacity == pytest.approx(0.0)
-    clean_scene_with_props.frame_set(21)
-    assert obj.volume_override.opacity == pytest.approx(1.0)
-    clean_scene_with_props.frame_set(11)  # midpoint, linear interpolation
-    assert obj.volume_override.opacity == pytest.approx(0.5, abs=1e-3)
-
-
 def test_every_yt_idv_renderer_mode_gets_the_cpu_compositor():
     # A yt_idv mode missing from this set leaves the GPU compositor on, and
     # yt_idv's eglMakeCurrent then fails with EGL_BAD_ACCESS.
@@ -1063,6 +988,7 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
     scene.collection.objects.link(camera)
     scene.camera = camera
     scene.render.engine = "BLENDER_EEVEE"
-    monkeypatch.setattr(operators, "_get_prefs", lambda context: SimpleNamespace(renderer_mode="YT_IDV_MAX_INTENSITY", verbose_logging=False))
+    _flagged_cube()
+    monkeypatch.setattr(operators, "_get_prefs", lambda context: SimpleNamespace(verbose_logging=False))
     with pytest.raises(RuntimeError, match="need the Cycles render engine"):
         operators.render_current_frame(bpy.context)

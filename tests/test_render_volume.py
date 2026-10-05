@@ -3,7 +3,7 @@ import types
 import numpy as np
 import pytest
 
-from cycles_volume_override import render_volume as rv
+from cycles_yt import render_volume as rv
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def test_load_config_fills_defaults_and_resolves_paths_against_the_config(tmp_pa
     config = rv.load_config(_write(tmp_path, _minimal()))
     assert config["blender"]["file"] == str(blend)
     assert config["blender"]["output"] == str(tmp_path / "renders" / "frame_")
-    assert config["render"]["mode"] == "YT_IDV_MAX_INTENSITY"
+    assert config["render"]["mode"] is None  # keep the .blend's own
     assert config["data"]["subset"] is None
 
 
@@ -204,6 +204,46 @@ def test_cmap_range_at_handles_auto_fixed_and_curves():
 def test_cmap_validation(tmp_path, blend, extra, message):
     with pytest.raises(rv.ConfigError, match=message):
         rv.load_config(_write(tmp_path, _minimal() + extra))
+
+
+@pytest.fixture
+def volume_props():
+    import bpy
+
+    from cycles_yt import properties
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    properties.register()
+    obj = bpy.data.objects.new("Volume", None)
+    yield obj.volume_override
+    properties.unregister()
+
+
+def test_an_empty_render_table_keeps_the_volumes_settings(volume_props):
+    volume_props.renderer_mode = "YT_IDV_THRESHOLD_FOG"
+    volume_props.fog_colormap = "arbre"
+    volume_props.rescale_colormap = True
+
+    rv.apply_render_settings(volume_props, rv.DEFAULTS["render"])
+
+    assert volume_props.renderer_mode == "YT_IDV_THRESHOLD_FOG"
+    assert volume_props.fog_colormap == "arbre"
+    assert volume_props.rescale_colormap is True
+
+
+def test_the_render_table_overrides_the_volumes_settings(volume_props):
+    render = {**rv.DEFAULTS["render"], "mode": "YT_IDV_PROJECTION", "colormap": "inferno",
+              "reset_cmap_each_frame": False, "yt_idv": {"backend": "osmesa"}}
+    volume_props.rescale_colormap = True
+
+    rv.apply_render_settings(volume_props, render)
+
+    assert volume_props.renderer_mode == "YT_IDV_PROJECTION"
+    assert volume_props.colormap == "inferno"
+    assert volume_props.rescale_colormap is False
+    assert volume_props.backend == "osmesa"
+    with pytest.raises(rv.ConfigError, match="not a volume look setting"):
+        rv.apply_render_settings(volume_props, {"yt_idv": {"is_volume_override": False}})
 
 
 class _FakeComponent:

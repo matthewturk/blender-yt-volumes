@@ -1,6 +1,6 @@
 """Render a yt dataset into a Blender scene from one TOML config file.
 
-    python -m cycles_volume_override.render_volume scene.toml [options]
+    python -m cycles_yt.render_volume scene.toml [options]
 
 The config names the dataset (and optional subset), the .blend file and the
 Empty-Cube object to replace with the volume, and how it should look.
@@ -47,13 +47,14 @@ DEFAULTS = {
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
+    # Unset keys keep the volume's own settings from the .blend.
     "render": {
-        "mode": "YT_IDV_MAX_INTENSITY",
-        "colormap": None,
+        "mode": None,  # e.g. "YT_IDV_MAX_INTENSITY"
+        "colormap": None,  # sets the current mode's colormap
         "cmap_range": None,  # [min, max], or a curve [[frame, min, max], ...]
         "cmap_interpolation": "linear",  # between curve keys: "linear" or "log"
-        "reset_cmap_each_frame": False,
-        "yt_idv": {},
+        "reset_cmap_each_frame": None,  # the volume's Rescale Colormap Every Render
+        "yt_idv": {},  # any properties.LOOK_SETTINGS name, e.g. fog_alpha_max
     },
     "zoom": {
         "target": None,  # "max", or [x, y, z] in unitary coordinates
@@ -70,9 +71,9 @@ DEFAULTS = {
 
 SUBSET_KINDS = ("region", "sphere", "box")
 DEVICES = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI", "CPU")
-# Modes whose colormap lives on the component rather than in a preference.
-COMPONENT_COLORMAP_MODES = ("YT_IDV_MAX_INTENSITY", "YT_IDV_PROJECTION")
-COLORMAP_PREFERENCE = {
+COLORMAP_PROPERTY = {
+    "YT_IDV_MAX_INTENSITY": "colormap",
+    "YT_IDV_PROJECTION": "colormap",
     "YT_IDV_TRANSFER_FUNCTION": "tf_colormap",
     "YT_IDV_THRESHOLD_FOG": "fog_colormap",
     "YT_IDV_MAX_INTENSITY_ALPHA": "mip_alpha_colormap",
@@ -272,7 +273,7 @@ def validate(config, series=False):
     start_end = parse_frames(blender["frames"])
     if start_end and start_end[0] > start_end[1]:
         raise ConfigError(f"blender.frames {blender['frames']!r} ends before it starts")
-    if not render["mode"].startswith("YT_IDV_"):
+    if render["mode"] is not None and not render["mode"].startswith("YT_IDV_"):
         raise ConfigError(f"render.mode {render['mode']!r} is not a YT_IDV_* mode")
     _validate_cmap(render, series)
     _validate_zoom(config["zoom"])
@@ -402,10 +403,7 @@ def volume_provider(ctx):
         return VolumeSetupResult(scene=ctx.previous_scene, ds=ds, changed=True)
     if ctx.previous_scene is not None:
         changed = False
-        if render["reset_cmap_each_frame"]:
-            for component in ctx.previous_scene.components:
-                component._cmap_bounds_invalid = True
-        elif is_cmap_curve(render["cmap_range"]):
+        if is_cmap_curve(render["cmap_range"]) and not render["reset_cmap_each_frame"]:
             changed = _apply_cmap_range(ctx.previous_scene, cmap_range_at(render, ctx.frame.frame_number))
         return VolumeSetupResult(scene=ctx.previous_scene, ds=ctx.previous_ds, changed=changed)
 
@@ -417,8 +415,6 @@ def volume_provider(ctx):
         scene, ds = _build_scene(ctx, data)
 
     for component in scene.components:
-        if render["colormap"] and render["mode"] in COMPONENT_COLORMAP_MODES:
-            component.colormap.colormap_name = render["colormap"]
         component._cmap_bounds_invalid = True
     if not render["reset_cmap_each_frame"]:
         _apply_cmap_range(scene, cmap_range_at(render, ctx.frame.frame_number))
@@ -500,17 +496,8 @@ def _configure_blender(config):
     scene = bpy.context.scene
 
     prefs = bpy.context.preferences.addons[__package__].preferences
-    # Must be set before render_session opens: it picks compositor/view settings by mode.
-    prefs.renderer_mode = render["mode"]
     temp_work_dir = None if blender["work_dir"] else tempfile.mkdtemp(prefix="render_volume_")
     prefs.work_dir = blender["work_dir"] or temp_work_dir
-    colormap_pref = COLORMAP_PREFERENCE.get(render["mode"])
-    if render["colormap"] and colormap_pref:
-        setattr(prefs.yt_idv, colormap_pref, render["colormap"])
-    for key, value in render["yt_idv"].items():
-        if not hasattr(prefs.yt_idv, key):
-            raise ConfigError(f"render.yt_idv.{key} is not a yt_idv preference")
-        setattr(prefs.yt_idv, key, value)
 
     for path in blender["extensions"]:
         _register_extension(path)
@@ -518,6 +505,7 @@ def _configure_blender(config):
     obj = bpy.data.objects.get(blender["volume"])
     if obj is None:
         raise ConfigError(f"no object named {blender['volume']!r} in {blender['file']}")
+    apply_render_settings(obj.volume_override, render)
     obj.volume_override.is_volume_override = True
     obj.volume_override.yt_idv_volume_provider = f"{__name__}:volume_provider"
     obj.volume_override.zoom_target = _zoom_target_spec(config["zoom"]["target"])
@@ -536,6 +524,23 @@ def _configure_blender(config):
 
     configure_cycles_device(scene, blender["device"])
     return scene, temp_work_dir
+
+
+def apply_render_settings(props, render):
+    """Set the volume's look properties from whatever `render` (a `[render]` table) sets."""
+    from .properties import LOOK_SETTINGS
+
+    if render.get("mode") is not None:
+        props.renderer_mode = render["mode"]
+    colormap_property = COLORMAP_PROPERTY.get(props.renderer_mode)
+    if render.get("colormap") and colormap_property:
+        setattr(props, colormap_property, render["colormap"])
+    if render.get("reset_cmap_each_frame") is not None:
+        props.rescale_colormap = render["reset_cmap_each_frame"]
+    for key, value in render.get("yt_idv", {}).items():
+        if key not in LOOK_SETTINGS:
+            raise ConfigError(f"render.yt_idv.{key} is not a volume look setting")
+        setattr(props, key, value)
 
 
 def _register_extension(path):
@@ -579,11 +584,10 @@ def configure_cycles_device(scene, device_type):
 
 def _cmap_range(scene):
     """`[min, max]` the scene's first colormapped component used, or None."""
-    for component in getattr(scene, "components", ()):
-        low, high = getattr(component, "cmap_min", None), getattr(component, "cmap_max", None)
-        if low is not None and high is not None:
-            return [float(low), float(high)]
-    return None
+    from .yt_idv_renderer import _component_cmap_range
+
+    cmap_range = _component_cmap_range(scene) if scene is not None else None
+    return list(cmap_range) if cmap_range else None
 
 
 def write_report(path, config, written):
@@ -632,7 +636,7 @@ def render(config):
 
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
-        prog="python -m cycles_volume_override.render_volume",
+        prog="python -m cycles_yt.render_volume",
         description="Render a yt dataset into a Blender scene's volume Empty.",
     )
     parser.add_argument("config", nargs="?", help="TOML config file (optional if options cover the required keys)")

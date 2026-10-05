@@ -1,4 +1,4 @@
-# cycles-volume-override
+# cycles-yt
 
 A Blender add-on that renders flagged objects with an external volume
 renderer instead of Cycles: [yt_idv](https://github.com/yt-project/yt_idv),
@@ -23,7 +23,7 @@ git clone https://github.com/matthewturk/cycles-override.git && cd cycles-overri
 PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
 PYTHONPATH= uv run --group ytidv pytest -q
 PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend
-PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume \
+PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
     examples/render_volume.toml --frames 1 --set blender.device='"CUDA"'
 ```
 
@@ -32,7 +32,7 @@ yt's HiresIsolatedGalaxy sample (downloaded on first use), into the simple
 scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
 `HIP` or `CPU` for your GPU.
 
-**In Blender:** zip `src/cycles_volume_override/` and install it
+**In Blender:** zip `src/cycles_yt/` and install it
 (Preferences > Add-ons > Install from Disk), and install yt and yt_idv into
 Blender's own Python (`uv pip install --python <blender's python>
 "yt_idv @ git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
@@ -53,7 +53,7 @@ and install it as an extension. Render Engine must be Cycles.
 ## Contents
 
 ```
-src/cycles_volume_override/
+src/cycles_yt/
     __init__.py            bl_info, register()/unregister()
     properties.py          per-object flag, Dataset Path, zoom target/level, UI panel
     operators.py           two-pass render orchestration, preferences, F12 takeover
@@ -74,32 +74,25 @@ tests/                     pytest suite
 This is a classic (`bl_info`-style) add-on, not a pip package Blender
 installs for itself -- Blender doesn't consult `pyproject.toml`. Either:
 
-- Zip `src/cycles_volume_override/` and use Blender's *Install from Disk*, or
-- Symlink `src/cycles_volume_override/` into your Blender's addons directory
+- Zip `src/cycles_yt/` and use Blender's *Install from Disk*, or
+- Symlink `src/cycles_yt/` into your Blender's addons directory
   and enable it in Preferences > Add-ons.
 
-Then enable **Cycles + External Volume Renderer Override** in Preferences.
-Its preferences panel has:
-- **Renderer** -- which renderer the pipeline calls: the yt_idv modes
-  (Maximum Intensity, Value-Driven Alpha, Projection, Isocontour and yt
-  Transfer Functions, Threshold Fog), plus `SAMPLE_CONSTANT` (a non-physical
-  worked example, see "Sample renderer"), `DEBUG_FLAT` and `STUB`. Each yt_idv
-  mode shows its own settings below.
-- **Working Directory** -- where per-frame EXR intermediates go (default:
-  system temp dir).
+Then enable **cycles-yt** in Preferences.
+Its preferences panel has only **Working Directory** (where per-frame EXR
+intermediates go; default: system temp dir) and **Verbose Logging**.
+
+The look lives on each flagged object's **Volume Override** panel (Object
+Properties): the **Renderer** -- the yt_idv modes (Maximum Intensity,
+Value-Driven Alpha, Projection, Isocontour and yt Transfer Functions,
+Threshold Fog), or `SAMPLE_CONSTANT` (a non-physical debug renderer, see
+"Sample renderer") -- and that mode's settings. They're saved in the .blend.
 
 A flagged object (an Empty-Cube, or an Empty-Sphere for spherical data)
 renders its **Dataset Path**: anything `yt.load` reads, or a scene saved with
 yt_idv's `SceneGraph.save` (`.zip`); with no path, yt's IsolatedGalaxy
 sample. The field defaults to density; set it with an extra custom param
 `yt_idv_field` (e.g. `gas, temperature`).
-
-## Wiring in the real renderer
-
-Everything lives behind `external_render.render_volume(request) -> result`.
-Replace its body. Don't change the dataclass shapes without also updating
-whatever's on the other side of that boundary -- they're the whole point of
-this file. See "Swappable transport" below for why it's structured this way.
 
 ## Sample renderer
 
@@ -110,7 +103,7 @@ them against the volume's actual world-space bounding box (from
 `VolumeObjectParams`), clips the resulting path length at the solid surface
 (`DepthBuffer`, respecting its `depth_convention`/`row_order` rather than
 assuming) -- but the "shading" is deliberately as dumb as the brief asked
-for: **`output = clipped path length x density_scale`**, no density
+for: **`output = clipped path length x a constant`**, no density
 sampling, no marching, no scattering. It's there so there's something
 visibly volume-shaped and *correctly occluded* to look at, and so the ray/
 depth/position wiring is demonstrably exercised, before the real renderer
@@ -125,7 +118,7 @@ PANO/equirectangular path, and with only a thin bpy fixture for PERSP/ORTHO
 Supports PERSP/ORTHO and PANO-equirectangular (the two camera paths with
 empirically-confirmed formulas); any other panorama sub-type raises
 `NotImplementedError` rather than silently rendering something wrong.
-Select it via the **Renderer** preference (`SAMPLE_CONSTANT`) to see it run
+Select it via the volume's **Renderer** (`SAMPLE_CONSTANT`) to see it run
 through the real two-pass pipeline, or call it directly on a hand-built
 `RenderRequest` for a quick sanity check.
 
@@ -134,7 +127,7 @@ through the real two-pass pipeline, or call it directly on a hand-built
 `yt_idv_renderer.py` calls the REAL [yt_idv](
 https://github.com/yt-project/yt_idv) volume renderer -- real offscreen
 OpenGL, not a toy stand-in -- in five modes, all selectable via the
-**Renderer** preference: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
+volume's **Renderer** setting: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
 Projection), `YT_IDV_TRANSFER_FUNCTION` (a real transfer function --
 isocontour layers at fixed densities in log space,
 `yt.ColorTransferFunction.add_layers`, not a placeholder colormap),
@@ -238,15 +231,17 @@ custom harness: one TOML file names the dataset (plus optional subset), the
 `.blend` file, the Empty-Cube object to replace, and the look.
 
 ```
-PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume examples/render_volume.toml
-PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume \
+PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume examples/render_volume.toml
+PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_volume \
     --sample IsolatedGalaxy --blend scene.blend --volume "Volume 1" --frames 1-10 \
     --set data.subset.kind='"sphere"' --set data.subset.radius='[20, "kpc"]'
 ```
 
 `examples/render_volume.toml` documents every key. Options override the
 file, `--set section.key=value` reaches any key (values parse as TOML), and
-`--check` prints the merged config without rendering. Each run gets its own
+`--check` prints the merged config without rendering. `[render]` keys
+override the volume's own settings in the `.blend`; with no `[render]` the
+`.blend` renders exactly as authored in the GUI. Each run gets its own
 temporary `work_dir` unless one is set, so concurrent runs don't collide.
 
 ### Deep zooms past float32
@@ -335,7 +330,7 @@ maps frames to outputs: by simulation time or by output index, with optional
 has the details.
 
 ```
-PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_series examples/render_series.toml --dry-run
+PYTHONPATH= uv run --group ytidv python -m cycles_yt.render_series examples/render_series.toml --dry-run
 ```
 
 Consecutive frames that show the same output form a segment, and each segment
@@ -893,13 +888,6 @@ matching this add-on's target Blender version) vs. directly on core
 apparently merged in Blender 5.0, not independently confirmed on a real
 &lt;5.0 Blender).
 
-### Swappable transport
-
-`render_volume()` is the *only* function anything else calls to reach the
-external renderer. Whether that's an in-process Python call (now), a
-subprocess, or a network call (later) is entirely inside that one function
--- nothing in `operators.py` needs to know or change.
-
 ## Z-pass verification findings
 
 Per the spec: don't assume the Z pass's depth convention or the pixel
@@ -988,148 +976,37 @@ the relevant `hasattr`-gated branch in `compositor_build.py` is the one
 place to fix -- both branches are exercised independently by
 `tests/test_compositor_build.py`.
 
-## Custom properties -> `VolumeObjectParams.custom_params`
+## Volume properties -> `VolumeObjectParams.custom_params`
 
-`properties.VolumeOverrideProperties` (on `obj.volume_override`) exposes
-`density_scale`, `absorption` (RGB), `scattering` (RGB), `color` (RGB) as
-typed fields, plus a free-form key/value table (`custom_params_extra`) for
-anything the real renderer needs that isn't anticipated here.
+`properties.VolumeOverrideProperties` (on `obj.volume_override`) holds each
+volume's look, saved in the .blend so a GUI F12 and a batch render of the
+same file match:
 
-### `opacity` -- the one field NOT passed through `custom_params`, and the answer to "can I keyframe opacity?"
+- **Renderer** (`renderer_mode`): a `YT_IDV_*` mode, or `SAMPLE_CONSTANT`
+  for pipeline tests without yt_idv.
+- The current mode's settings: backend (EGL/OSMesa), colormap (Maximum
+  Intensity, Projection), isocontour value range/layers/colormap, threshold
+  fog range/colormap/alpha max/ramp power, MIP-alpha colormap/max/ramp
+  power, and the yt transfer function with its ray length and sample factor.
+  Defaults match `yt_idv_renderer.py`'s module constants.
+- **Rescale Colormap Every Render**, or else the **remembered colormap
+  range**: the first render with nothing remembered fits the range and
+  stores it on the volume; later renders reuse it. Changing the renderer
+  mode, or unchecking it, makes the next render fit a new one.
+- **Alpha Source: Custom Curve** / **Color Source: Image** for Threshold Fog
+  and MIP Alpha. The curve lives on a `ShaderNodeFloatCurve` in a node group
+  the volume points to (a `CurveMapping` can't be a property itself); it is
+  sampled into `yt_idv_alpha_curve` and replaces the ramp-power shape. The
+  image is averaged across rows and resampled into `yt_idv_color_image_rgba`;
+  its alpha is ignored.
 
-`obj.volume_override.opacity` (default `1.0`) is applied by `operators.
-render_current_frame` AFTER `render_fn(request)` returns, to every
-renderer's output uniformly (`operators._apply_opacity`) -- unlike
-`density_scale`/`absorption`/`scattering`/`color` above, it never crosses
-`custom_params` for a renderer to interpret itself; multiplying the whole
-premultiplied-alpha `(H, W, 4)` array by one scalar is exact (see
-`_apply_opacity`'s own docstring for why), so this covers every
-`renderer_mode`, including future ones, without each needing to remember a
-`custom_params` key.
+`to_custom_params()` puts all of these into `custom_params` (`renderer_mode`
+plus `yt_idv_*` keys), so any look change changes `params_version` and
+re-renders. A free-form key/value table (`custom_params_extra`) adds
+anything else, e.g. `yt_idv_field`. `yt_idv_renderer.py` stays `bpy`-free:
+it only reads `custom_params`.
 
-**Yes, this one is keyframable with completely standard Blender keyframing**
--- right-click > Insert Keyframe on the Opacity slider, or `obj.
-volume_override.keyframe_insert(data_path="opacity", frame=N)`, works
-exactly like any other Object property, because it lives on the Object
-itself (a real ID with `animation_data`). Confirmed directly: keyframed
-0.0 -> 1.0 across two frames, `frame_set` to a frame in between correctly
-read back the linearly-interpolated value.
-
-**The yt_idv-specific alpha controls in the Preferences panel (Fog/MIP
-Alpha Max, Ramp Power, and the curve-editor mechanism below) are NOT
-keyframable, and never can be** -- confirmed directly: `AddonPreferences`
-instances have no `animation_data` at all (`hasattr(prefs, "animation_data")
-` is `False`, `prefs.id_data` is `None`), and `keyframe_insert` on one
-raises `TypeError` outright. This isn't a bug or an oversight in this
-add-on's design -- Blender's `AddonPreferences` category simply isn't part
-of the animation system, full stop, regardless of what kind of property
-you put on it. (Separately, also confirmed: even a *hidden node's*
-CurveMapping -- which DOES live on a real animatable ID, a `ShaderNodeTree`
--- can't have its own curve POINT positions keyframed either;
-`keyframe_insert(data_path="location")` on a curve point raises `could not
-make path to "location"`. That's a general Blender limitation on curve
-widgets everywhere, not specific to this add-on.) If you want an animated
-fade using the yt_idv renderers specifically, `opacity` above is the
-supported way -- it composes with whatever `renderer_mode`/colormap/curve
-you've picked, since it's applied to the final image regardless.
-`to_custom_params()` merges both into the one dict that becomes
-`VolumeObjectParams.custom_params` -- extending the real renderer's
-parameter set never requires touching this add-on's Python, just adding a
-row in the object's panel. Dataset identity (`dataset_path`/`dataset_kind`)
-is deliberately NOT part of this dict -- see the next section.
-
-### yt_idv-specific parameters, exposed the same way
-
-`operators.YtIdvRenderSettings` (a `PointerProperty` on `VolumeOverride
-Preferences.yt_idv`) exposes every yt_idv-specific rendering knob that used
-to be a hardcoded module constant in `yt_idv_renderer.py` -- backend
-(EGL/OSMesa), the isocontour transfer function's value range/layer
-count/colormap, the threshold fog's value range/colormap/alpha max/ramp
-power, and MIP-alpha's colormap/max/ramp power -- as real, editable fields
-in the add-on's Preferences panel, shown ONLY when `renderer_mode` is one
-of the `YT_IDV_*` options (selecting `STUB`/`DEBUG_FLAT`/`SAMPLE_CONSTANT`
-hides the whole section, so the panel stays uncluttered for other
-renderers). Deliberately does NOT expose dataset selection -- `yt_idv_
-renderer.py` still always renders the hardcoded `IsolatedGalaxy` sample;
-how you'd actually create/supply your own dataset is a separate,
-not-yet-designed problem.
-
-These settings reach `yt_idv_renderer.py` through the EXACT SAME mechanism
-as the generic per-object knobs above -- `operators._yt_idv_custom_params()`
-merges them into `VolumeObjectParams.custom_params` under `yt_idv_*`-
-prefixed keys (`build_volume_params` calls it for every flagged object,
-every frame, regardless of which renderer is active), and each yt_idv
-`_configure_*` function reads `custom_params.get("yt_idv_...", MODULE_
-CONSTANT)` -- falling back to the exact same hardcoded default as before
-when the key isn't present. This keeps `yt_idv_renderer.py` itself
-`bpy`-free (it never reads Preferences directly, staying testable via a
-hand-built `RenderRequest` alone, in-process or from the throwaway yt_idv
-venv) and keeps `external_render.py`'s dataclass contract untouched --
-exactly the same "add renderer-specific knobs via `custom_params`, not by
-growing the frozen contract" pattern the generic fields already use, just
-populated from Preferences instead of the object panel. A non-yt_idv
-renderer never sees these keys do anything -- they're simply absent from
-its own view of `custom_params` unless it happens to look for them, so
-selecting `STUB`/`DEBUG_FLAT`/`SAMPLE_CONSTANT` is completely unaffected by
-whatever the yt_idv fields are currently set to.
-
-### Curve-driven alpha / image-driven color
-
-For the two continuous-ramp yt_idv modes (`YT_IDV_THRESHOLD_FOG`/
-`YT_IDV_MAX_INTENSITY_ALPHA` -- NOT the isocontour `YT_IDV_TRANSFER_
-FUNCTION`, whose `add_layers()` shape doesn't reduce to one alpha-vs-
-position curve the same way), the Preferences panel adds two independent
-overrides to the ramp-power/named-colormap fields above:
-
-- **Alpha Source: Custom Curve** -- draws a real, native Blender curve
-  widget right in the panel (`UILayout.template_curve_mapping`), the same
-  widget a Shader Editor's N-panel shows. There's no way to put a real
-  `CurveMapping` directly on a custom settings field (`PointerProperty
-  (type=bpy.types.CurveMapping)` doesn't register at all -- `TypeError:
-  ... expected an RNA type derived from ID or ID Property Group`), so this
-  piggybacks on a hidden `ShaderNodeFloatCurve` node's own `.mapping`,
-  tucked into an internal node group (`VolumeOverride yt_idv Alpha Curve
-  (internal)`) that's never connected to any real shader -- purely a data
-  container for the curve. The curve is sampled into a plain list of
-  floats and crosses into `custom_params` as `"yt_idv_alpha_curve"`,
-  replacing the `ramp_power` shape entirely (still scaled by the mode's own
-  Alpha Max field).
-- **Color Source: Image** -- picks any Blender `Image` (by name -- see
-  below) instead of a named yt/matplotlib colormap. Read back and treated
-  as "functionally 1D": averaged across all its rows (collapsing whatever
-  vertical variation exists), then resampled horizontally to however many
-  bins the LUT needs -- so any image works as a colormap regardless of its
-  own resolution/aspect, not just a literal 1-pixel-tall gradient strip.
-  Crosses into `custom_params` as `"yt_idv_color_image_rgba"` (a nested
-  list of RGBA rows); the image's own alpha channel, if any, is ignored --
-  alpha always comes from the ramp-power/curve mechanism above, never the
-  color source, so exactly one thing answers "how transparent here".
-
-Both are picked by a NAME (`color_image_name`, a plain `StringProperty`
-paired with `layout.prop_search` for a normal datablock-picker UI), not a
-`PointerProperty(type=bpy.types.Image)` -- confirmed directly that
-`AddonPreferences`, and anything nested inside one (even a plain
-PropertyGroup that merely *contains* an ID pointer somewhere in its own
-tree), categorically can't hold ID/datablock `PointerProperty` fields at
-all (`ValueError: ... PointerProperty could not register because this type
-doesn't support data-block properties`) -- the standard Blender workaround
-for exactly this situation. A stale name (the image got renamed/deleted)
-falls back to the named-colormap mechanism silently rather than raising
-mid-render.
-
-One shared curve/image setting drives BOTH continuous-ramp modes (not four
-independent copies) -- deliberately kept this simple for a first,
-exploratory cut. See `yt_idv_renderer.py`'s module docstring, "Curve-driven
-alpha / image-driven color" section, for the full mechanism including the
-`_resample_1d`/`_resample_rgb` decoupling from whatever sample count the
-curve/image happened to use. **Caveat:** there's no interactive display
-available in the environment this was built in to confirm the curve widget
-actually renders/responds inside a real Preferences panel, as opposed to
-merely being a valid, non-crashing API call -- the underlying data path
-(node creation, curve evaluation, image readback, resampling, LUT
-construction, custom_params round-trip) WAS verified directly against a
-real Blender. Worth a quick look in your own interactive session before
-relying on it.
+The add-on preferences hold only the working directory and verbose logging.
 
 ## Dataset / change tracking
 
@@ -1208,72 +1085,6 @@ flag to stop reporting `False` for things that would actually need reloading.
   object doesn't look like a brand-new dataset with no history to whatever's
   caching against this id (Blender's own `change_tracking.py` bookkeeping
   included).
-
-### Time mapping: which point in the dataset's timeline does this frame mean?
-
-**Blender resolves a single scalar (`DatasetParams.requested_time`) and hands
-it over; snapping that to an actual timestep the dataset has is the
-renderer's job, confirmed as the right split -- Blender doesn't open the
-dataset, so it can't know what timesteps exist (a yt-loadable simulation's
-snapshots are typically irregular, not evenly spaced), and the renderer
-already has to open it anyway.**
-
-**Is a Blender Driver enough by itself? No, but it's a legitimate piece of
-one option.** Tested empirically before committing to this design:
-
-- A **Driver with a scripted expression** (e.g. `frame_current` fed through
-  a formula), with no keyframes added on top, works exactly as expected --
-  clean, predictable, good for parametric formulas.
-- **Plain keyframes on a custom property, no driver at all**, also work
-  exactly as expected -- standard interpolation, the simplest way to let
-  someone hand-author an arbitrary Blender-frame -> time curve using
-  Blender's normal animation tools.
-- **Combining the two** -- keyframing a driver's own f-curve on top of a
-  scripted expression, thinking of it as a "remap curve" -- does NOT work
-  cleanly. Tried it: with keyframes at `(0, 100)` and `(10, 200)` on a
-  driver whose expression is just `frame`, frame 5 evaluated to `51.2`
-  (not the ~150 either linear or sane bezier interpolation would give), and
-  a single keyframe produced runaway extrapolation (`-890` at frame 10).
-  Don't reach for this combination; use one mechanism or the other.
-- **Gotcha specific to `SCRIPTED` drivers**: Blender disables all `SCRIPTED`
-  drivers outright when "Auto Run Python Scripts" is off -- a driver that
-  works for you can silently stop working for anyone else opening the file.
-  Doesn't apply to plain keyframes or non-scripted driver types
-  (Average/Sum/Min/Max).
-
-Either way, a driver or keyframed curve only produces **a continuous
-scalar over Blender's timeline** -- necessary but not sufficient, since it
-says nothing about what timesteps actually exist, needs a landing property
-we read post-depsgraph (same requirement `matrix_world` already has), and
-is inherently per-object (two flagged volumes could legitimately be
-retimed independently).
-
-**Design**: `properties.py`'s `mapping_policy` (per object):
-
-| Policy | `requested_time =` | Use for |
-|---|---|---|
-| `DIRECT` (default) | current Blender frame, unchanged | dataset frame indices line up 1:1 with Blender frames |
-| `AFFINE` | `frame * time_scale + time_offset` | simple constant-rate retiming/offset, no Python needed |
-| `MANUAL` | `manual_time` property, read as-is | anything else -- keyframe `manual_time` directly (recommended) or drive it (Driver, with the `SCRIPTED` caveat above) |
-
-`time_units` (`FRAME_INDEX` | `SECONDS` | `REDSHIFT` | `CUSTOM`) says what
-`requested_time` actually means, same "be explicit, don't assume"
-discipline as `DepthBuffer.units` -- a yt dataset's natural time axis might
-be simulation seconds or redshift, not a frame index at all.
-
-**Deliberately excluded from `DatasetParams.version`'s hash**, even though
-it lives right next to `dataset_path`/`dataset_kind`: `requested_time`
-changes every frame by design, so hashing it in would make
-`version.changed` report `True` on every single frame regardless of
-whether the *snapped* timestep the renderer would actually use differs --
-exactly the over-invalidation the `params_version`/`dataset.version` split
-was meant to avoid in the first place (confirmed by
-`test_requested_time_change_does_not_flip_dataset_version_changed`). The
-renderer, which knows the real timestep list, is better positioned to
-decide for itself whether two different `requested_time` values snap to
-the same timestep and skip reloading. The same reasoning applies to
-`resolved_sequence_frame` for native VDB sequences -- also excluded from
-the hash for the same reason.
 
 ## No lighting/shadow interchange (v1, by design)
 

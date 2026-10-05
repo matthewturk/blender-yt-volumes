@@ -10,7 +10,7 @@ import math
 import numpy as np
 import yt
 
-ADDON_SRC = "/home/mturk/yt/cycles-yt/src/cycles_volume_override"
+ADDON_SRC = "/home/mturk/yt/cycles-yt/src/cycles_yt"
 
 
 def _load_addon_modules():
@@ -18,12 +18,12 @@ def _load_addon_modules():
     import sys
     import types
 
-    pkg = types.ModuleType("cycles_volume_override")
+    pkg = types.ModuleType("cycles_yt")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules.setdefault("cycles_volume_override", pkg)
+    sys.modules.setdefault("cycles_yt", pkg)
 
     def load(name):
-        spec = importlib.util.spec_from_file_location(f"cycles_volume_override.{name}", f"{ADDON_SRC}/{name}.py")
+        spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", f"{ADDON_SRC}/{name}.py")
         mod = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = mod
         spec.loader.exec_module(mod)
@@ -77,7 +77,6 @@ def main():
     version = er.VersionInfo(hash="x", changed=True)
     dataset = er.DatasetParams(
         dataset_id="obj", dataset_kind="yt", dataset_path=None,
-        requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
         is_blender_volume_sequence=False, sequence_frame_start=None,
         sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[],

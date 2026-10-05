@@ -4,7 +4,7 @@ import bpy
 import numpy as np
 import pytest
 
-from cycles_volume_override import compositor_build as cb
+from cycles_yt import compositor_build as cb
 
 
 @pytest.fixture

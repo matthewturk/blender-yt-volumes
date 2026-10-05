@@ -1,21 +1,20 @@
-"""Per-object render-engine override: flagged objects render via an external
-volume renderer and are composited into the Cycles render on F12 /
-animation render. See README.md.
+"""cycles-yt: yt datasets rendered with yt_idv inside Cycles renders. Flagged
+Empties render via yt_idv, depth-clipped against Cycles' Z pass and
+composited in on F12 / animation render. See README.md.
 
 Classic `bl_info` add-on; install by zipping or symlinking this directory
 into Blender's addons folder.
 """
 
 bl_info = {
-    "name": "Cycles + External Volume Renderer Override",
-    "author": "cycles-volume-override",
+    "name": "cycles-yt",
+    "author": "cycles-yt",
     "version": (0, 1, 0),
     "blender": (3, 6, 0),
     "location": "Properties > Object > Volume Override; Render menu",
     "description": (
-        "Render flagged objects with an external volume renderer instead of "
-        "Cycles, depth-clipped against Cycles' Z pass and composited via "
-        "premultiplied Alpha Over."
+        "Render yt datasets with yt_idv in flagged Empties, depth-clipped "
+        "against Cycles' Z pass and composited into the Cycles render."
     ),
     "category": "Render",
 }

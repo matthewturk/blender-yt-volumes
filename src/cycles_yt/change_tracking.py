@@ -21,18 +21,23 @@ def _stable_hash(value) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]  # truncated: a cache key, not a security digest
 
 
-def version_for(cache_key, category, value) -> VersionInfo:
-    """Hash `value` and report whether it changed since the last call.
+def version_for(cache_key, category, value, record=True) -> VersionInfo:
+    """Hash `value` and report whether it changed since the last recorded hash.
 
     `cache_key` should be a stable per-object id (e.g.
     `properties.ensure_dataset_uuid(obj)`), not `obj.name`. `category`
     separates independently tracked values, e.g. "params" vs "dataset".
+    With `record=False`, call `record()` once the hash should count as seen.
     """
     h = _stable_hash(value)
-    bucket = _last_hashes.setdefault(cache_key, {})
-    changed = bucket.get(category) != h
-    bucket[category] = h
+    changed = _last_hashes.get(cache_key, {}).get(category) != h
+    if record:
+        record_hash(cache_key, category, h)
     return VersionInfo(hash=h, changed=changed)
+
+
+def record_hash(cache_key, category, h):
+    _last_hashes.setdefault(cache_key, {})[category] = h
 
 
 def reset():

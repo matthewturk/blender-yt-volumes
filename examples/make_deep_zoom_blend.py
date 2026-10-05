@@ -20,6 +20,9 @@ DEFAULT_TARGET = (0.49150733, 0.50526053, 0.49058056)
 
 def build(path, target, frames):
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    from cycles_yt import properties, render_volume
+
+    properties.register()
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, frames
     scene.render.engine = "CYCLES"  # yt_idv modes need it
@@ -35,6 +38,7 @@ def build(path, target, frames):
     volume.empty_display_type = "CUBE"
     volume.empty_display_size = 1.0
     scene.collection.objects.link(volume)
+    render_volume.apply_render_settings(volume.volume_override, {"mode": "YT_IDV_MAX_INTENSITY", "colormap": "inferno"})
     # unitary u -> world 2u - 1 for this cube
     focus_point = mathutils.Vector([2.0 * t - 1.0 for t in target])
 

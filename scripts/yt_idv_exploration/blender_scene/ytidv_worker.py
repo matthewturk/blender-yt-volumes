@@ -34,12 +34,12 @@ import sys
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ADDON_SRC = os.path.normpath(os.path.join(HERE, "..", "..", "..", "src", "cycles_volume_override"))
+ADDON_SRC = os.path.normpath(os.path.join(HERE, "..", "..", "..", "src", "cycles_yt"))
 
 
 def _load_addon_module(name, path):
     """Load one add-on submodule, skipping the package's bpy-dependent __init__."""
-    spec = importlib.util.spec_from_file_location(f"cycles_volume_override.{name}", path)
+    spec = importlib.util.spec_from_file_location(f"cycles_yt.{name}", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
@@ -47,9 +47,9 @@ def _load_addon_module(name, path):
 
 
 def _addon_modules():
-    pkg = types.ModuleType("cycles_volume_override")
+    pkg = types.ModuleType("cycles_yt")
     pkg.__path__ = [ADDON_SRC]
-    sys.modules.setdefault("cycles_volume_override", pkg)
+    sys.modules.setdefault("cycles_yt", pkg)
     external_render = _load_addon_module("external_render", os.path.join(ADDON_SRC, "external_render.py"))
     yt_idv_renderer = _load_addon_module("yt_idv_renderer", os.path.join(ADDON_SRC, "yt_idv_renderer.py"))
     return external_render, yt_idv_renderer
@@ -112,7 +112,6 @@ def _build_request(external_render, req):
     version = external_render.VersionInfo(hash="x", changed=True)
     dataset = external_render.DatasetParams(
         dataset_id="obj1", dataset_kind="yt", dataset_path=None,
-        requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
         is_blender_volume_sequence=False, sequence_frame_start=None,
         sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[],
@@ -197,7 +196,6 @@ def _build_request_full(external_render, req, depth_array):
     version = external_render.VersionInfo(hash="x", changed=True)
     dataset = external_render.DatasetParams(
         dataset_id="obj1", dataset_kind="yt", dataset_path=None,
-        requested_time=0.0, time_units="FRAME_INDEX", mapping_policy="DIRECT",
         is_blender_volume_sequence=False, sequence_frame_start=None,
         sequence_frame_duration=None, sequence_frame_offset=None,
         sequence_mode=None, resolved_sequence_frame=None, grid_names=[],

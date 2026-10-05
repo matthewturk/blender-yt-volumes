@@ -1,6 +1,6 @@
 import numpy as np
 
-from cycles_volume_override import external_render as er
+from cycles_yt import external_render as er
 
 IDENTITY_4X4 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
 
@@ -37,27 +37,6 @@ def _persp_camera(resolution_x=1920, resolution_y=1080):
         panorama=None,
         dof=_default_dof(),
     )
-
-
-def test_render_volume_is_a_stub():
-    request = _make_minimal_request()
-    try:
-        er.render_volume(request)
-        assert False, "expected NotImplementedError"
-    except NotImplementedError:
-        pass
-
-
-def test_debug_fake_render_volume_shape_and_contract():
-    request = _make_minimal_request(resolution=(4, 3))
-    result = er.debug_fake_render_volume(request)
-    assert result.alpha_mode == "PREMULTIPLIED"
-    assert result.color_space == "LINEAR"
-    h, w = request.depth.data.shape
-    assert result.rgba.shape == (h, w, 4)
-    assert result.rgba.dtype == np.float32
-    # premultiplied: color channels must not exceed alpha at any pixel.
-    assert (result.rgba[..., :3].max(axis=-1) <= result.rgba[..., 3] + 1e-6).all()
 
 
 def test_dataclass_fields_match_contract():
@@ -127,9 +106,6 @@ def _make_minimal_request(resolution=(2, 2)):
             dataset_id="test-obj-uuid",
             dataset_kind="",
             dataset_path=None,
-            requested_time=1.0,
-            time_units="FRAME_INDEX",
-            mapping_policy="DIRECT",
             is_blender_volume_sequence=False,
             sequence_frame_start=None,
             sequence_frame_duration=None,
