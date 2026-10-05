@@ -20,8 +20,8 @@ units = "kpc"
 scale = true          # stretch the subset to fill the volume box (needs yt_idv#276)
 
 [blender]
-file = "../test-cycles-override.blend"
-volume = "Volume 1"   # an Empty with Display Type "Cube"; its box maps to yt's unitary cube
+file = "simple.blend"   # python examples/make_simple_blend.py examples/simple.blend
+volume = "Volume"     # an Empty with Display Type "Cube"; its box maps to yt's unitary cube
 # camera = "Camera"   # default: the scene's camera
 frames = "1-1"        # N, "N-M", or [N, M]; default: the .blend's frame range
 output = "../renders/frame_"   # PNG path prefix; the frame number is appended

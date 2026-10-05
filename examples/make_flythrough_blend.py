@@ -1,5 +1,8 @@
 """Turn flythrough_densest.py's camera path into a .blend and a render_volume config.
 
+flythrough_densest.py (a yt_idv flythrough planner) isn't part of this repo;
+point --flythrough at your copy.
+
     python examples/make_flythrough_blend.py SCENE.zip OUT_PREFIX [flythrough options]
 
 Writes OUT_PREFIX.blend and OUT_PREFIX.toml; render with
@@ -42,6 +45,11 @@ RENDER_MODES = {"max_intensity": "YT_IDV_MAX_INTENSITY", "projection": "YT_IDV_P
 
 
 def _load_flythrough(path):
+    if not os.path.isfile(path):
+        raise SystemExit(
+            f"no flythrough_densest.py at {path}: this example plans the path with that script, "
+            "which isn't part of this repo; pass its location with --flythrough"
+        )
     spec = importlib.util.spec_from_file_location("flythrough_densest", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

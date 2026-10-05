@@ -1,0 +1,42 @@
+From cd62813a51167e06ad6b4448396138ddc4c5560c Mon Sep 17 00:00:00 2001
+From: Matthew Turk <matthewturk@gmail.com>
+Date: Sat, 3 Oct 2026 12:51:43 -0500
+Subject: [PATCH 1/2] Draw zero-cell kd-tree bricks as empty instead of failing
+
+---
+ yt_idv/scene_data/block_collection.py | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/yt_idv/scene_data/block_collection.py b/yt_idv/scene_data/block_collection.py
+index 80637a4..4441885 100644
+--- a/yt_idv/scene_data/block_collection.py
++++ b/yt_idv/scene_data/block_collection.py
+@@ -210,7 +210,7 @@ class BlockCollection(SceneData):
+             max_val = max(max_val, np.nanmax(np.abs(block.my_data[0])).max())
+             self.blocks[id(block)] = (i, block)
+             vert.append([1.0, 1.0, 1.0, 1.0])
+-            dds = (block.RightEdge - block.LeftEdge) / block.source_mask.shape
++            dds = (block.RightEdge - block.LeftEdge) / np.maximum(block.source_mask.shape, 1)
+             dx.append(dds.tolist())
+             le.append(block.LeftEdge.tolist())
+             re.append(block.RightEdge.tolist())
+@@ -495,9 +495,15 @@ class BlockCollection(SceneData):
+                 # see https://github.com/yt-project/yt_idv/issues/171
+                 n_data[n_data == 0.0] += np.finfo(np.float32).eps
+ 
++            bitmap = block.source_mask * 255
++            if 0 in bitmap.shape:
++                # yt's kd-tree can make bricks with no cells along an axis (deep
++                # AMR hierarchies); draw them empty
++                n_data = np.zeros((1, 1, 1), dtype="float32")
++                bitmap = np.zeros((1, 1, 1), dtype=bitmap.dtype)
+             data_tex = Texture3D(data=n_data)
+             bitmap_tex = Texture3D(
+-                data=block.source_mask * 255, min_filter="nearest", mag_filter="nearest"
++                data=bitmap, min_filter="nearest", mag_filter="nearest"
+             )
+             self.texture_objects[vbo_i] = data_tex
+             self.bitmap_objects[vbo_i] = bitmap_tex
+-- 
+2.43.0
+

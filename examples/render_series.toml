@@ -21,8 +21,8 @@ pick = "nearest"     # or "previous": the last output at or before each frame's 
 # Default: frames span the first to last output.
 
 [blender]
-file = "../test-cycles-override.blend"
-volume = "Volume 1"
+file = "simple.blend"   # python examples/make_simple_blend.py examples/simple.blend
+volume = "Volume"
 frames = "1-250"     # required for a series
 output = "../renders/series/frame_"
 resolution = [1920, 1080]

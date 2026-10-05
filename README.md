@@ -1,28 +1,72 @@
 # cycles-volume-override
 
-Blender add-on: objects flagged with a custom property render via an
-external, self-emissive volume renderer instead of Cycles, depth-clipped
-against Cycles' Z pass, and composited back in automatically on F12 /
-animation render. Final + animation render only (see "Out of scope").
+A Blender add-on that renders flagged objects with an external volume
+renderer instead of Cycles: [yt_idv](https://github.com/yt-project/yt_idv),
+the GPU volume renderer for [yt](https://yt-project.org) datasets. The volume
+is depth-clipped against Cycles' Z pass and composited back in on F12 or
+animation render, so Cycles geometry and simulation data share one camera
+and occlude each other correctly. It handles deeply nested AMR data past
+float32's precision, spherical data, time series, and yt transfer functions,
+interactively in Blender or in batch from a config file. A companion Blender
+extension, Deep Zoom (`extensions/deep_zoom`), authors camera paths through
+deep hierarchies.
+
+## Quick start
+
+Needs Python 3.13 (the `bpy` module used for tests and batch renders is
+Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL.
+
+```
+git clone https://github.com/matthewturk/cycles-override.git && cd cycles-override
+scripts/setup_yt_idv.sh                 # yt_idv + the open PRs this needs, into ./yt_idv
+PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
+PYTHONPATH= uv run --group ytidv pytest -q
+PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend
+PYTHONPATH= uv run --group ytidv python -m cycles_volume_override.render_volume \
+    examples/render_volume.toml --frames 1 --set blender.device='"CUDA"'
+```
+
+That renders frame 1 of `examples/render_volume.toml`, a 50 kpc region of
+yt's HiresIsolatedGalaxy sample (downloaded on first use), into the simple
+scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
+`HIP` or `CPU` for your GPU.
+
+**In Blender:** zip `src/cycles_volume_override/` and install it
+(Preferences > Add-ons > Install from Disk), and install yt and yt_idv into
+Blender's own Python (`uv pip install --python <blender's python> ./yt_idv
+pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
+and install it as an extension. Render Engine must be Cycles.
+
+**Examples** (each script's docstring has the commands):
+
+| | |
+|---|---|
+| `examples/render_volume.toml`, `render_series.toml` | a dataset or a time series into an existing .blend |
+| `examples/popii_dive.toml` + `make_deep_zoom_shots_blend.py` | a saved yt_idv scene, a two-shot dive authored with Deep Zoom, yt shells |
+| `examples/deep_zoom_shots.toml`, `deep_zoom_shots_tf.toml` | the same for the DeeplyNestedZoom sample, 12 decades |
+| `examples/deep_zoom.toml` + `make_deep_zoom_blend.py` | a 12-decade dive with the volume's own zoom target/level |
+| `examples/spherical_earth.toml`, `earth_spin.toml` + `make_earth_blend.py` | spherical data in an Empty-Sphere; time-varying |
+| `examples/make_flythrough_blend.py` | a `flythrough_densest.py` path (not included) as a Deep Zoom scene |
+| `examples/shells_tf.py` | yt transfer functions that follow the camera |
 
 ## Contents
 
 ```
 src/cycles_volume_override/
-    __init__.py          bl_info, register()/unregister()
-    properties.py         PropertyGroup: flag + custom_params + dataset_path/kind fields, UI panel
-    scene_sync.py          hidden sync Scene, main-scene visibility toggle
-    external_render.py     the frozen interface contract + stubbed render_volume()
-    change_tracking.py      content-hash bookkeeping behind VersionInfo -- see "Dataset / change tracking"
-    compositor_build.py    programmatic compositor node graph (2 graphs: pass 1 capture, pass 2 composite)
-    operators.py            two-pass render orchestration, RenderRequest building
-    handlers.py             render_cancel safety net, F12/Ctrl+F12 keymap takeover
-    sample_renderers.py      worked-example render_volume() -- rays/depth/position wired up, no real shading
-scripts/verify_zpass.py               empirical Z-pass/row-order verification tool
-scripts/verify_camera_projection.py    empirical PERSP/ORTHO projection_matrix round-trip check
-scripts/verify_pano_equirect.py        empirical equirectangular panorama mapping check
-tests/                      pytest suite for the bpy-independent-ish pieces
-pyproject.toml              dev/test tooling only (uv) -- see "Development & testing"
+    __init__.py            bl_info, register()/unregister()
+    properties.py          per-object flag, Dataset Path, zoom target/level, UI panel
+    operators.py           two-pass render orchestration, preferences, F12 takeover
+    yt_idv_renderer.py     the yt_idv renderer: registration, zoom/shot space, depth clip, modes
+    render_volume.py       batch rendering from a TOML config
+    render_series.py       batch rendering of a time series
+    external_render.py     the renderer interface contract (dataclasses)
+    compositor_build.py    compositor graphs for the two passes
+    scene_sync.py, change_tracking.py, handlers.py, sample_renderers.py
+extensions/deep_zoom/      the Deep Zoom authoring extension (see its README)
+patches/yt_idv/            the yt_idv patches scripts/setup_yt_idv.sh applies
+examples/                  configs and scene builders (above)
+scripts/                   verification tools and the original yt_idv exploration
+tests/                     pytest suite
 ```
 
 ## Installing the add-on in Blender
@@ -35,16 +79,20 @@ installs for itself -- Blender doesn't consult `pyproject.toml`. Either:
   and enable it in Preferences > Add-ons.
 
 Then enable **Cycles + External Volume Renderer Override** in Preferences.
-Its own preferences panel has:
-- **Renderer** -- which `render_volume()`-shaped function the pipeline
-  actually calls, three options: `STUB` (the real, not-yet-implemented
-  renderer -- raises `NotImplementedError`, the honest default), `DEBUG_FLAT`
-  (a flat placeholder color ignoring all geometry -- `external_render.
-  debug_fake_render_volume`), `SAMPLE_CONSTANT` (a real if non-physical
-  worked example -- `sample_renderers.constant_density_renderer`, see
-  "Sample renderer" below).
+Its preferences panel has:
+- **Renderer** -- which renderer the pipeline calls: the yt_idv modes
+  (Maximum Intensity, Value-Driven Alpha, Projection, Isocontour and yt
+  Transfer Functions, Threshold Fog), plus `SAMPLE_CONSTANT` (a non-physical
+  worked example, see "Sample renderer"), `DEBUG_FLAT` and `STUB`. Each yt_idv
+  mode shows its own settings below.
 - **Working Directory** -- where per-frame EXR intermediates go (default:
   system temp dir).
+
+A flagged object (an Empty-Cube, or an Empty-Sphere for spherical data)
+renders its **Dataset Path**: anything `yt.load` reads, or a scene saved with
+yt_idv's `SceneGraph.save` (`.zip`); with no path, yt's IsolatedGalaxy
+sample. The field defaults to density; set it with an extra custom param
+`yt_idv_field` (e.g. `gas, temperature`).
 
 ## Wiring in the real renderer
 
