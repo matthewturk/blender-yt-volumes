@@ -26,7 +26,7 @@ dev = [
 ]
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
 # real yt_idv, from its `main` branch (see `[tool.uv.sources]`): this needs
-# yt_idv's scene transforms (yt-project/yt_idv#287), bindless textures (#285)
+# yt_idv's scene transforms (yt-project/yt_idv#287), texture atlas (#285)
 # and transfer function conversion (#288), which aren't in a release yet.
 # uv.lock pins a commit of main; `uv lock --upgrade-package yt_idv` moves it.
 ytidv = [

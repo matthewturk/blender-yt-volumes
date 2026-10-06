@@ -9,7 +9,7 @@ the finest grid, which by then sits off-centre on the grid map; glide the
 orbit onto the new anchor and dive on. Then it checks the path and exports it
 next to OUT.blend. The defaults are the DeeplyNestedZoom dive; for PopII_prime:
 
-    --dataset /data/PopII_prime/biggest_scene.zip --first-anchor bbox \\
+    --dataset /data/PopII_prime/biggest_atlas.zip --first-anchor bbox \\
     --zooms 1.3 8 9 --cut 150
 """
 

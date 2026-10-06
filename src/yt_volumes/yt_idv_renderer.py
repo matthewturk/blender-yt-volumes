@@ -338,22 +338,22 @@ def _base_transform(collection):
 
 
 def _densest_cell_unitary(collection):
-    """Center of the densest cell the bitmaps keep, from the block textures, as
+    """Center of the densest cell the bitmaps keep, from the block data, as
     a float64 (3,) unitary position; for scenes loaded without their dataset.
     """
     # textures are vertex-centered: a cell's value is the mean of its 8 corners
     left_edges = _vertex_attribute(collection, "in_left_edge")
     widths = _vertex_attribute(collection, "in_dx")
     best_value, best_center = -np.inf, None
-    for vbo_i, texture in collection.texture_objects.items():
-        v = np.asarray(texture.data)
+    for vbo_i, data in collection.block_data.items():
+        v = np.asarray(data)
         if min(v.shape) < 2:
             continue
         cells = sum(
             v[i : v.shape[0] - 1 + i, j : v.shape[1] - 1 + j, k : v.shape[2] - 1 + k]
             for i in (0, 1) for j in (0, 1) for k in (0, 1)
         ) / 8.0
-        cells = np.where(np.asarray(collection.bitmap_objects[vbo_i].data) > 0, cells, -np.inf)
+        cells = np.where(np.asarray(collection.block_bitmaps[vbo_i]) > 0, cells, -np.inf)
         index = np.unravel_index(np.argmax(cells), cells.shape)
         if cells[index] > best_value:
             best_value = cells[index]
@@ -1233,7 +1233,7 @@ def _field_value_at(scene, point):
         if inside.size == 0:
             continue
         block = inside[np.argmin(dx[inside].max(axis=1))]  # the finest, if blocks overlap
-        data = np.asarray(collection.texture_objects[block].data)
+        data = np.asarray(collection.block_data[block])
         # textures are vertex-centered: texel i sits at left + i * dx
         index = np.clip(np.round((point - left[block]) / dx[block]).astype(int), 0, np.array(data.shape) - 1)
         value = float(data[tuple(index)])

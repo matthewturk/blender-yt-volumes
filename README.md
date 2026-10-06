@@ -15,8 +15,8 @@ deep hierarchies.
 
 Needs Python 3.13 (the `bpy` module used for tests and batch renders is
 Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL. yt_idv
-comes from its `main` branch, which has the scene transforms, bindless
-textures and transfer function conversion this relies on.
+comes from its `main` branch, which has the scene transforms, texture atlas
+and transfer function conversion this relies on.
 
 ```
 git clone https://github.com/matthewturk/cycles-override.git && cd cycles-override
@@ -248,7 +248,7 @@ Python/venv story from your real Blender's install, just a separate
 `pip`/`uv` invocation.
 
 **Use yt_idv `main`.** The external depth clip (yt-project/yt_idv#247), scene
-transforms for subset scaling and deep zooms (#287), bindless textures (#285)
+transforms for subset scaling and deep zooms (#287), a texture atlas for block data (#285)
 and the transfer function conversion (#288) are all newer than the latest
 release. Older versions import and render, but `set_external_depth_clip` and
 `scale_scene_to_subset` raise rather than silently doing nothing.

@@ -1290,10 +1290,10 @@ def test_zoom_target_max_without_dataset_finds_densest_unmasked_cell():
         types.SimpleNamespace(name="in_dx", data=np.full((2, 3), 0.125, dtype="f4"))  # model units
     )
     collection.data_source = None
-    collection.texture_objects = {0: types.SimpleNamespace(data=hot), 1: types.SimpleNamespace(data=masked)}
-    collection.bitmap_objects = {
-        0: types.SimpleNamespace(data=np.full((2, 2, 2), 255, dtype="u1")),
-        1: types.SimpleNamespace(data=np.zeros((2, 2, 2), dtype="u1")),
+    collection.block_data = {0: hot, 1: masked}
+    collection.block_bitmaps = {
+        0: np.full((2, 2, 2), 255, dtype="u1"),
+        1: np.zeros((2, 2, 2), dtype="u1"),
     }
     collection._set_scale(np.array([0.5, 0.0, 0.0]), 2.0)  # unitary = model * 2 + offset
     target = yir._zoom_target_unitary("max", collection)
@@ -1459,7 +1459,7 @@ def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():
     collection = types.SimpleNamespace(
         _yt_geom_str="cartesian",
         _get_unscaled_edges=lambda: (np.zeros((1, 3)), np.ones((1, 3)), np.full((1, 3), 0.5)),
-        texture_objects={0: types.SimpleNamespace(data=data)},
+        block_data={0: data},
         _textures_are_normalized=True, val_range=26.0, min_val=100.0,
     )
     scene = _block_scene(collection)
