@@ -1051,3 +1051,10 @@ def test_engine_warning_flags_eevee_panoramas(clean_scene, engine, camera_type, 
     scene.render.engine = engine
     _add_camera(scene, camera_type)
     assert (operators._engine_warning(scene) is not None) == warns
+
+
+def test_loading_notice_is_a_no_op_in_background_mode():
+    entered = []
+    with operators._loading_notice(bpy.context, "Loading x"):
+        entered.append(True)
+    assert entered == [True]

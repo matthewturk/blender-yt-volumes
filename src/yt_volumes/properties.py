@@ -22,7 +22,7 @@ class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
 # Settings that set the look, in custom_params as `yt_idv_<name>` (render_volume's
 # [render.yt_idv] table may set any of them).
 LOOK_SETTINGS = (
-    "backend", "colormap", "rescale_colormap",
+    "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_value_min", "tf_value_max", "tf_n_layers", "tf_colormap",
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
@@ -119,6 +119,14 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             ("osmesa", "OSMesa (buggy)", "Software rendering; corrupts non-square renders"),
         ],
         default="egl",
+    )
+    samples_per_cell: bpy.props.FloatProperty(
+        name="Samples per Cell",
+        description=(
+            "Ray samples per cell width. Too few shows as wood grain and chevrons where cells "
+            "are large on screen, as in deep zooms; 8-16 for final frames"
+        ),
+        default=4.0, min=0.1, soft_max=32.0,
     )
     colormap: bpy.props.StringProperty(
         name="Colormap",
@@ -217,7 +225,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     yt_tf_sample_factor: bpy.props.FloatProperty(
         name="yt TF Sample Factor",
-        description="Ray samples per cell; thin layers need more. 0 keeps yt_idv's own",
+        description="Ray samples per cell for this mode; thin layers need more. 0 uses Samples per Cell",
         default=0.0, min=0.0,
     )
     yt_tf_ray_length: bpy.props.FloatProperty(
@@ -400,6 +408,7 @@ def _draw_look(layout, props):
         return
     box = layout.box()
     box.prop(props, "backend")
+    box.prop(props, "samples_per_cell")
     col = box.column(align=True)
     for name in _MODE_SETTINGS[props.renderer_mode]:
         col.prop(props, name)

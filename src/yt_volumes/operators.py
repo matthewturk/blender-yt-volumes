@@ -13,6 +13,7 @@ produce this frame's depth and composite a volume render made from it.
   and write the final output.
 """
 
+import contextlib
 import math
 import os
 import shutil
@@ -623,6 +624,32 @@ def _engine_warning(scene):
     return None
 
 
+@contextlib.contextmanager
+def _loading_notice(context, text):
+    """Show `text` in the status bar with a wait cursor while a load blocks the UI."""
+    _log(text)
+    window = context.window
+    if bpy.app.background or window is None:
+        yield
+        return
+    workspace = context.workspace
+    shown = False
+    try:
+        workspace.status_text_set(text)
+        window.cursor_modal_set("WAIT")
+        shown = True
+        # Nothing redraws until the load returns, so draw the notice now.
+        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+    except Exception as exc:  # a notice must never fail the render
+        _log(f"loading notice not shown: {exc!r}")
+    try:
+        yield
+    finally:
+        if shown:
+            window.cursor_modal_restore()
+            workspace.status_text_set(None)
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
@@ -717,7 +744,13 @@ def render_current_frame(context):
                 volume=build_volume_params(obj),
                 frame=frame_params,
             )
-            with step(f"render_volume for {obj.name!r}"):
+            loading = contextlib.nullcontext()
+            if props.renderer_mode in YT_IDV_RENDERER_MODES and yt_idv_renderer.needs_load(request):
+                source = os.path.basename(request.volume.dataset.dataset_path or "") or "the sample dataset"
+                loading = _loading_notice(
+                    context, f"Loading {source} for {obj.name!r}; Blender will be unresponsive for a while"
+                )
+            with loading, step(f"render_volume for {obj.name!r}"):
                 result = render_fn(request)
             assert result.alpha_mode == "PREMULTIPLIED"
             assert result.color_space == "LINEAR"

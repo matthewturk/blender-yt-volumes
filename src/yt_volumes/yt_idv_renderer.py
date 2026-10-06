@@ -504,6 +504,19 @@ def _get_volume_scene(request: RenderRequest, render_size: int):
     return rc, result.scene, result.ds, result.changed
 
 
+def needs_load(request: RenderRequest) -> bool:
+    """True if rendering `request` will load its volume rather than reuse the
+    cached scene: a first render, another dataset, or another render size.
+    """
+    cached = _volume_scene_cache.get(request.volume.dataset.dataset_id)
+    if cached is None:
+        return True
+    backend = (request.volume.custom_params or {}).get("yt_idv_backend", DEFAULT_BACKEND)
+    size = max(request.depth.data.shape)
+    source = request.volume.dataset.dataset_path or SAMPLE_DATASET_NAME
+    return cached[2] != (backend, size, size) or getattr(cached[0], "_yt_volumes_source", source) != source
+
+
 def _render_signature(request: RenderRequest, render_size: int, render_mode: str = "") -> dict:
     """Everything besides the volume data that affects the image. The depth
     buffer is hashed by content, since occluders can move under a fixed camera.
@@ -1042,6 +1055,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         "ds": ds,
     }
     for component in scene.components:
+        _apply_samples_per_cell(component, custom_params)
         configure_component(component, dict(custom_params, _context=context))
         _apply_colormap_range(component, custom_params)
     scene.camera.update(
@@ -1069,6 +1083,19 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     _render_result_cache[dataset_id] = result
     _record_render_signature(dataset_id, signed_request, render_size, render_mode)
     return result
+
+
+def _apply_samples_per_cell(component, custom_params):
+    """Set the component's ray sampling from `yt_idv_samples_per_cell`."""
+    samples = custom_params.get("yt_idv_samples_per_cell")
+    if samples is None or not hasattr(component, "sample_factor"):
+        return
+    samples = float(samples)
+    if _is_spherical(component.data):
+        # spherical sample_factor is log10 of the step over the element's smallest width
+        component.sample_factor = -math.log10(samples)
+    else:
+        component.sample_factor = samples
 
 
 def _apply_colormap_range(component, custom_params):

@@ -64,10 +64,10 @@ def test_boxes_land_where_the_renderer_puts_the_blocks(custom_params, bbox):
     lows, highs = np.clip(lows, cube_low, cube_high), np.clip(highs, cube_low, cube_high)
     assert len(corners)
     for box in corners:
-        low = (box[0] - b) @ A.T
-        i = int(np.argmin(np.abs(lows - low).max(axis=1)))
+        low, high = (box[0] - b) @ A.T, (box[7] - b) @ A.T
+        i = int(np.argmin(np.maximum(np.abs(lows - low).max(axis=1), np.abs(highs - high).max(axis=1))))
         np.testing.assert_allclose(low, lows[i], rtol=1e-5, atol=1e-6)
-        np.testing.assert_allclose((box[7] - b) @ A.T, highs[i], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(high, highs[i], rtol=1e-5, atol=1e-6)
 
 
 def test_boxes_are_clipped_to_the_cube():
@@ -142,3 +142,48 @@ def test_spherical_data_has_no_boxes():
 
     scene = _block_scene(_spherical_collection())
     assert grid_overlay.world_boxes(scene, types.SimpleNamespace(), _volume({}), {}) is None
+
+
+def test_blocks_use_yt_idvs_float64_edges():
+    deep = 0.5 + 3e-12
+    collection = _FakeBlockCollection([[0.0] * 3], [[1.0] * 3])
+    collection._get_unscaled_edges = lambda: (
+        np.array([[0.0] * 3, [deep] * 3]), np.array([[1.0] * 3, [deep + 1e-12] * 3]),
+        np.array([[1 / 8] * 3, [1e-12 / 8] * 3]),
+    )
+    left, right, level, _ = grid_overlay._unitary_boxes(_block_scene(collection), types.SimpleNamespace())
+    assert left[1, 0] == deep and right[1, 0] == deep + 1e-12
+    assert list(level) == [0, round(math.log2(1 / 1e-12))]
+
+
+def _with_dx(collection, dx):
+    collection.vertex_array.attributes.append(types.SimpleNamespace(name="in_dx", data=np.asarray(dx, dtype="f4")))
+    return collection
+
+
+def test_block_levels_are_amr_levels_from_root_dx():
+    # a region whose coarsest blocks are level 3 of a 32^3 root grid
+    collection = _with_dx(_FakeBlockCollection(LEFT[1:], RIGHT[1:]), [[1 / 256] * 3, [1 / 1024] * 3])
+    _, _, level, _ = grid_overlay._unitary_boxes(_block_scene(collection), types.SimpleNamespace())
+    assert list(level) == [0, 2]  # without root_dx, counted from the coarsest block
+    grid_overlay._unitary_cache.clear()
+    collection.root_dx = np.full(3, 1 / 32)
+    _, _, level, _ = grid_overlay._unitary_boxes(_block_scene(collection), types.SimpleNamespace())
+    assert list(level) == [3, 5]
+
+
+def test_each_collection_keeps_its_own_transform():
+    first = _with_dx(_FakeBlockCollection([[0.2, 0.2, 0.2]], [[0.4, 0.4, 0.4]], bbox=([0.2] * 3, [0.6] * 3)), [[0.01] * 3])
+    second = _with_dx(_FakeBlockCollection([[0.6, 0.6, 0.6]], [[0.7, 0.7, 0.7]], bbox=([0.5] * 3, [0.9] * 3)), [[0.01] * 3])
+    scene = _block_scene(first, second)
+    yir.scale_scene_to_subset(scene)
+    corners = [[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)]
+    volume = VolumeObjectParams(np.eye(4).tolist(), corners, {}, None, None)
+    boxes, _ = grid_overlay.world_boxes(scene, types.SimpleNamespace(), volume, {})
+    np.testing.assert_allclose(sorted(b[0, 0] for b in boxes), [0.0, 0.25], atol=1e-6)
+
+
+def test_box_cache_is_not_fooled_by_a_reused_id():
+    scene, ds = _scene(), types.SimpleNamespace()
+    grid_overlay._unitary_cache[(id(scene), id(ds))] = (object(), object(), "stale")
+    assert grid_overlay._unitary_boxes(scene, ds) != "stale"

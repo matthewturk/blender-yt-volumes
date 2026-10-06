@@ -279,3 +279,64 @@ def test_new_shot_at_finest_grid_cuts_to_the_finest_box(scene, tmp_path):
     shots = scene.deep_zoom.shots
     assert [s.frame_start for s in shots] == [1, 60]
     np.testing.assert_allclose(shot_space.parse_anchor(shots[1].anchor), finest, rtol=0, atol=1e-17)
+
+
+# --- where the grid structure comes from ------------------------------------------
+
+
+def _save_scene_zip(path, left, right, dx):
+    """A minimal SceneGraph.save zip: one block collection with float64 edges."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    np.save(buffer, np.stack([left, right, dx]))
+    doc = {"data_objects": [{"attributes": {"_unscaled_edges": {"__array__": "edges.npy"}}}]}
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("scene.json", json.dumps(doc))
+        archive.writestr("edges.npy", buffer.getvalue())
+
+
+@pytest.fixture
+def volume(scene):
+    from yt_volumes import properties
+
+    properties.register()
+    obj = bpy.data.objects.new("Volume", None)
+    obj.empty_display_type = "CUBE"
+    obj.volume_override.is_volume_override = True
+    scene.collection.objects.link(obj)
+    yield obj
+    properties.unregister()
+
+
+def _nested_boxes(n):
+    sizes = 2.0 ** -np.arange(n)
+    return ANCHOR - sizes[:, None] / 2, ANCHOR + sizes[:, None] / 2, sizes[:, None] / 8 * np.ones(3)
+
+
+def test_grid_structure_reads_a_saved_scene_zip(scene, tmp_path):
+    left, right, dx = _nested_boxes(5)
+    path = tmp_path / "scene.zip"
+    _save_scene_zip(path, left, right, dx)
+    scene.deep_zoom.grid_file = str(path)
+    grids = authoring._grids(scene)
+    np.testing.assert_array_equal(grids["left"], left)
+    assert list(grids["level"]) == [0, 1, 2, 3, 4]
+
+
+def test_empty_grid_structure_uses_the_volumes_saved_scene(scene, volume, tmp_path):
+    left, right, dx = _nested_boxes(3)
+    path = tmp_path / "scene.zip"
+    _save_scene_zip(path, left, right, dx)
+    volume.volume_override.dataset_path = str(path)
+    np.testing.assert_array_equal(authoring._grids(scene)["right"], right)
+
+
+def test_empty_grid_structure_uses_the_boxes_yt_volumes_loaded(scene, volume, monkeypatch):
+    from yt_volumes import grid_overlay
+
+    assert authoring._grids(scene) is None
+    boxes = {"left": np.zeros((1, 3)), "right": np.ones((1, 3)), "level": np.zeros(1, dtype=np.int32)}
+    monkeypatch.setattr(grid_overlay, "loaded_boxes", lambda obj: boxes if obj == volume else None)
+    assert authoring._grids(scene) is boxes

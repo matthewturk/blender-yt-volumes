@@ -25,12 +25,18 @@ It needs nothing beyond what Blender ships (numpy).
 
 ## Workflow
 
-1. **Export the grid structure** with any Python that has yt:
+1. **Find the grid structure.** For a yt dataset, export it with any Python
+   that has yt:
 
        python grid_structure.py /path/to/dataset grids.npz
 
-   This writes the grids' float64 edges and levels. Point the panel's *Grid
-   Structure* at it.
+   which writes the grids' float64 edges and levels, and point the panel's
+   *Grid Structure* at that. A saved yt_idv scene (`.zip`) has no grids, but
+   it holds its blocks: the kd-tree bricks, each the part of one grid that no
+   finer grid covers, with levels taken from their cell sizes. Leave *Grid
+   Structure* empty to use the volume's own `.zip` this way, or point it at
+   any scene `.zip`. Left empty for a dataset, the grids yt-volumes loaded
+   when the volume last rendered are used.
 2. **Turn on Shot Space** in the *Deep Zoom* sidebar tab (N panel) and add a
    first shot. Its anchor defaults to the domain center; type in any unitary
    `x, y, z` (or `max`, for the renderer to find the field's peak).
@@ -76,6 +82,6 @@ volume's registration in float64. Headless, list the extension in the config:
 ## Files
 
 - `shot_space.py`: the float64 mapping and grid-box selection; pure numpy.
-- `grid_structure.py`: the `.npz` exporter (needs yt) and loader (numpy).
+- `grid_structure.py`: the `.npz` exporter (needs yt) and the `.npz`/`.zip` loader (numpy).
 - `authoring.py`: shots, the grid map, dive, re-anchor and rescale cuts, the
   path check, export, and the UI.

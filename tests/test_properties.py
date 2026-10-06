@@ -27,6 +27,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     assert params["yt_idv_tf_n_layers"] == 7
     assert params["renderer_mode"] == "YT_IDV_MAX_INTENSITY"
     assert params["field_name"] == "density"
+    assert params["yt_idv_samples_per_cell"] == 4.0
     # dataset identity is tracked separately by build_dataset_params().
     assert "dataset_path" not in params
     assert "dataset_kind" not in params

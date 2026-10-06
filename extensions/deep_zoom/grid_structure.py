@@ -28,22 +28,28 @@ def grid_structure(ds):
 
 
 def scene_structure(path):
-    """`{"left", "right", "level"}` for the blocks of a saved yt_idv scene;
-    levels are log2 of the coarsest cell size over each block's.
+    """`{"left", "right", "level"}` for the blocks of a saved yt_idv scene.
+    Levels are AMR levels, log2(root dx / dx), if the scene saved its root
+    dx; otherwise they count from the coarsest block.
     """
     import io
     import json
     import zipfile
 
     with zipfile.ZipFile(path) as archive:
+        def array(attribute):
+            return np.load(io.BytesIO(archive.read(attribute["__array__"])))
+
         doc = json.loads(archive.read("scene.json"))
         collections = [d["attributes"] for d in doc["data_objects"] if "_unscaled_edges" in d.get("attributes", {})]
         if not collections:
             raise ValueError(f"{path} has no block collection saved with its float64 edges")
-        edges = [np.load(io.BytesIO(archive.read(a["_unscaled_edges"]["__array__"]))) for a in collections]
+        edges = [array(a["_unscaled_edges"]) for a in collections]
+        root_dx = next((array(a["_root_dx"]) for a in collections if a.get("_root_dx")), None)
     left, right, dx = (np.concatenate([e[i] for e in edges]) for i in range(3))
-    cell = dx.max(axis=1)
-    level = np.round(np.log2(cell.max() / cell)).astype(np.int32)
+    if root_dx is None:
+        root_dx = dx[np.argmax(dx.max(axis=1))]
+    level = np.round(np.log2(root_dx / dx).mean(axis=1)).astype(np.int32)
     return {"left": left, "right": right, "level": level}
 
 
@@ -52,6 +58,9 @@ def save(ds, path):
 
 
 def load(path):
+    """An .npz from `save`, or a saved yt_idv scene's .zip."""
+    if str(path).endswith(".zip"):
+        return scene_structure(path)
     with np.load(path) as f:
         return {key: f[key] for key in ("left", "right", "level")}
 

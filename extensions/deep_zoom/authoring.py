@@ -13,6 +13,7 @@ unitary float64, independent of Blender's float32.
 import json
 import math
 import os
+import sys
 
 import bpy
 import numpy as np
@@ -68,7 +69,10 @@ class DeepZoomSettings(bpy.types.PropertyGroup):
     active_shot_index: bpy.props.IntProperty(default=0)
     grid_file: bpy.props.StringProperty(
         name="Grid Structure",
-        description=".npz written by yt_volumes.grid_structure",
+        description=(
+            ".npz from grid_structure.py, or a saved yt_idv scene (.zip), whose blocks stand in "
+            "for grids. Empty: the volume's .zip, else the grids it loaded when rendered"
+        ),
         subtype="FILE_PATH",
         update=_redraw,
     )
@@ -362,13 +366,38 @@ def rescale_at(scene, frame, decades, camera=None):
 # --- grid map --------------------------------------------------------------------
 
 
-def _grids(path):
-    path = bpy.path.abspath(path)
-    if not path or not os.path.isfile(path):
-        return None
-    if path not in _grid_cache:
-        _grid_cache[path] = grid_structure.load(path)
-    return _grid_cache[path]
+def _volumes(scene):
+    return [o for o in scene.objects if getattr(getattr(o, "volume_override", None), "is_volume_override", False)]
+
+
+def _loaded_boxes(obj):
+    """The boxes the yt-volumes add-on has loaded for `obj`, or None."""
+    # The add-on's package name depends on how it was installed; find it from its property group.
+    package = type(obj.volume_override).__module__.rpartition(".")[0]
+    overlay = sys.modules.get(f"{package}.grid_overlay")
+    return None if overlay is None else overlay.loaded_boxes(obj)
+
+
+def _grids(scene):
+    """The grid structure: the Grid Structure file, else a flagged volume's
+    saved scene (.zip; its blocks, not grids), else the boxes yt-volumes
+    loaded when it rendered.
+    """
+    path = bpy.path.abspath(_settings(scene).grid_file)
+    if not path:
+        zips = [bpy.path.abspath(o.volume_override.dataset_path) for o in _volumes(scene)]
+        path = next((p for p in zips if p.endswith(".zip")), "")
+    if path:
+        if not os.path.isfile(path):
+            return None
+        if path not in _grid_cache:
+            _grid_cache[path] = grid_structure.load(path)
+        return _grid_cache[path]
+    for obj in _volumes(scene):
+        boxes = _loaded_boxes(obj)
+        if boxes is not None:
+            return boxes
+    return None
 
 
 def _grid_map_material():
@@ -411,7 +440,7 @@ def update_grid_map(scene):
     settings = _settings(scene)
     obj = bpy.data.objects.get(GRID_MAP_NAME)
     shot = active_shot(scene)
-    grids = _grids(settings.grid_file)
+    grids = _grids(scene)
     anchor = None if shot is None else shot_space.parse_anchor(shot.anchor)
     if not (settings.enabled and settings.show_grid_map and grids is not None) or anchor is None or isinstance(anchor, str):
         if obj is not None:
@@ -535,7 +564,7 @@ class DEEPZOOM_OT_add_shot(bpy.types.Operator):
 
 def finest_box_center(scene):
     """Center of the finest box in the grid structure, float64 unitary, or None."""
-    grids = _grids(_settings(scene).grid_file)
+    grids = _grids(scene)
     if grids is None:
         return None
     finest = np.argmax(grids["level"])

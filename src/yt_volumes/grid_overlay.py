@@ -27,47 +27,78 @@ _CORNERS = np.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)],
 _EDGE_PAIRS = np.array([(a, a | bit) for a in range(8) for bit in (1, 2, 4) if not a & bit])
 
 
+def _amr_levels(dx, root_dx):
+    """AMR level, log2(root dx / dx), per row of `dx`."""
+    return np.round(np.log2(root_dx / dx).mean(axis=1)).astype(np.int32)
+
+
 def _unitary_boxes(scene, ds):
-    """`(left, right, level)` in unitary coordinates: the dataset's grids if
-    it has them, else the scene's blocks. None for spherical data.
+    """`(left, right, level, collection)` in unitary coordinates, with
+    `collection` the index of each box's block collection: the dataset's grids
+    if it has them, else the scene's blocks. None for spherical data.
+
+    Block levels need yt_idv's `root_dx`; without it they count from the
+    coarsest block.
     """
     key = (id(scene), id(ds))
-    if key not in _unitary_cache:
-        collections = yir._block_collections(scene)
-        if not collections or any(yir._is_spherical(c) for c in collections):
-            _unitary_cache[key] = None
-            return None
+    cached = _unitary_cache.get(key)
+    # ids are reused once an object is freed, so check it's the same scene
+    if cached is not None and cached[0] is scene and cached[1] is ds:
+        return cached[2]
+    collections = yir._block_collections(scene)
+    boxes = None
+    if collections and not any(yir._is_spherical(c) for c in collections):
         try:
             index = ds.index
+            left = index.grid_left_edge.to("unitary").d.astype(np.float64)
             boxes = (
-                index.grid_left_edge.to("unitary").d.astype(np.float64),
+                left,
                 index.grid_right_edge.to("unitary").d.astype(np.float64),
                 np.asarray(index.grid_levels, dtype=np.int32).ravel(),
+                np.zeros(len(left), dtype=np.int32),
             )
         except AttributeError:
-            lefts, rights, dxs = [], [], []
-            for c in collections:
-                offset = np.asarray(c.applied_scale_offset, dtype=np.float64)
-                ratio = c.applied_scale_ratio
-                lefts.append(yir._vertex_attribute(c, "in_left_edge") * ratio + offset)
-                rights.append(yir._vertex_attribute(c, "in_right_edge") * ratio + offset)
-                dxs.append(yir._vertex_attribute(c, "in_dx").max(axis=1) * ratio)
+            lefts, rights, dxs, owners = [], [], [], []
+            for i, c in enumerate(collections):
+                if hasattr(c, "_get_unscaled_edges"):
+                    left, right, dx = (np.asarray(e, dtype=np.float64) for e in c._get_unscaled_edges())
+                else:
+                    offset = np.asarray(c.applied_scale_offset, dtype=np.float64)
+                    ratio = c.applied_scale_ratio
+                    left = yir._vertex_attribute(c, "in_left_edge") * ratio + offset
+                    right = yir._vertex_attribute(c, "in_right_edge") * ratio + offset
+                    dx = yir._vertex_attribute(c, "in_dx") * ratio
+                lefts.append(left)
+                rights.append(right)
+                dxs.append(dx)
+                owners.append(np.full(len(left), i, dtype=np.int32))
             dx = np.concatenate(dxs)
-            level = np.round(np.log2(dx.max() / dx)).astype(np.int32)
-            boxes = (np.concatenate(lefts), np.concatenate(rights), level)
-        _unitary_cache[key] = boxes
-    return _unitary_cache[key]
+            root_dx = next((c.root_dx for c in collections if getattr(c, "root_dx", None) is not None), None)
+            if root_dx is None:
+                root_dx = dx[np.argmax(dx.max(axis=1))]
+            level = _amr_levels(dx, np.asarray(root_dx, dtype=np.float64))
+            boxes = (np.concatenate(lefts), np.concatenate(rights), level, np.concatenate(owners))
+    _unitary_cache[key] = (scene, ds, boxes)
+    return boxes
+
+
+def loaded_boxes(obj):
+    """`{"left", "right", "level"}` (unitary float64) of the boxes loaded for
+    `obj`, as `grid_structure.load` returns them; None before its first render.
+    """
+    cached = yir._volume_scene_cache.get(obj.volume_override.dataset_uuid)
+    boxes = None if cached is None else _unitary_boxes(cached[0], cached[1])
+    if boxes is None or not len(boxes[2]):
+        return None
+    return dict(zip(("left", "right", "level"), boxes[:3]))
 
 
 def loaded_levels(obj):
     """`(min, max)` level of the boxes loaded for `obj`, or None before its
     first render.
     """
-    cached = yir._volume_scene_cache.get(obj.volume_override.dataset_uuid)
-    boxes = None if cached is None else _unitary_boxes(cached[0], cached[1])
-    if boxes is None or not len(boxes[2]):
-        return None
-    return int(boxes[2].min()), int(boxes[2].max())
+    boxes = loaded_boxes(obj)
+    return None if boxes is None else (int(boxes["level"].min()), int(boxes["level"].max()))
 
 
 def _spread_across_levels(level, max_boxes):
@@ -120,26 +151,31 @@ def world_boxes(scene, ds, volume, custom_params, levels=(0, None), clusters=0, 
     boxes = _unitary_boxes(scene, ds)
     if boxes is None:
         return None
-    left, right, level = boxes
-    # Unitary -> volume-cube coordinates, matching apply_zoom: the zoom target
-    # stays put and everything else spreads out from it by the magnification.
-    collection = yir._block_collections(scene)[0]
-    base_offset, base_ratio = yir._base_transform(collection)
+    left, right, level, owner = boxes
+    # Unitary -> volume-cube coordinates, matching apply_zoom: each collection
+    # has its own base transform, the zoom target stays put and everything
+    # else spreads out from it by the magnification.
+    collections = yir._block_collections(scene)
+    bases = [yir._base_transform(c) for c in collections]
     spec = custom_params.get("yt_idv_zoom_target")
-    target, magnification = base_offset, 1.0
+    ratio = np.array([b[1] for b in bases])[owner][:, None]
     if spec:
-        target = yir._zoom_target_unitary(spec, collection)
+        targets = np.array([yir._zoom_target_unitary(spec, c) for c in collections])
         magnification = 10.0 ** float(custom_params.get("yt_idv_zoom_level", 0.0))
-    anchor = (target - base_offset) / base_ratio
-    scale = magnification / base_ratio
+        anchor = (targets[0] - bases[0][0]) / bases[0][1]
+        origin = targets[owner]
+    else:
+        magnification, anchor = 1.0, 0.0
+        origin = np.array([b[0] for b in bases])[owner]
 
     level_min, level_max = levels
     keep = level >= level_min
     if level_max is not None:
         keep &= level <= level_max
     keep = np.nonzero(keep)[0]
-    cube_left = anchor + (left[keep] - target) * scale
-    cube_right = anchor + (right[keep] - target) * scale
+    scale = magnification / ratio[keep]
+    cube_left = anchor + (left[keep] - origin[keep]) * scale
+    cube_right = anchor + (right[keep] - origin[keep]) * scale
     # Clip to the volume Empty; a box covering all of it would only redraw its outline.
     inside = np.all(cube_right > 0.0, axis=1) & np.all(cube_left < 1.0, axis=1)
     inside &= ~(np.all(cube_left <= 0.0, axis=1) & np.all(cube_right >= 1.0, axis=1))

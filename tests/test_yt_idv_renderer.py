@@ -1466,3 +1466,27 @@ def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():
     # (0.9, 0.1, 0.6) is nearest vertex (2, 0, 1): flat index 19
     assert yir._field_value_at(scene, np.array([0.9, 0.1, 0.6])) == pytest.approx(119.0)
     assert yir._field_value_at(scene, np.array([1.5, 0.5, 0.5])) is None
+
+
+def test_needs_load_until_the_scene_is_cached_for_this_dataset_and_size(_clean_yir_state):
+    request = _request_with(render_size=4)
+    assert yir.needs_load(request)
+    scene = types.SimpleNamespace(_yt_volumes_source=yir.SAMPLE_DATASET_NAME)
+    yir._volume_scene_cache["obj"] = (scene, None, ("egl", 4, 4))
+    assert not yir.needs_load(request)
+    assert yir.needs_load(_request_with(render_size=8))  # a new render context reloads
+    request.volume.dataset.dataset_path = "/data/other.zip"
+    assert yir.needs_load(request)
+
+
+def test_samples_per_cell_sets_cartesian_and_spherical_sample_factor():
+    cartesian = types.SimpleNamespace(sample_factor=1.0, data=types.SimpleNamespace(_yt_geom_str="cartesian"))
+    spherical = types.SimpleNamespace(sample_factor=0.0, data=types.SimpleNamespace(_yt_geom_str="spherical"))
+    annotation = types.SimpleNamespace(data=None)
+    for component in (cartesian, spherical, annotation):
+        yir._apply_samples_per_cell(component, {"yt_idv_samples_per_cell": 10.0})
+    assert cartesian.sample_factor == 10.0
+    assert spherical.sample_factor == pytest.approx(-1.0)  # a tenth of the element's width
+    assert not hasattr(annotation, "sample_factor")
+    yir._apply_samples_per_cell(cartesian, {})
+    assert cartesian.sample_factor == 10.0  # unset leaves yt_idv's value alone
