@@ -19,7 +19,7 @@ bl_info = {
     "category": "Render",
 }
 
-from . import change_tracking, compositor_build, external_render, handlers, operators, properties, sample_renderers, scene_sync  # noqa: E402,F401
+from . import change_tracking, compositor_build, external_render, grid_overlay, handlers, operators, properties, sample_renderers, scene_sync  # noqa: E402,F401
 
 
 def register():
@@ -27,9 +27,11 @@ def register():
     operators.register()
     handlers.register_handlers()
     handlers.register_keymaps()
+    grid_overlay.register()
 
 
 def unregister():
+    grid_overlay.unregister()
     handlers.unregister_keymaps()
     handlers.unregister_handlers()
     operators.unregister()

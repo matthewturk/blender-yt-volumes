@@ -47,6 +47,12 @@ def _ensure_alpha_curve(self, context):
     self.alpha_curve = tree
 
 
+def _redraw_viewports(self, context):
+    for area in context.screen.areas if context.screen else ():
+        if area.type == "VIEW_3D":
+            area.tag_redraw()
+
+
 class VolumeOverrideProperties(bpy.types.PropertyGroup):
     """Attached to every Object as `obj.volume_override`."""
 
@@ -64,6 +70,29 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "you'd want)"
         ),
         default=False,
+    )
+
+    show_grids: bpy.props.BoolProperty(
+        name="Show Grids in Viewport",
+        description="Draw the dataset's grid boxes in the 3D viewport, once it has been rendered this session",
+        default=False,
+        update=_redraw_viewports,
+    )
+    grid_level_min: bpy.props.IntProperty(
+        name="Min Level", description="Coarsest grid level drawn", default=0, min=0, update=_redraw_viewports,
+    )
+    grid_level_max: bpy.props.IntProperty(
+        name="Max Level", description="Finest grid level drawn", default=99, min=0, update=_redraw_viewports,
+    )
+    grid_consolidate: bpy.props.BoolProperty(
+        name="Consolidate",
+        description="Draw a few bounding boxes around where the selected levels are, instead of every grid",
+        default=False,
+        update=_redraw_viewports,
+    )
+    grid_clusters: bpy.props.IntProperty(
+        name="Boxes", description="Most bounding boxes to consolidate into", default=8, min=1, max=256,
+        update=_redraw_viewports,
     )
 
     # --- Look: renderer mode and its settings (all end up in custom_params) ---
@@ -393,6 +422,26 @@ def _draw_look(layout, props):
             sub.prop(props, "color_image")
 
 
+def _draw_grids(layout, obj):
+    props = obj.volume_override
+    layout.prop(props, "show_grids")
+    if not props.show_grids:
+        return
+    from . import grid_overlay
+
+    box = layout.box()
+    levels = grid_overlay.loaded_levels(obj)
+    box.label(text="Render once to load the grids" if levels is None else f"Levels {levels[0]}-{levels[1]}")
+    row = box.row(align=True)
+    row.prop(props, "grid_level_min")
+    row.prop(props, "grid_level_max")
+    row = box.row(align=True)
+    row.prop(props, "grid_consolidate")
+    sub = row.row(align=True)
+    sub.enabled = props.grid_consolidate
+    sub.prop(props, "grid_clusters")
+
+
 class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
     bl_idname = "VOLUMEOVERRIDE_PT_object_panel"
     bl_label = "Volume Override"
@@ -425,6 +474,7 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")
         col.prop(props, "yt_idv_volume_provider")
+        _draw_grids(col, obj)
         col.prop(props, "zoom_target")
         row = col.row()
         row.enabled = bool(props.zoom_target)
