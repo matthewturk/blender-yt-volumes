@@ -448,6 +448,45 @@ def test_resolve_volume_provider_raises_attributeerror_for_missing_function(monk
         yir._resolve_volume_provider("_test_yir_provider_mod_2:missing_fn")
 
 
+@pytest.fixture
+def fake_yt_samples(monkeypatch, tmp_path):
+    """A fake yt whose sample data dir is tmp_path; returns the names load_sample got."""
+    loaded = []
+    api = types.SimpleNamespace(_get_test_data_dir_path=lambda: tmp_path)
+    fake_yt = types.SimpleNamespace(load_sample=lambda name, **kw: loaded.append(name) or "ds")
+    monkeypatch.setitem(sys.modules, "yt", fake_yt)
+    monkeypatch.setitem(sys.modules, "yt.sample_data", types.SimpleNamespace(api=api))
+    monkeypatch.setitem(sys.modules, "yt.sample_data.api", api)
+    return loaded
+
+
+@pytest.fixture
+def online_access():
+    system = bpy.context.preferences.system
+    saved = system.use_online_access
+    yield lambda on: setattr(system, "use_online_access", on)
+    system.use_online_access = saved
+
+
+def test_load_sample_refuses_to_download_when_offline(fake_yt_samples, online_access):
+    online_access(False)
+    with pytest.raises(RuntimeError, match="--online"):
+        yir.load_sample("IsolatedGalaxy")
+    assert fake_yt_samples == []
+
+
+def test_load_sample_uses_downloaded_data_when_offline(fake_yt_samples, online_access, tmp_path):
+    online_access(False)
+    (tmp_path / "IsolatedGalaxy").mkdir()
+    assert yir.load_sample("IsolatedGalaxy/galaxy0030/galaxy0030") == "ds"
+    assert fake_yt_samples == ["IsolatedGalaxy/galaxy0030/galaxy0030"]
+
+
+def test_load_sample_downloads_when_online(fake_yt_samples, online_access):
+    online_access(True)
+    assert yir.load_sample("IsolatedGalaxy") == "ds"
+
+
 def test_default_volume_provider_builds_once_then_reuses_previous_scene(monkeypatch):
     monkeypatch.setattr(yir, "_load_sample_source", lambda: ("fake-ds", "fake-data-source"))
     rc = _FakeRenderContext()

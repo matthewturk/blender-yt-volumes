@@ -148,13 +148,13 @@ print(yt.__version__, yt_idv.__file__, numpy.__file__, addon_utils.check('yt_vol
 
 `numpy.__file__` should be under Blender's own `5.2/python`, and the last
 value `(True, True)`. Then a real frame, using the files from `examples/`
-(`make_simple_blend.py` builds `simple.blend`; the `IsolatedGalaxy` sample
-downloads on first use):
+(`make_simple_blend.py` builds `simple.blend`; `--online-mode` lets yt
+download the `IsolatedGalaxy` sample on first use):
 
 ```
 $BLENDER -b --python-expr "import sys; sys.path.insert(0, '.'); \
 import make_simple_blend; make_simple_blend.build('simple.blend')"
-$BLENDER -b --python-expr "import sys; from yt_volumes.render_volume import main; sys.exit(main())" \
+$BLENDER -b --online-mode --python-expr "import sys; from yt_volumes.render_volume import main; sys.exit(main())" \
     -- render_volume.toml --sample IsolatedGalaxy --frames 1 \
     --set blender.file='"simple.blend"' --set blender.device='"OPTIX"'
 ```

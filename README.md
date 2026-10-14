@@ -24,13 +24,15 @@ PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
 PYTHONPATH= uv run --group ytidv pytest -q
 PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend
 PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_volume \
-    examples/render_volume.toml --frames 1 --set blender.device='"CUDA"'
+    examples/render_volume.toml --frames 1 --set blender.device='"CUDA"' --online
 ```
 
 That renders frame 1 of `examples/render_volume.toml`, a 50 kpc region of
-yt's HiresIsolatedGalaxy sample (downloaded on first use), into the simple
-scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
-`HIP` or `CPU` for your GPU.
+yt's HiresIsolatedGalaxy sample, into the simple scene, to
+`renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`, `HIP` or
+`CPU` for your GPU. `--online` lets yt download the sample on first use:
+like Blender's Allow Online Access, which is off by default, yt-volumes only
+downloads sample data when allowed (`blender --online-mode` in real Blender).
 
 **In Blender:** install yt and yt_idv where Blender's Python can import them,
 zip `src/yt_volumes/` and install it (Preferences > Add-ons > Install from

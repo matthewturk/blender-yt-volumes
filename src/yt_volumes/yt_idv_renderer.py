@@ -119,19 +119,37 @@ _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer func
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
+def load_sample(name, **kwargs):
+    """`yt.load_sample`, but downloading only if Blender allows online access."""
+    import bpy
+    import yt
+    from yt.sample_data.api import _get_test_data_dir_path
+
+    # load_sample only goes online when <test_data_dir>/<top directory> is missing.
+    on_disk = _get_test_data_dir_path().joinpath(name.split("/")[0]).exists()
+    if not on_disk and not bpy.app.online_access:
+        raise RuntimeError(
+            f"yt sample dataset {name!r} isn't downloaded and Blender's online "
+            "access is off. Enable Preferences > System > Network > Allow Online "
+            "Access, or on the command line pass --online-mode to blender or "
+            "--online to render_volume."
+        )
+    return yt.load_sample(name, **kwargs)
+
+
 def _load_sample_source():
     """Load the hardcoded sample dataset once per session."""
     cached = _dataset_cache.get(SAMPLE_DATASET_NAME)
     if cached is not None:
         return cached
     try:
-        import yt
+        import yt  # noqa: F401
     except ImportError as exc:
         raise ImportError(
             "yt_idv rendering needs `yt` importable from Blender's own "
             "Python -- see docs/installing-in-blender.md."
         ) from exc
-    ds = yt.load_sample(SAMPLE_DATASET_NAME)
+    ds = load_sample(SAMPLE_DATASET_NAME)
     data_source = ds.all_data()
     _dataset_cache[SAMPLE_DATASET_NAME] = (ds, data_source)
     return ds, data_source

@@ -429,7 +429,7 @@ def volume_provider(ctx):
 def _build_scene(ctx, data):
     import yt
 
-    from .yt_idv_renderer import scale_scene_to_subset
+    from .yt_idv_renderer import load_sample, scale_scene_to_subset
 
     if data["loader"]:
         kwargs = dict(data["load_kwargs"], frame=ctx.frame.frame_number) if data["time_varying"] else data["load_kwargs"]
@@ -437,7 +437,7 @@ def _build_scene(ctx, data):
     elif data["path"]:
         ds = yt.load(data["path"], **data["load_kwargs"])
     else:
-        ds = yt.load_sample(data["sample"], **data["load_kwargs"])
+        ds = load_sample(data["sample"], **data["load_kwargs"])
     data_source = build_data_source(ds, data)
     scene = ctx.render_context.add_scene(data_source, _field(data), no_ghost=data["no_ghost"])
     if data["subset"] is not None and data["subset"].get("scale", True):
@@ -664,6 +664,8 @@ def _parse_args(argv):
                         help="any config key, e.g. data.subset.scale=false (repeatable)")
     parser.add_argument("--check", action="store_true", help="validate the config and print it; don't render")
     parser.add_argument("--report", metavar="PATH", help="write a JSON summary (frames, colormap range) here")
+    parser.add_argument("--online", action="store_true",
+                        help="allow downloading yt sample data (Blender's Allow Online Access)")
     return parser.parse_args(argv)
 
 
@@ -692,6 +694,12 @@ def main(argv=None):
     except ConfigError as exc:
         print(f"render_volume: {exc}", file=sys.stderr)
         return 2
+    if args.online:
+        import bpy
+
+        # blender --online-mode/--offline-mode win and make the preference read-only.
+        if not bpy.app.online_access_override:
+            bpy.context.preferences.system.use_online_access = True
     if args.check:
         import pprint
 
