@@ -355,3 +355,25 @@ def test_configure_engine_sets_the_engines_own_samples(monkeypatch, engine):
     else:
         assert (scene.cycles.samples, scene.eevee.taa_render_samples) == (cycles_default, 7)
         assert devices == []
+
+
+def test_register_extension_imports_package_without_touching_sys_path(tmp_path, monkeypatch):
+    import sys
+
+    package = tmp_path / "_rv_test_ext"
+    package.mkdir()
+    (package / "helper.py").write_text("calls = []\n")
+    (package / "__init__.py").write_text("from . import helper\n\ndef register():\n    helper.calls.append('registered')\n")
+    monkeypatch.delitem(sys.modules, "_rv_test_ext", raising=False)
+    monkeypatch.delitem(sys.modules, "_rv_test_ext.helper", raising=False)
+    before = list(sys.path)
+
+    rv._register_extension(str(package))
+
+    assert sys.path == before
+    assert sys.modules["_rv_test_ext.helper"].calls == ["registered"]
+
+
+def test_register_extension_rejects_a_non_package(tmp_path):
+    with pytest.raises(rv.ConfigError, match="not a Python package"):
+        rv._register_extension(str(tmp_path))

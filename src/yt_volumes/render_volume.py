@@ -556,14 +556,20 @@ def apply_render_settings(props, render):
 
 def _register_extension(path):
     """Import and register the extension package at directory `path`."""
-    import importlib
+    import importlib.util
 
-    parent, name = os.path.split(os.path.normpath(path))
-    if not os.path.isfile(os.path.join(path, "__init__.py")):
+    name = os.path.basename(os.path.normpath(path))
+    init = os.path.join(path, "__init__.py")
+    if not os.path.isfile(init):
         raise ConfigError(f"blender.extensions: {path!r} is not a Python package")
-    if parent not in sys.path:
-        sys.path.insert(0, parent)
-    importlib.import_module(name).register()
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, init, submodule_search_locations=[path])
+        module = importlib.util.module_from_spec(spec)
+        # In sys.modules before it runs, so its relative imports resolve.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    module.register()
 
 
 def configure_cycles_device(scene, device_type):
