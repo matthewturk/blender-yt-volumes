@@ -2,8 +2,8 @@
 renders. Flagged Empties render via yt_idv, depth-clipped against the
 engine's Z pass and composited in on F12 / animation render. See README.md.
 
-Classic `bl_info` add-on; install by zipping or symlinking this directory
-into Blender's addons folder.
+Installs as a classic `bl_info` add-on (zip or symlink this directory into
+Blender's addons folder) or as an extension (`blender_manifest.toml`).
 """
 
 bl_info = {

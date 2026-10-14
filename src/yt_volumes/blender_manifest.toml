@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+
+id = "yt_volumes"
+version = "0.1.0"
+name = "yt-volumes"
+tagline = "Render yt datasets with yt_idv inside Cycles or EEVEE renders"
+maintainer = "Matthew Turk"
+type = "add-on"
+website = "https://github.com/matthewturk/cycles-yt"
+tags = ["Render", "Import-Export"]
+# The bundled wheels are cp313, Blender 5.x's Python.
+blender_version_min = "5.2.0"
+license = ["SPDX:BSD-3-Clause"]
+
+[permissions]
+files = "Read datasets and write per-frame render intermediates"
+network = "Download yt sample datasets on first use"

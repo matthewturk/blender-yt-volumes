@@ -71,12 +71,14 @@ tests/                     pytest suite
 
 ## Installing the add-on in Blender
 
-This is a classic (`bl_info`-style) add-on, not a pip package Blender
-installs for itself -- Blender doesn't consult `pyproject.toml`. Either:
+Blender doesn't consult `pyproject.toml`. Either:
 
 - Zip `src/yt_volumes/` and use Blender's *Install from Disk*, or
 - Symlink `src/yt_volumes/` into your Blender's addons directory
-  and enable it in Preferences > Add-ons.
+  and enable it in Preferences > Add-ons, or
+- Build an extension zip with yt and yt_idv bundled
+  (`scripts/build_extension.sh`; see
+  [docs/installing-in-blender.md](docs/installing-in-blender.md)).
 
 Then enable **yt-volumes** in Preferences.
 Its preferences panel has only **Working Directory** (where per-frame EXR

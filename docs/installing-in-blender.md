@@ -88,6 +88,31 @@ uv pip install --python $BLENDER_PY wheels/yt_idv-*-cp313-*.whl \
 needing `ensurepip`. The Blender directory has to be writable by you; for a
 system or Steam install, use route 1.
 
+## Route 3: the extension zip with everything bundled
+
+`scripts/build_extension.sh` builds yt-volumes as a Blender extension with
+yt, yt_idv and their dependencies inside, one zip per platform, plus a
+`deep_zoom` zip for all platforms. Installing them (Preferences > Get
+Extensions > Install from Disk) is the whole setup: no uv, no compiler, no
+startup script. numpy is left out; Blender's is used. Deep Zoom stays a
+separate extension so it can author camera paths without yt_idv.
+
+```
+scripts/build_extension.sh $BLENDER dist/
+```
+
+It needs uv and downloads wheels for Linux x64, Windows x64 and macOS arm64
+from this one machine. Until yt_idv publishes wheels on PyPI, build one as in
+route 2 and point the script at it, for your own platform only:
+
+```
+PLATFORMS=linux-x64 WHEELS=wheels/ scripts/build_extension.sh $BLENDER dist/
+```
+
+Installed this way the module is `bl_ext.user_default.yt_volumes`, not
+`yt_volumes`, and its preferences are separate from a classic install's.
+Don't enable both at once.
+
 ## Installing the add-on
 
 ```
@@ -105,8 +130,9 @@ bpy.ops.preferences.addon_enable(module='yt_volumes')
 bpy.ops.wm.save_userpref()"
 ```
 
-For deep camera paths, also zip `extensions/deep_zoom/` and install it from
-Preferences > Get Extensions > Install from Disk.
+For deep camera paths, also install Deep Zoom: the `deep_zoom` zip from
+route 3, or zip `extensions/deep_zoom/` yourself, and use Preferences > Get
+Extensions > Install from Disk.
 
 In the GUI, set Preferences > System > GPU Backend to **Vulkan** and restart.
 Under OpenGL, NVIDIA's EGL refuses to make yt_idv's context current next to
