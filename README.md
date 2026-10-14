@@ -32,11 +32,11 @@ yt's HiresIsolatedGalaxy sample (downloaded on first use), into the simple
 scene, to `renders/frame_0001.png`. Set `blender.device` to `OPTIX`, `CUDA`,
 `HIP` or `CPU` for your GPU.
 
-**In Blender:** zip `src/yt_volumes/` and install it
-(Preferences > Add-ons > Install from Disk), and install yt and yt_idv into
-Blender's own Python (`uv pip install --python <blender's python>
-"yt_idv @ git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py`). For deep camera paths, also zip `extensions/deep_zoom/`
-and install it as an extension. Render Engine must be Cycles.
+**In Blender:** install yt and yt_idv where Blender's Python can import them,
+zip `src/yt_volumes/` and install it (Preferences > Add-ons > Install from
+Disk); [docs/installing-in-blender.md](docs/installing-in-blender.md) covers
+both, starting from a stock Blender download. For deep camera paths, also zip
+`extensions/deep_zoom/` and install it as an extension.
 
 **Examples** (each script's docstring has the commands):
 
@@ -206,46 +206,10 @@ bpy-computed `projection_matrix` in `tests/test_yt_idv_renderer.py` -- see
 
 ### Installing yt_idv into your Blender's Python
 
-Real Blender's own embedded Python is NOT the same Python as this repo's
-`bpy==5.2.0` pip wheel dev venv (see "Development & testing" below) -- it
-doesn't have that wheel's version constraints, so installing `yt_idv` there
-is a normal "add a third-party package to Blender" operation: find
-Blender's bundled Python (e.g. `blender --python-expr "import
-sys;print(sys.executable)"`, or the `python.exe`/`python3.1x` under
-Blender's own install directory) and `pip install` into it directly (using
-that interpreter's own `-m pip`, ensuring pip first via `-m ensurepip` if
-needed) -- see Blender's manual, "Installing Python Modules", for the
-general mechanism this relies on. Install `yt_idv` itself plus `pooch`/
-`pandas`/`h5py` (lazy dependencies `yt.load_sample`'s Enzo/IsolatedGalaxy
-path needs that aren't part of `yt_idv`'s own declared dependencies).
-
-**On Python 3.13+ (e.g. Blender 5.x's own bundled Python), install yt_idv
-from git for now, not `pip install yt_idv` / PyPI.** PyPI's latest release
-(0.5.4, as of this writing) lists `imgui` as an unconditional dependency,
-which has no cp313 wheel and fails to build from source against 3.13's
-changed C API -- this is exactly what used to make `yt_idv` uninstallable
-into a modern Blender's own Python at all (see "Real yt_idv bugs" below,
-and the now-corrected claim this repo's own `yt_idv_renderer.py` module
-docstring used to make about that). Fixed upstream 2026-09-15
-(yt-project/yt_idv#268, "imgui-optional"): imgui moved to an opt-in `gui`
-extra, needed only for the interactive pyglet+imgui control panel -- never
-for this add-on's own `egl`-backend, no-GUI rendering path -- so installing
-without it no longer touches imgui at all. Not yet in a PyPI release
-(0.5.4 predates the fix), so for now:
-
-```
-pip install "git+https://github.com/yt-project/yt_idv.git" pooch pandas h5py
-```
-
-into Blender's own Python, or use its `test`/`gui` extras if you also want
-yt_idv's own test suite or the interactive GUI (`pip install
-"yt_idv[gui] @ git+https://github.com/yt-project/yt_idv.git"` -- imgui does
-build fine on Python <=3.12, just not 3.13+). Once a release ships the fix,
-a plain `pip install yt_idv` will work the same way. This repo's own dev
-venv installs yt_idv the same way, via the optional `ytidv` dependency
-group -- see "Development & testing" below; it's no longer a separate
-Python/venv story from your real Blender's install, just a separate
-`pip`/`uv` invocation.
+See [docs/installing-in-blender.md](docs/installing-in-blender.md): Blender's
+bundled Python has no headers, so yt_idv `main` has to be built with a
+uv-managed Python 3.13, then either kept in a venv that a Blender startup
+script adds to `sys.path`, or installed into Blender's own Python as a wheel.
 
 **Use yt_idv `main`.** The external depth clip (yt-project/yt_idv#247), scene
 transforms for subset scaling and deep zooms (#287), a texture atlas for block data (#285)

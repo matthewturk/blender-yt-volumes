@@ -129,8 +129,7 @@ def _load_sample_source():
     except ImportError as exc:
         raise ImportError(
             "yt_idv rendering needs `yt` importable from Blender's own "
-            "Python -- see README 'yt_idv integration' for how to install "
-            "it there."
+            "Python -- see docs/installing-in-blender.md."
         ) from exc
     ds = yt.load_sample(SAMPLE_DATASET_NAME)
     data_source = ds.all_data()
