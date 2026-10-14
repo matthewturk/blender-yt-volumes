@@ -1,5 +1,7 @@
 import itertools
 import json
+import sys
+import types
 
 import pytest
 
@@ -232,3 +234,19 @@ def test_interrupting_the_driver_stops_the_running_segment(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         rs._run_segment("c.json", "r.json")
     assert FakeChild.terminated
+
+
+def test_segment_command_with_the_pip_bpy_runs_the_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "bpy", types.SimpleNamespace(app=types.SimpleNamespace(binary_path="")))
+    cmd = rs._segment_command("seg.json", "seg.report.json")
+    assert cmd == [sys.executable, "-m", "yt_volumes.render_volume", "seg.json", "--report", "seg.report.json"]
+
+
+def test_segment_command_inside_blender_runs_blender_with_the_parents_flags(monkeypatch):
+    monkeypatch.setitem(sys.modules, "bpy", types.SimpleNamespace(app=types.SimpleNamespace(binary_path="/opt/blender")))
+    monkeypatch.setattr(sys, "argv", ["/opt/blender", "-b", "--gpu-backend", "vulkan", "--offline-mode",
+                                      "--python-expr", "...", "--", "series.toml", "--online-mode"])
+    cmd = rs._segment_command("seg.json")
+    assert cmd[:6] == ["/opt/blender", "-b", "--gpu-backend", "vulkan", "--offline-mode", "--python-exit-code"]
+    assert "from yt_volumes.render_volume import main" in cmd[cmd.index("--python-expr") + 1]
+    assert cmd[cmd.index("--"):] == ["--", "seg.json"]  # args after the parent's "--" aren't Blender flags

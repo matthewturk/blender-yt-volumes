@@ -333,8 +333,11 @@ PYTHONPATH= uv run --group ytidv python -m yt_volumes.render_series examples/ren
 ```
 
 Consecutive frames that show the same output form a segment, and each segment
-runs as its own `render_volume` process, because yt_idv never frees GPU
-textures within a process. Each segment's resolved config is saved under
+runs as its own `render_volume` process, so a crash loses only that segment
+and each dataset's memory is returned when its segment ends. Inside Blender
+(`blender -b --python-expr "from yt_volumes.render_series import main; main()"
+-- series.toml`) segments run as `blender -b`, inheriting `--gpu-backend` and
+`--online-mode`/`--offline-mode`. Each segment's resolved config is saved under
 `<output dir>/.render_series/`, so one segment can be rerun by hand;
 `--skip-existing` resumes an interrupted run. `cmap_range = "first_last"`
 auto-scales one probe frame each of the first and last output and

@@ -5,9 +5,12 @@
 Takes a `render_volume` config whose `[data]` names a `series` (glob or list
 of paths) or a `simulation` instead of one dataset, plus a `[time]` table
 mapping frames to outputs. Consecutive frames that show the same output form
-a segment, and each segment runs as its own `render_volume` process: yt_idv
-never frees GPU textures, so a fresh process per dataset is what releases
-them. See `examples/render_series.toml`.
+a segment, and each segment runs as its own `render_volume` process, so a
+crash loses only that segment and each dataset's memory goes back to the
+system when its segment ends. Inside Blender (`blender -b --python-expr
+"from yt_volumes.render_series import main; main()" -- series.toml`),
+segments run in `blender -b` with the same `--gpu-backend` and online-access
+flags. See `examples/render_series.toml`.
 """
 
 import argparse
@@ -16,6 +19,7 @@ import dataclasses
 import glob
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -128,9 +132,28 @@ def discover_outputs(data, time_config):
 # --- Driver -------------------------------------------------------------------
 
 
+def _segment_command(config_path, report_path=None):
+    """The command that renders one segment's config."""
+    import bpy
+
+    args = [config_path] + (["--report", report_path] if report_path else [])
+    if not bpy.app.binary_path:  # the pip bpy module
+        return [sys.executable, "-m", f"{__package__}.render_volume", *args]
+    # Inside Blender, sys.executable is its bundled Python, which can't import bpy.
+    own = sys.argv[:sys.argv.index("--")] if "--" in sys.argv else sys.argv
+    flags = []
+    for i, arg in enumerate(own):
+        if arg == "--gpu-backend" and i + 1 < len(own):
+            flags += own[i:i + 2]
+        elif arg in ("--online-mode", "--offline-mode"):
+            flags.append(arg)
+    expr = f"import sys; from {__package__}.render_volume import main; sys.exit(main())"
+    # Without --python-exit-code, an uncaught exception still exits 0.
+    return [bpy.app.binary_path, "-b", *flags, "--python-exit-code", "1", "--python-expr", expr, "--", *args]
+
+
 def _run_segment(config_path, report_path):
-    cmd = [sys.executable, "-m", "yt_volumes.render_volume", config_path, "--report", report_path]
-    child = subprocess.Popen(cmd)
+    child = subprocess.Popen(_segment_command(config_path, report_path))
     try:
         return child.wait()
     except BaseException:
@@ -223,7 +246,7 @@ def run(config, outputs, skip_existing=False, dry_run=False):
                     print(f"[render_series] colormap range pinned to {cmap_range}", flush=True)
     except SegmentFailed as exc:
         print(f"[render_series] segment failed (exit {exc.code}); rerun with: "
-              f"python -m yt_volumes.render_volume {exc.config_path}", file=sys.stderr)
+              f"{shlex.join(_segment_command(exc.config_path))}", file=sys.stderr)
         return exc.code
     return 0
 
@@ -240,7 +263,10 @@ def main(argv=None):
                         help="any config key, e.g. time.pick=\"previous\" (repeatable)")
     parser.add_argument("--dry-run", action="store_true", help="print the frame -> output plan; don't render")
     parser.add_argument("--skip-existing", action="store_true", help="skip frames whose PNG already exists")
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if argv is None:
+        # Inside Blender our args follow "--".
+        argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
+    args = parser.parse_args(argv)
     # SIGTERM raises SystemExit, so _run_segment stops the running child too.
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
 
