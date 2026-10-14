@@ -9,7 +9,8 @@ type = "add-on"
 website = "https://github.com/matthewturk/cycles-yt"
 tags = ["Animation", "Camera", "Import-Export"]
 blender_version_min = "4.2.0"
-license = ["SPDX:BSD-3-Clause"]
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Matthew Turk"]
 
 [permissions]
 files = "Read grid structure files and write camera paths"

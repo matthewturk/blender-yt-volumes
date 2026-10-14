@@ -3,6 +3,8 @@ name = "yt-volumes"
 version = "0.1.0"
 description = "Blender add-on: render yt datasets with yt_idv inside Cycles or EEVEE renders, depth-clipped and composited on F12."
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
 # Pinned to match the pip-installable `bpy` dev/test dependency below (bpy
 # wheels track a specific CPython ABI per release). This constrains only the
@@ -50,7 +52,7 @@ yt_idv = { git = "https://github.com/yt-project/yt_idv.git", branch = "main" }
 where = ["src"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # SPDX `license` strings
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]

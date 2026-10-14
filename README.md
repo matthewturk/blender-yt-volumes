@@ -1209,3 +1209,10 @@ to run `scripts/verify_zpass.py` there directly and diff its
 `verify_zpass_results.json` against the one already committed here, plus
 smoke-test `render.volume_override` (F12) end to end against a real
 `render_volume()` implementation and the test scenes above.
+
+## License
+
+GPL-3.0-or-later (see `LICENSE`), as Blender requires of add-ons; this covers
+yt-volumes and Deep Zoom. The extension zips from `scripts/build_extension.sh`
+also bundle yt, yt_idv and their dependencies, which keep their own
+(GPL-compatible, mostly BSD) licenses, included in each wheel.
