@@ -230,3 +230,15 @@ def test_viewer_main_loads_the_viewer_without_bpy():
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
     result = subprocess.run([sys.executable, "-c", code, str(script)], capture_output=True, text=True, env=env, check=True)
     assert result.stdout.split() == ["False", "True"]
+
+
+def test_a_geometry_nodes_transfer_function_goes_to_the_viewer(scene, tmp_path):
+    from yt_volumes import transfer_function_nodes
+
+    volume, _ = _volume_and_camera(scene)
+    volume.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    transfer_function_nodes.add_transfer_function_modifier(volume)
+    config = viewer_link.viewer_config(scene, volume, 640, 360, str(tmp_path / "pose.json"), str(tmp_path / "camera.json"))
+
+    assert config["renderer_mode"] in viewer.CONFIGURE
+    assert np.asarray(json.loads(json.dumps(config))["custom_params"]["yt_idv_gn_tf_rgba"]).shape == (256, 4)

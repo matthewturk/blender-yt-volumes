@@ -29,6 +29,7 @@ CONFIGURE = {
     "YT_IDV_PROJECTION": yir._configure_projection,
     "YT_IDV_THRESHOLD_FOG": yir._configure_threshold_fog,
     "YT_IDV_YT_TRANSFER_FUNCTION": yir._configure_yt_transfer_function,
+    "YT_IDV_GN_TRANSFER_FUNCTION": yir._configure_gn_transfer_function,
 }
 # Refit when a zoomed camera gets this close to the target in model units;
 # a refit puts it ~1 unit away (see yt_idv_renderer.apply_zoom).
