@@ -94,14 +94,29 @@ non-physical debug renderer, see "Sample renderer") -- and that mode's
 settings. They're saved in the .blend.
 
 **Add > yt Volume** in the 3D viewport makes a flagged Empty-Cube with a
-Geometry Nodes transfer function already on it. Its modifier outputs points
-from the low to the high end of TF Value Min-Max (log space) carrying a
-`yt_tf_color` color and a `yt_tf_alpha` opacity; the starter group's Color
-Ramp and opacity curve are also drawn in the Volume Override panel, and any
-node setup (math, Scene Time, keyframes) that stores those attributes works.
-Other objects can read them through an Object Info node, e.g. to draw the
-transfer function as a plot. The group uses only built-in nodes, so the
-.blend opens and evaluates without the add-on.
+Geometry Nodes transfer function already on it. Its modifier passes its input
+geometry through and adds instances of nothing (so nothing draws or renders),
+in order from the low to the high end of TF Value Min-Max (log space),
+carrying a `yt_tf_color` color and a `yt_tf_alpha` opacity, plus an
+edges-only outline of the Empty's cube or sphere: with a modifier's geometry,
+the viewport no longer draws the Empty, and loose edges don't render. Drivers
+keep the outline matched to the Empty's display size and type. The starter
+group's Color Ramp and opacity curve are also drawn in the Volume Override
+panel, and any node setup (math, Scene Time, keyframes) that stores those
+attributes works.
+
+The transfer function's x runs linearly in log10 of the value. With **Fit to
+Data** (on by default) it spans the data between the **Low %** and **High %**
+percentiles by volume (1 and 100); off, TF Value Min/Max set it in yt_idv's
+normalized units. **Opacity Scale** multiplies emission and opacity per box
+width of path: thin or small structures need it large. After a render the
+starter group's points also carry the data's distribution, for viewer node
+groups to plot: `yt_tf_volume_fraction` and `yt_tf_mass_fraction` (each
+point's share of the volume and the mass) and `yt_tf_log10_value` (log10 of
+the field there, in its own units, which the panel also shows as a range). Other objects can read them through Object Info and
+Instances to Points, e.g. to draw the transfer function as a plot. The group
+uses only built-in nodes, so the .blend opens and evaluates without the
+add-on.
 
 A flagged object (an Empty-Cube, or an Empty-Sphere for spherical data)
 renders its **Dataset Path**: anything `yt.load` reads, or a scene saved with

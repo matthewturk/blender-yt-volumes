@@ -93,8 +93,7 @@ def test_a_saved_transfer_function_evaluates_without_the_add_on(clean_scene, tmp
         bpy.ops.wm.open_mainfile(filepath=path)
         obj = bpy.data.objects["yt Volume"]
         assert not hasattr(obj, "volume_override")
-        geometry = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).evaluated_geometry()
-        assert transfer_function_nodes.COLOR_ATTRIBUTE in geometry.mesh.attributes
-        assert transfer_function_nodes.ALPHA_ATTRIBUTE in geometry.mesh.attributes
+        rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+        assert rgba[-1] == pytest.approx([0.988, 0.998, 0.645, 0.8], abs=2e-3)
     finally:
         properties.register()  # the fixture unregisters

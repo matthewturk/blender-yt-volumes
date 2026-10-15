@@ -8,6 +8,7 @@ to dispatch on; Blender doesn't interpret it.
 """
 
 import bpy
+import numpy as np
 
 from . import transfer_function_nodes
 
@@ -29,7 +30,8 @@ LOOK_SETTINGS = (
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
-    "gn_tf_value_min", "gn_tf_value_max",
+    "gn_tf_fit_range", "gn_tf_percentile_low", "gn_tf_percentile_high",
+    "gn_tf_value_min", "gn_tf_value_max", "gn_tf_opacity_scale",
     "alpha_source", "color_source",
 )
 ALPHA_CURVE_NODE_NAME = "AlphaCurve"
@@ -240,15 +242,35 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
 
     # Geometry Nodes transfer function (YT_IDV_GN_TRANSFER_FUNCTION)
+    gn_tf_fit_range: bpy.props.BoolProperty(
+        name="Fit to Data",
+        description="Span the transfer function, in log space, over the data between the Low and High percentiles by volume; off uses TF Value Min and Max",
+        default=True,
+    )
+    gn_tf_percentile_low: bpy.props.FloatProperty(
+        name="Low %",
+        description="Percentile of the data, by volume, at the transfer function's low end; a little above 0 drops the near-empty tail",
+        default=1.0, min=0.0, max=100.0,
+    )
+    gn_tf_percentile_high: bpy.props.FloatProperty(
+        name="High %",
+        description="Percentile of the data, by volume, at the transfer function's high end; 100 keeps the densest cell",
+        default=100.0, min=0.0, max=100.0,
+    )
+    gn_tf_opacity_scale: bpy.props.FloatProperty(
+        name="Opacity Scale",
+        description="Multiplies the transfer function's emission and opacity, per box width of path; raise it until small or thin structures show",
+        default=100.0, min=0.0, soft_max=10000.0,
+    )
     gn_tf_value_min: bpy.props.FloatProperty(
-        name="TF Value Min",
-        description="Value at the transfer function's low end (yt_idv's [0, 1]-normalized value space); transparent below it",
-        default=1e-9, precision=10, min=0.0,
+        name="TF Min (log10)",
+        description="log10 of the field, in its own units, at the transfer function's low end; used with Fit to Data off",
+        default=-28.0, precision=3,
     )
     gn_tf_value_max: bpy.props.FloatProperty(
-        name="TF Value Max",
-        description="Value at the transfer function's high end; it spans Min to Max in log space",
-        default=1e-2, precision=6, min=0.0,
+        name="TF Max (log10)",
+        description="log10 of the field, in its own units, at the transfer function's high end; used with Fit to Data off",
+        default=-10.0, precision=3,
     )
 
     # Alpha curve / color image, shared by Threshold Fog and MIP Alpha
@@ -416,11 +438,20 @@ _MODE_SETTINGS = {
     "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power"),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor"),
-    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_value_min", "gn_tf_value_max"),
+    "YT_IDV_GN_TRANSFER_FUNCTION": (
+        "gn_tf_opacity_scale", "gn_tf_fit_range", "gn_tf_percentile_low", "gn_tf_percentile_high",
+        "gn_tf_value_min", "gn_tf_value_max",
+    ),
 }
 
 
 def _draw_gn_transfer_function(layout, obj):
+    from . import yt_idv_renderer
+
+    fit = yt_idv_renderer.gn_tf_fit(obj.volume_override.dataset_uuid)
+    if fit is not None:
+        low, high = np.log10(fit["physical_range"])
+        layout.label(text=f"log10 range: {low:.2f} to {high:.2f} {fit['units']}")
     ramp, curve = transfer_function_nodes.find_nodes(obj)
     if ramp is None and curve is None:
         layout.operator("volume_override.add_transfer_function", icon="ADD")
@@ -443,7 +474,12 @@ def _draw_look(layout, props):
     box.prop(props, "samples_per_cell")
     col = box.column(align=True)
     for name in _MODE_SETTINGS[props.renderer_mode]:
-        col.prop(props, name)
+        row = col.row()
+        if name in ("gn_tf_value_min", "gn_tf_value_max"):
+            row.enabled = not props.gn_tf_fit_range
+        elif name in ("gn_tf_percentile_low", "gn_tf_percentile_high"):
+            row.enabled = props.gn_tf_fit_range
+        row.prop(props, name)
     box.prop(props, "rescale_colormap")
     row = box.row(align=True)
     row.enabled = not props.rescale_colormap

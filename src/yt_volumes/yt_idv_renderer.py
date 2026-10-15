@@ -115,6 +115,8 @@ _volume_scene_cache = {}  # dataset_id -> (scene, ds, render_context_key)
 _render_result_cache = {}  # dataset_id -> last RenderResult
 _transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
+_DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
+_gn_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture for the GN mode
 _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
@@ -1235,22 +1237,143 @@ def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
     return _render_with_yt_idv(request, _configure_threshold_fog)
 
 
+def _positive_value_range(collection):
+    """The smallest positive and the largest texel value in `collection`'s
+    blocks, cached on it; None if none is positive.
+    """
+    cached = getattr(collection, "_yt_volumes_value_range", None)
+    if cached is not None:
+        return cached
+    low, high = np.inf, -np.inf
+    for data in collection.block_data.values():
+        values = np.asarray(data)
+        low = min(low, float(np.min(values, where=values > 0, initial=np.inf)))
+        high = max(high, float(values.max(initial=-np.inf)))
+    cached = (low, high) if np.isfinite(low) and high > 0 else None
+    collection._yt_volumes_value_range = cached
+    return cached
+
+
+def _value_distribution(collection):
+    """Histograms of log10 of the positive texel values, weighted by cell
+    volume and by mass (physical value times volume): `(bin edges, volume
+    weights, mass weights)`, cached on the collection; None if no value is
+    positive.
+    """
+    if hasattr(collection, "_yt_volumes_value_distribution"):
+        return collection._yt_volumes_value_distribution
+    value_range = _positive_value_range(collection)
+    distribution = None
+    if value_range is not None:
+        edges = np.linspace(np.log10(value_range[0]), np.log10(value_range[1]), _DISTRIBUTION_BINS + 1)
+        widths = _vertex_attribute(collection, "in_dx")
+        volume, mass = np.zeros(_DISTRIBUTION_BINS), np.zeros(_DISTRIBUTION_BINS)
+        for vbo_i, data in collection.block_data.items():
+            values = np.asarray(data)
+            values = values[values > 0]
+            if values.size:
+                cell_volume = float(np.prod(widths[vbo_i]))
+                log_values = np.log10(values)
+                volume += np.histogram(log_values, bins=edges)[0] * cell_volume
+                mass += np.histogram(log_values, bins=edges, weights=_physical(collection, values))[0] * cell_volume
+        distribution = (edges, volume, mass)
+    collection._yt_volumes_value_distribution = distribution
+    return distribution
+
+
+def _cumulative(edges, weights):
+    return np.concatenate([[0.0], np.cumsum(weights)]) / weights.sum()
+
+
+def _percentile_range(distribution, low, high):
+    """Normalized values at the `low` and `high` percentiles (by volume)."""
+    edges, volume, _ = distribution
+    cdf = _cumulative(edges, volume)
+    return 10.0 ** np.interp(low / 100.0, cdf, edges), 10.0 ** np.interp(high / 100.0, cdf, edges)
+
+
+def _point_distribution(collection, distribution, value_min, value_max, n_points):
+    """Per transfer-function point, over [value_min, value_max] in log space:
+    the fraction of the volume and of the mass in its bin (point i covers x
+    within half a spacing of i / (n_points - 1)), and log10 of the physical
+    value at the point.
+    """
+    edges, volume, mass = distribution
+    low, high = np.log10(value_min), np.log10(value_max)
+    centers = np.linspace(low, high, n_points)
+    half = (high - low) / (n_points - 1) / 2
+    bounds = np.concatenate([[centers[0] - half], centers + half])
+    fractions = [np.diff(np.interp(bounds, edges, _cumulative(edges, w))) for w in (volume, mass)]
+    log_value = np.log10(np.maximum(_physical(collection, 10.0 ** centers), np.finfo(np.float64).tiny))
+    return {"volume_fraction": fractions[0], "mass_fraction": fractions[1], "log10_value": log_value}
+
+
+def _normalized(collection, value):
+    """A value in the field's own units as yt_idv's texels hold it; floored
+    at float32's smallest normal, since the shader takes its log.
+    """
+    if collection._textures_are_normalized:
+        value = (value - collection.min_val) / (collection.max_val - collection.min_val)
+    return max(value, float(np.finfo(np.float32).tiny))
+
+
+def _physical(collection, value):
+    """A normalized texel value in the field's own units."""
+    if collection._textures_are_normalized:
+        return value * (collection.max_val - collection.min_val) + collection.min_val
+    return value
+
+
+def gn_tf_fit(dataset_id):
+    """The last Geometry Nodes transfer function fit for a loaded dataset:
+    `{"physical_range", "units", "points"}` (see `_point_distribution`), or None.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    collections = [] if cached is None else _block_collections(cached[0])
+    return getattr(collections[0], "_yt_volumes_gn_tf_fit", None) if collections else None
+
+
 def _configure_gn_transfer_function(component, custom_params):
     """Geometry Nodes transfer function: `yt_idv_gn_tf_rgba` (rows of sRGB
-    color and alpha in [0, 1]) over `yt_idv_gn_tf_value_min`/`_max`.
+    color and alpha in [0, 1]) over the data's range between
+    `yt_idv_gn_tf_percentile_low`/`_high` (by volume), or without
+    `yt_idv_gn_tf_fit_range` over `yt_idv_gn_tf_value_min`/`_max`: log10 of
+    the field in its own units.
     """
     rgba = custom_params.get("yt_idv_gn_tf_rgba")
     if rgba is None:
         raise ValueError("the Geometry Nodes transfer function wasn't sampled (no yt_idv_gn_tf_rgba)")
     component.render_method = "transfer_function"
-    rgba = np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0)
-    data = (rgba * 255.0).round().astype("u1").reshape(len(rgba), 1, 4)
-    _apply_transfer_function_settings(
-        component,
-        custom_params.get("yt_idv_gn_tf_value_min", TF_FOG_VALUE_MIN),
-        custom_params.get("yt_idv_gn_tf_value_max", TF_FOG_VALUE_MAX),
-        data,
+    scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0))
+    data = (np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0) * scale).astype("f4").reshape(len(rgba), 1, 4)
+    value_min, value_max = (
+        _normalized(component.data, 10.0 ** float(custom_params.get(f"yt_idv_gn_tf_value_{end}", default)))
+        for end, default in (("min", -28.0), ("max", -10.0))
     )
+    distribution = _value_distribution(component.data)
+    if distribution is not None and custom_params.get("yt_idv_gn_tf_fit_range", True):
+        value_min, value_max = _percentile_range(
+            distribution,
+            custom_params.get("yt_idv_gn_tf_percentile_low", 1.0),
+            custom_params.get("yt_idv_gn_tf_percentile_high", 100.0),
+        )
+        # The shader drops samples outside [tf_min, tf_max]; float32 texels can round past float64 ends.
+        value_min, value_max = value_min * (1 - 1e-6), value_max * (1 + 1e-6)
+    if distribution is not None:
+        component.data._yt_volumes_gn_tf_fit = {
+            "physical_range": (_physical(component.data, value_min), _physical(component.data, value_max)),
+            "units": getattr(component.data, "field_units", None) or "",
+            "points": _point_distribution(component.data, distribution, value_min, value_max, len(rgba)),
+        }
+    # The default table is 8-bit, which clamps to 1; a texture's storage is fixed by
+    # its first upload, so each component keeps one float32 table, updated in place.
+    texture = _gn_tf_textures.get(id(component))
+    if texture is None or texture.data.shape != data.shape:
+        from yt_idv.opengl_support import TransferFunctionTexture
+
+        texture = _gn_tf_textures[id(component)] = TransferFunctionTexture(data=data)
+    component.transfer_function = texture
+    _apply_transfer_function_settings(component, value_min, value_max, data)
 
 
 def yt_idv_gn_transfer_function_renderer(request: RenderRequest) -> RenderResult:
@@ -1335,6 +1458,10 @@ def _configure_yt_transfer_function(component, custom_params):
     key = (id(component.data), spec, ray_length)
     applied = _yt_tf_applied.get(id(component))
     if applied is not None and applied[0] == key and not per_frame:
+        if component.transfer_function is applied[1]["transfer_function"]:
+            return
+        # another mode attached its own table in between
+        apply_converted_transfer_function(component, applied[1])
         return
     tf = make(custom_params.get("_context", {})) if per_frame else make()
     try:

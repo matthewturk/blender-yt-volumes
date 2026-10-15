@@ -758,6 +758,10 @@ def render_current_frame(context):
                 result = render_fn(request)
             assert result.alpha_mode == "PREMULTIPLIED"
             assert result.color_space == "LINEAR"
+            if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
+                fit = yt_idv_renderer.gn_tf_fit(request.volume.dataset.dataset_id)
+                if fit is not None:
+                    transfer_function_nodes.update_distribution(obj, fit["points"])
             if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                 props.colormap_range = result.cmap_range
                 props.colormap_range_set = True

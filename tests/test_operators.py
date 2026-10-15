@@ -1100,3 +1100,54 @@ def test_gn_transfer_function_mode_without_nodes_explains_how_to_add_them(clean_
 
     with pytest.raises(ValueError, match="add a transfer function"):
         operators._yt_idv_custom_params(obj)
+
+
+def _outline(obj):
+    bpy.context.view_layer.update()
+    geometry = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).evaluated_geometry()
+    mesh = geometry.mesh
+    xs = [v.co.x for v in mesh.vertices]
+    return len(mesh.edges), len(mesh.polygons), min(xs), max(xs)
+
+
+def test_transfer_function_modifier_outlines_the_empty_with_edges_that_follow_it(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    obj.empty_display_size = 1.5
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    assert _outline(obj) == pytest.approx((12, 0, -1.5, 1.5))
+
+    obj.empty_display_size = 0.5
+    assert _outline(obj) == pytest.approx((12, 0, -0.5, 0.5))
+
+    obj.empty_display_type = "SPHERE"
+    edges, faces, low, high = _outline(obj)
+    assert (edges, faces) == (96, 0)  # three 32-segment circles
+    assert (low, high) == pytest.approx((-0.5, 0.5))
+
+
+def test_distribution_lands_on_the_transfer_function_points_and_is_packed(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    n = transfer_function_nodes.NBINS
+    points = {
+        "volume_fraction": np.full(n, 1.0 / n),
+        "mass_fraction": np.linspace(0.0, 2.0 / n, n),
+        "log10_value": np.linspace(-27.3, -9.8, n),  # PNG packing would clamp these to [0, 1]
+    }
+    bpy.context.view_layer.update()  # evaluated once already, as after a render
+    transfer_function_nodes.update_distribution(obj, points)
+    bpy.context.view_layer.update()
+
+    geometry = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).evaluated_geometry()
+    instances = geometry.instances_pointcloud()
+    for name, key in (("yt_tf_volume_fraction", "volume_fraction"), ("yt_tf_mass_fraction", "mass_fraction"),
+                      ("yt_tf_log10_value", "log10_value")):
+        values = np.empty(n, dtype=np.float32)
+        instances.attributes[name].data.foreach_get("value", values)
+        np.testing.assert_allclose(values, points[key], rtol=1e-6, atol=1e-9)
+    image = obj.modifiers[0].node_group.nodes[transfer_function_nodes.DISTRIBUTION_NODE_NAME].inputs["Image"].default_value
+    assert image.packed_file is not None and image.file_format == "OPEN_EXR"

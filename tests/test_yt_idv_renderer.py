@@ -1531,21 +1531,95 @@ def test_samples_per_cell_sets_cartesian_and_spherical_sample_factor():
     assert cartesian.sample_factor == 10.0  # unset leaves yt_idv's value alone
 
 
-def test_configure_gn_transfer_function_uploads_the_sampled_rgba_over_its_value_range():
+def _gn_component(monkeypatch):
+    """A fake component whose float32 table texture already exists (making one needs GL)."""
     component = _FakeComponent()
+    component.transfer_function.data = np.zeros((256, 1, 4), dtype="f4")
+    monkeypatch.setitem(yir._gn_tf_textures, id(component), component.transfer_function)
+    return component
+
+
+def test_configure_gn_transfer_function_uploads_the_scaled_rgba_over_its_value_range(monkeypatch):
+    component = _gn_component(monkeypatch)
+    component.data = _two_block_data()
+    table = component.transfer_function
     rgba = np.linspace(0.0, 1.0, 256)[:, None].repeat(4, axis=1).tolist()
 
     yir._configure_gn_transfer_function(component, custom_params={
-        "yt_idv_gn_tf_rgba": rgba, "yt_idv_gn_tf_value_min": 1e-6, "yt_idv_gn_tf_value_max": 0.1,
+        "yt_idv_gn_tf_rgba": rgba, "yt_idv_gn_tf_fit_range": False, "yt_idv_gn_tf_opacity_scale": 50.0,
+        # log10 of the field in its own units; the fake normalizes over [1, 11]
+        "yt_idv_gn_tf_value_min": np.log10(1.1), "yt_idv_gn_tf_value_max": np.log10(2.0),
     })
 
     assert component.render_method == "transfer_function"
-    assert (component.tf_min, component.tf_max, component.tf_log) == (1e-6, 0.1, True)
-    data = component.transfer_function.data
-    assert data.shape == (256, 1, 4) and data.dtype == np.uint8
-    assert data[0, 0].tolist() == [0, 0, 0, 0] and data[-1, 0].tolist() == [255, 255, 255, 255]
+    assert component.tf_min == pytest.approx(0.01) and component.tf_max == pytest.approx(0.1)
+    assert component.tf_log
+    assert component.transfer_function is table  # updated in place, not a new texture
+    data = table.data
+    assert data.shape == (256, 1, 4) and data.dtype == np.float32
+    assert data[0, 0].tolist() == [0, 0, 0, 0] and data[-1, 0].tolist() == [50, 50, 50, 50]
 
 
 def test_configure_gn_transfer_function_without_samples_raises():
     with pytest.raises(ValueError, match="wasn't sampled"):
         yir._configure_gn_transfer_function(_FakeComponent(), custom_params={})
+
+
+def _two_block_data():
+    """A big block of thin gas (each texel 0.125 volume) and a tiny dense one (1e-6)."""
+    attribute = types.SimpleNamespace(name="in_dx", data=np.array([[0.5, 0.5, 0.5], [0.01, 0.01, 0.01]]))
+    return types.SimpleNamespace(
+        block_data={0: np.full((2, 2, 2), 1e-10), 1: np.full((2, 2, 2), 1e-3)},
+        vertex_array=types.SimpleNamespace(attributes=[attribute]),
+        _textures_are_normalized=True, min_val=1.0, max_val=11.0, field_units="g/cm**3",
+    )
+
+
+def test_gn_transfer_function_fits_percentiles_of_the_data_by_volume(monkeypatch):
+    component = _gn_component(monkeypatch)
+    component.data = _two_block_data()
+
+    yir._configure_gn_transfer_function(component, custom_params={
+        "yt_idv_gn_tf_rgba": np.ones((256, 4)).tolist(),
+        "yt_idv_gn_tf_value_min": -30.0, "yt_idv_gn_tf_value_max": 0.0,  # ignored while fitting
+    })
+
+    # 1% by volume falls in the thin gas; 100% is the densest texel
+    assert component.tf_min == pytest.approx(1e-10, rel=0.02)
+    assert component.tf_max == pytest.approx(1e-3, rel=1e-5) and component.tf_max > 1e-3
+    fit = component.data._yt_volumes_gn_tf_fit
+    assert fit["units"] == "g/cm**3"
+    assert fit["physical_range"][1] == pytest.approx(1e-3 * 10.0 + 1.0, rel=1e-5)
+    points = fit["points"]
+    # Almost all the volume is thin gas at the low end; the mass splits by value * volume.
+    assert points["volume_fraction"].sum() == pytest.approx(1.0, abs=0.02)
+    assert points["volume_fraction"][-1] == pytest.approx(1e-6 / (0.125 + 1e-6), rel=0.01)
+    thin_mass, dense_mass = (1e-10 * 10 + 1) * 0.125, (1e-3 * 10 + 1) * 1e-6  # physical value times volume
+    assert points["mass_fraction"][-1] == pytest.approx(dense_mass / (thin_mass + dense_mass), rel=0.01)
+    assert points["log10_value"][-1] == pytest.approx(np.log10(1e-3 * 10.0 + 1.0), rel=1e-5)
+
+
+def test_gn_transfer_function_high_percentile_can_cut_the_dense_tail(monkeypatch):
+    component = _gn_component(monkeypatch)
+    component.data = _two_block_data()
+
+    yir._configure_gn_transfer_function(component, custom_params={
+        "yt_idv_gn_tf_rgba": np.ones((256, 4)).tolist(), "yt_idv_gn_tf_percentile_high": 99.0,
+    })
+
+    assert component.tf_max == pytest.approx(1e-10, rel=0.02)
+
+
+def test_yt_transfer_function_reattaches_its_table_after_another_mode_swapped_it(monkeypatch):
+    component = _FakeComponent()
+    converted = {"transfer_function": object(), "tf_min": 0.1, "tf_max": 0.9, "tf_log": True}
+    component.data = object()
+    key = (id(component.data), "tf.py:make", 1.0)
+    monkeypatch.setitem(yir._yt_tf_applied, id(component), (key, converted))
+    monkeypatch.setattr(yir, "_resolve_callable", lambda spec: lambda: pytest.fail("rebuilt the table"))
+    component.transfer_function = object()  # e.g. the GN mode's table
+
+    yir._configure_yt_transfer_function(component, {"yt_idv_yt_tf": "tf.py:make"})
+
+    assert component.transfer_function is converted["transfer_function"]
+    assert (component.tf_min, component.tf_max) == (0.1, 0.9)
