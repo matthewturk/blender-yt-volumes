@@ -549,6 +549,8 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col = layout.column()
         col.enabled = props.is_volume_override
         _draw_look(col, props)
+        if props.renderer_mode.startswith("YT_IDV_"):
+            col.operator("volume_override.open_viewer", icon="WINDOW")
         col.separator()
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")

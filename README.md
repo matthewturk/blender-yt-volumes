@@ -124,6 +124,23 @@ yt_idv's `SceneGraph.save` (`.zip`); with no path, yt's IsolatedGalaxy
 sample. The field defaults to density; set it with an extra custom param
 `yt_idv_field` (e.g. `gas, temperature`).
 
+## Exploring in a yt_idv window
+
+**Open yt_idv Viewer** (Volume Override panel, yt_idv modes) opens yt_idv's
+own window on the volume's data, with its current look, starting from the
+scene camera's view. Drag to orbit and scroll to move in; the scene camera
+follows, so F12 renders what the window shows. It works the other way too:
+move, animate or scrub the scene camera and the window follows it. Zooms and Deep Zoom shot space
+are registered as F12 registers them; as you scroll in, the window refits its
+model space around the camera, so it keeps float32 precision at any depth.
+Scrolling only moves the camera: the zoom stays the volume's or Deep Zoom's.
+The window runs as a separate process with Blender's Python, so it loads its
+own copy of the data (on the GPU too). Not yet: changing the look from the
+window (yt_idv's controls need imgui, which doesn't build for Python 3.13),
+the field of view, which stays the scene camera's, and following the zoom:
+the window keeps the zoom and Deep Zoom shot it opened with, so scrubbing a
+dive to another zoom or shot shows the camera at the wrong scale.
+
 ## Cycles or EEVEE
 
 Pass 1 (the scene's beauty and Z pass) renders with the scene's engine,
