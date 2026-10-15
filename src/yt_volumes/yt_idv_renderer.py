@@ -73,6 +73,8 @@ from .sample_renderers import _persp_ortho_rays
 SAMPLE_DATASET_NAME = "IsolatedGalaxy"
 SAMPLE_FIELD = "density"
 DEFAULT_BACKEND = "egl"  # OSMesa corrupts non-square renders
+# The context's own surface; every render draws into framebuffers of its own size.
+CONTEXT_SURFACE_SIZE = 64
 
 # --- Isocontour transfer function -----------------------------------------
 # Values are in yt_idv's [0, 1] min-max-normalized space, not physical units.
@@ -110,9 +112,10 @@ FAR_REACH = 1e3
 NEAR_FRACTION = 1e-3
 
 _dataset_cache = {}  # dataset name -> (ds, data_source)
-_render_context_cache = {}  # (backend, width, height) -> rc
-_volume_scene_cache = {}  # dataset_id -> (scene, ds, render_context_key)
-_render_result_cache = {}  # dataset_id -> last RenderResult
+_render_context_cache = {}  # backend -> rc
+_volume_scene_cache = {}  # dataset_id -> (scene, ds, backend)
+_render_result_cache = {}  # (dataset_id, render_size) -> last RenderResult
+_depth_textures = {}  # (id(component), shape) -> its external depth-clip Texture2D
 _transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
@@ -162,11 +165,11 @@ def _load_sample_source(online_access=None):
     return ds, data_source
 
 
-def _get_render_context(backend, width, height):
-    """Create (and cache) one offscreen render context per (backend, width,
-    height); the framebuffer size is fixed at creation.
+def _get_render_context(backend):
+    """Create (and cache) one offscreen render context per backend; renders
+    of any size share it, and the scenes loaded into it (see `_use_render_size`).
     """
-    key = (backend, width, height)
+    key = backend
     cached = _render_context_cache.get(key)
     if cached is not None:
         return cached
@@ -178,9 +181,34 @@ def _get_render_context(backend, width, height):
             "Python -- see README 'yt_idv integration' for how to install "
             "it there."
         ) from exc
-    rc = yt_idv.render_context(backend, width=width, height=height)
+    rc = yt_idv.render_context(backend, width=CONTEXT_SURFACE_SIZE, height=CONTEXT_SURFACE_SIZE)
     _render_context_cache[key] = rc
     return rc
+
+
+def _use_render_size(scene, size):
+    """Make the next `rc.run()` render `scene` as a `size` x `size` image: set
+    the viewport and give the scene and its components framebuffers that size.
+
+    A framebuffer's size is fixed when first used, so a new size gets new ones;
+    a component frees its old one when `fb` is reassigned, the scene doesn't.
+    """
+    from OpenGL import GL
+    from yt_idv.opengl_support import Framebuffer
+
+    def sized():
+        fb = Framebuffer()
+        fb._yt_volumes_size = size
+        return fb
+
+    GL.glViewport(0, 0, size, size)
+    if getattr(scene.fb, "_yt_volumes_size", None) != size:
+        old, scene.fb = scene.fb, sized()
+        if old is not None:
+            old.release()
+    for element in scene:
+        if getattr(element.fb, "_yt_volumes_size", None) != size:
+            element.fb = sized()
 
 
 @dataclasses.dataclass
@@ -500,9 +528,8 @@ def _get_volume_scene(request: RenderRequest, render_size: int):
     Returns `(rc, scene, ds, changed)`.
     """
     custom_params = request.volume.custom_params or {}
-    backend = custom_params.get("yt_idv_backend", DEFAULT_BACKEND)
-    context_key = (backend, render_size, render_size)
-    rc = _get_render_context(*context_key)
+    context_key = custom_params.get("yt_idv_backend", DEFAULT_BACKEND)
+    rc = _get_render_context(context_key)
 
     provider_spec = custom_params.get("yt_idv_volume_provider")
     provider = _resolve_volume_provider(provider_spec) if provider_spec else _default_volume_provider
@@ -530,15 +557,14 @@ def _get_volume_scene(request: RenderRequest, render_size: int):
 
 def needs_load(request: RenderRequest) -> bool:
     """True if rendering `request` will load its volume rather than reuse the
-    cached scene: a first render, another dataset, or another render size.
+    cached scene: a first render, another dataset, or another backend.
     """
     cached = _volume_scene_cache.get(request.volume.dataset.dataset_id)
     if cached is None:
         return True
     backend = (request.volume.custom_params or {}).get("yt_idv_backend", DEFAULT_BACKEND)
-    size = max(request.depth.data.shape)
     source = request.volume.dataset.dataset_path or SAMPLE_DATASET_NAME
-    return cached[2] != (backend, size, size) or getattr(cached[0], "_yt_volumes_source", source) != source
+    return cached[2] != backend or getattr(cached[0], "_yt_volumes_source", source) != source
 
 
 def _render_signature(request: RenderRequest, render_size: int, render_mode: str = "") -> dict:
@@ -562,13 +588,20 @@ def _render_signature_changed(
     from this object's last successful render.
     """
     signature = _render_signature(request, render_size, render_mode)
-    version = change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature, record=False)
+    version = change_tracking.version_for(
+        _sized_key(dataset_id, render_size), "yt_idv_render_signature", signature, record=False,
+    )
     return volume_changed or version.changed
 
 
 def _record_render_signature(dataset_id: str, request: RenderRequest, render_size: int, render_mode: str = ""):
     signature = _render_signature(request, render_size, render_mode)
-    change_tracking.version_for(dataset_id, "yt_idv_render_signature", signature)
+    change_tracking.version_for(_sized_key(dataset_id, render_size), "yt_idv_render_signature", signature)
+
+
+def _sized_key(dataset_id, render_size):
+    # F12 and viewport renders of one dataset are tracked apart, so neither invalidates the other.
+    return f"{dataset_id}@{render_size}"
 
 
 def _to_texture2d_axis_convention(depth):
@@ -607,13 +640,16 @@ def set_external_depth_clip(scene, depth=None):
             continue
         texture_data = _to_texture2d_axis_convention(np.asarray(depth, dtype="f4"))
         texture_data = np.ascontiguousarray(texture_data)
-        # Reuse the Texture2D: yt_idv never frees GL textures, so a new one per
-        # frame leaks GPU memory. Reassigning `.data` updates it in place.
-        existing = component.external_depth_texture
-        if isinstance(existing, Texture2D):
+        # Reuse one Texture2D per size: yt_idv never frees GL textures, so a new
+        # one per frame leaks GPU memory, and a texture's size is fixed by its
+        # first upload. Reassigning `.data` updates it in place.
+        key = (id(component), texture_data.shape)
+        existing = _depth_textures.get(key)
+        if existing is not None:
             existing.data = texture_data
         else:
-            component.external_depth_texture = Texture2D(data=texture_data)
+            existing = _depth_textures[key] = Texture2D(data=texture_data)
+        component.external_depth_texture = existing
         component.use_external_depth_clip = True
     if depth is not None and not any_component_supports_clip:
         raise RuntimeError(
@@ -1063,12 +1099,12 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     render_mode = getattr(configure_component, "__qualname__", repr(configure_component))
     needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed, render_mode)
     if not needs_render:
-        cached_result = _render_result_cache.get(dataset_id)
+        cached_result = _render_result_cache.get((dataset_id, render_size))
         if cached_result is not None:
             return cached_result
         # No cached result yet; render anyway.
     # Dropped up front so a render that raises can't leave a stale result to reuse.
-    _render_result_cache.pop(dataset_id, None)
+    _render_result_cache.pop((dataset_id, render_size), None)
 
     # rc.run() renders rc.scene, which another object sharing this context may
     # have replaced.
@@ -1101,6 +1137,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera, model_frame)
     set_external_depth_clip(scene, _pad_to_square(window_depth, render_size))
 
+    _use_render_size(scene, render_size)
     image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
     image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
     image = _to_row_order(image, request.depth.row_order)
@@ -1112,7 +1149,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         color_space="LINEAR",
         cmap_range=_component_cmap_range(scene),
     )
-    _render_result_cache[dataset_id] = result
+    _render_result_cache[(dataset_id, render_size)] = result
     _record_render_signature(dataset_id, signed_request, render_size, render_mode)
     return result
 

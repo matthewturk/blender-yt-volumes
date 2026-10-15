@@ -380,8 +380,12 @@ def test_domain_array_unitary_passes_through_plain_arrays():
 # Uses fake render contexts/scenes; no GL context needed.
 
 @pytest.fixture
-def _clean_yir_state():
-    """Reset yt_idv_renderer's module caches and change_tracking around each test."""
+def _clean_yir_state(monkeypatch):
+    """Reset yt_idv_renderer's module caches and change_tracking around each
+    test; render sizes need no real framebuffers.
+    """
+    monkeypatch.setattr(yir, "_use_render_size", lambda scene, size: None)
+
     def _clear():
         yir._volume_scene_cache.clear()
         yir._render_result_cache.clear()
@@ -533,7 +537,7 @@ def test_default_volume_provider_loads_the_dataset_path_and_reloads_when_it_chan
 
 def test_get_volume_scene_uses_default_provider_when_custom_params_unset(monkeypatch, _clean_yir_state):
     fake_rc = _FakeRenderContext()
-    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: fake_rc)
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend: fake_rc)
     monkeypatch.setattr(yir, "_load_sample_source", lambda online_access=None: ("ds-obj", "data-source-obj"))
 
     rc, scene, ds, changed = yir._get_volume_scene(_request_with(custom_params={}), render_size=64)
@@ -554,7 +558,7 @@ def test_get_volume_scene_dispatches_to_named_provider(monkeypatch, _clean_yir_s
     fake_module = types.ModuleType("_test_yir_provider_mod_3")
     fake_module.my_provider = my_provider
     monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_3", fake_module)
-    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend: _FakeRenderContext())
 
     request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_3:my_provider"})
     rc, scene, ds, changed = yir._get_volume_scene(request, render_size=64)
@@ -578,7 +582,7 @@ def test_get_volume_scene_passes_previous_scene_through_on_unchanged_context(mon
     fake_module = types.ModuleType("_test_yir_provider_mod_4")
     fake_module.my_provider = my_provider
     monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_4", fake_module)
-    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend: _FakeRenderContext())
 
     request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_4:my_provider"})
     yir._get_volume_scene(request, render_size=64)
@@ -587,8 +591,8 @@ def test_get_volume_scene_passes_previous_scene_through_on_unchanged_context(mon
     assert seen_previous_scenes == [None, "scene-1"]
 
 
-def test_get_volume_scene_invalidates_previous_scene_when_render_size_changes(monkeypatch, _clean_yir_state):
-    # yt_idv contexts are fixed-size, so a new size means the old scene is unusable.
+def test_get_volume_scene_keeps_the_scene_across_render_sizes(monkeypatch, _clean_yir_state):
+    # One context serves every size (see _use_render_size), so a new size reuses the loaded scene.
     seen_previous_scenes = []
 
     def my_provider(ctx):
@@ -598,13 +602,13 @@ def test_get_volume_scene_invalidates_previous_scene_when_render_size_changes(mo
     fake_module = types.ModuleType("_test_yir_provider_mod_5")
     fake_module.my_provider = my_provider
     monkeypatch.setitem(sys.modules, "_test_yir_provider_mod_5", fake_module)
-    monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: _FakeRenderContext())
+    monkeypatch.setattr(yir, "_get_render_context", lambda backend: _FakeRenderContext())
 
     request = _request_with(custom_params={"yt_idv_volume_provider": "_test_yir_provider_mod_5:my_provider"})
     yir._get_volume_scene(request, render_size=64)
     yir._get_volume_scene(request, render_size=128)
 
-    assert seen_previous_scenes == [None, None]
+    assert seen_previous_scenes == [None, "scene-x"]
 
 
 def test_render_signature_changed_true_on_first_call(_clean_yir_state):
@@ -1507,13 +1511,13 @@ def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():
     assert yir._field_value_at(scene, np.array([1.5, 0.5, 0.5])) is None
 
 
-def test_needs_load_until_the_scene_is_cached_for_this_dataset_and_size(_clean_yir_state):
+def test_needs_load_until_the_scene_is_cached_for_this_dataset(_clean_yir_state):
     request = _request_with(render_size=4)
     assert yir.needs_load(request)
     scene = types.SimpleNamespace(_yt_volumes_source=yir.SAMPLE_DATASET_NAME)
-    yir._volume_scene_cache["obj"] = (scene, None, ("egl", 4, 4))
+    yir._volume_scene_cache["obj"] = (scene, None, "egl")
     assert not yir.needs_load(request)
-    assert yir.needs_load(_request_with(render_size=8))  # a new render context reloads
+    assert not yir.needs_load(_request_with(render_size=8))  # any size reuses it
     request.volume.dataset.dataset_path = "/data/other.zip"
     assert yir.needs_load(request)
 
