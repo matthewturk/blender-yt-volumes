@@ -5,6 +5,7 @@ both ways with the scene camera.
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,8 +19,8 @@ from . import operators, viewer
 FOLLOW_INTERVAL = 0.1  # seconds between pose-file checks
 VIEWER_HEIGHT = 720
 
-# object name -> {"process", "pose_path", "camera_path", "mtime", "exchanged"}; `exchanged`
-# is the camera matrix last sent to or applied from the viewer.
+# object name -> {"process", "work_dir", "pose_path", "camera_path", "mtime", "exchanged"};
+# `exchanged` is the camera matrix last sent to or applied from the viewer.
 _viewers = {}
 
 
@@ -30,7 +31,7 @@ def _follow():
     camera = bpy.context.scene.camera
     for name, link in list(_viewers.items()):
         if link["process"].poll() is not None:
-            del _viewers[name]
+            _close(name)
             continue
         if camera is None:
             continue
@@ -45,6 +46,14 @@ def _follow():
             viewer.write_pose(link["camera_path"], current)
             link["exchanged"] = current
     return FOLLOW_INTERVAL if _viewers else None
+
+
+def _close(name):
+    """Forget a viewer and remove its files; stops it if still running."""
+    link = _viewers.pop(name)
+    if link["process"].poll() is None:
+        link["process"].terminate()
+    shutil.rmtree(link["work_dir"], ignore_errors=True)
 
 
 def viewer_config(scene, obj, width, height, pose_path, camera_path):
@@ -70,19 +79,6 @@ def viewer_config(scene, obj, width, height, pose_path, camera_path):
     }
 
 
-def _bootstrap():
-    """Python for `-c` that runs the viewer without the package's __init__,
-    which imports bpy: in a plain Python that finds a pip bpy, or none.
-    """
-    package, path = __package__, os.path.dirname(os.path.abspath(__file__))
-    return (
-        "import sys, types; "
-        f"package = types.ModuleType({package!r}); package.__path__ = [{path!r}]; "
-        f"sys.modules[{package!r}] = package; "
-        f"from {package}.viewer import main; main(sys.argv[1])"
-    )
-
-
 class VOLUMEOVERRIDE_OT_open_viewer(bpy.types.Operator):
     """Open a yt_idv window on this volume's data; the scene camera follows its view"""
 
@@ -94,6 +90,8 @@ class VOLUMEOVERRIDE_OT_open_viewer(bpy.types.Operator):
         if scene.camera is None:
             self.report({"ERROR"}, "the scene needs a camera to follow the viewer")
             return {"CANCELLED"}
+        if obj.name in _viewers:
+            _close(obj.name)
         work = tempfile.mkdtemp(prefix="yt_volumes_viewer_")
         render = scene.render
         height = VIEWER_HEIGHT
@@ -111,9 +109,11 @@ class VOLUMEOVERRIDE_OT_open_viewer(bpy.types.Operator):
         # The viewer imports this add-on and yt_idv from wherever Blender found them.
         env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
         env.pop("PYOPENGL_PLATFORM", None)  # pyglet opens a GLX window, not EGL
-        process = subprocess.Popen([sys.executable, "-c", _bootstrap(), config_path], env=env)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_main.py")
+        process = subprocess.Popen([sys.executable, script, config_path], env=env)
         _viewers[obj.name] = {
-            "process": process, "pose_path": config["pose_path"], "camera_path": config["camera_path"],
+            "process": process, "work_dir": work,
+            "pose_path": config["pose_path"], "camera_path": config["camera_path"],
             "mtime": None, "exchanged": np.array(scene.camera.matrix_world),  # the viewer starts here
         }
         if not bpy.app.timers.is_registered(_follow):
@@ -133,8 +133,7 @@ def register():
 def unregister():
     if bpy.app.timers.is_registered(_follow):
         bpy.app.timers.unregister(_follow)
-    for viewer in _viewers.values():
-        viewer["process"].terminate()
-    _viewers.clear()
+    for name in list(_viewers):
+        _close(name)
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

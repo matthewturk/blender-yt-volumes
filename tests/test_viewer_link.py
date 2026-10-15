@@ -174,7 +174,8 @@ def test_blender_applies_viewer_poses_and_sends_its_own_moves(scene, tmp_path, m
     _, camera = _volume_and_camera(scene)
     pose_path, camera_path = tmp_path / "pose.json", tmp_path / "camera.json"
     monkeypatch.setattr(viewer_link, "_viewers", {"Volume": {
-        "process": _RunningProcess(), "pose_path": str(pose_path), "camera_path": str(camera_path),
+        "process": _RunningProcess(), "work_dir": str(tmp_path),
+        "pose_path": str(pose_path), "camera_path": str(camera_path),
         "mtime": None, "exchanged": np.array(camera.matrix_world),
     }})
 
@@ -193,3 +194,39 @@ def test_blender_applies_viewer_poses_and_sends_its_own_moves(scene, tmp_path, m
     mtime = camera_path.stat().st_mtime_ns
     viewer_link._follow()
     assert camera_path.stat().st_mtime_ns == mtime  # unchanged, so not sent again
+
+
+class _ExitedProcess:
+    def poll(self):
+        return 0
+
+
+def test_a_closed_viewers_files_are_removed(scene, tmp_path, monkeypatch):
+    _volume_and_camera(scene)
+    work = tmp_path / "viewer"
+    work.mkdir()
+    (work / "pose.json").write_text("{}")
+    monkeypatch.setattr(viewer_link, "_viewers", {"Volume": {
+        "process": _ExitedProcess(), "work_dir": str(work), "pose_path": str(work / "pose.json"),
+        "camera_path": str(work / "camera.json"), "mtime": None, "exchanged": np.eye(4),
+    }})
+
+    assert viewer_link._follow() is None  # nothing left to follow: the timer stops
+    assert not work.exists() and not viewer_link._viewers
+
+
+def test_viewer_main_loads_the_viewer_without_bpy():
+    import os
+    import pathlib
+    import subprocess
+    import sys
+
+    script = pathlib.Path(viewer.__file__).with_name("viewer_main.py")
+    code = (
+        "import runpy, sys; viewer = runpy.run_path(sys.argv[1])['load_viewer'](); "
+        "print('bpy' in sys.modules, callable(viewer.main))"
+    )
+    # sys.path as this test sees it, which can import a (pip) bpy
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+    result = subprocess.run([sys.executable, "-c", code, str(script)], capture_output=True, text=True, env=env, check=True)
+    assert result.stdout.split() == ["False", "True"]
