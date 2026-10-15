@@ -1,7 +1,8 @@
 """Flagged volumes drawn over the 3D viewport, rendered with yt_idv from each
 viewport's own view.
 
-A POST_VIEW handler notices when a viewport's view or the scene changed and
+Volumes set to Show in Viewport (Volume Override panel) are drawn. A
+POST_VIEW handler notices when a viewport's view or the scene changed and
 reads its depth buffer; a timer re-renders the volumes once things settle,
 clipped against that depth as F12 clips against the Z pass; a POST_PIXEL
 handler draws the latest image. Renders share F12's render context and loaded
@@ -21,6 +22,7 @@ _regions = {}  # region pointer -> {"signature", "view", "texture", "shown", "er
 _last_change = [0.0]
 _generation = [0]  # bumped when a volume, its nodes or the scene changes
 _draw_handles = []
+_confirmed = set()  # (dataset_uuid, dataset_path) loads confirmed this session
 
 
 def camera_params(view_matrix, window_matrix, width, height, clip_start, clip_end):
@@ -72,9 +74,17 @@ def _resample(depth, width, height):
     return depth[np.ix_(rows, columns)]
 
 
+def shown_volumes(scene):
+    """The flagged yt_idv volumes set to Show in Viewport."""
+    return [
+        o for o in properties.flagged_objects(scene)
+        if o.volume_override.show_in_viewport and o.volume_override.renderer_mode in operators.YT_IDV_RENDERER_MODES
+    ]
+
+
 def render_view(scene, camera, depth=None):
-    """`(height, width, 4)` premultiplied RGBA of the flagged yt_idv volumes
-    seen by `camera`, bottom row first, composited far to near; `depth`
+    """`(height, width, 4)` premultiplied RGBA of the volumes set to Show in
+    Viewport, seen by `camera`, bottom row first, composited far to near; `depth`
     (planar, as `planar_depth`, any size) clips them, else nothing does.
     """
     width, height = camera.resolution_x, camera.resolution_y
@@ -92,7 +102,7 @@ def render_view(scene, camera, depth=None):
     )
     frame = operators.build_frame_params(scene)
     position = np.asarray(camera.matrix_world)[:3, 3]
-    volumes = [o for o in properties.flagged_objects(scene) if o.volume_override.renderer_mode in operators.YT_IDV_RENDERER_MODES]
+    volumes = shown_volumes(scene)
     volumes.sort(key=lambda o: -np.linalg.norm(np.asarray(o.matrix_world.translation) - position))
     image = np.zeros((height, width, 4), dtype=np.float32)
     for obj in volumes:
@@ -115,7 +125,7 @@ def _capture():
     """POST_VIEW: on a change, record the view and read the scene's depth."""
     context = bpy.context
     scene, region, rv3d = context.scene, context.region, context.region_data
-    if not scene.yt_volumes_preview or rv3d is None:
+    if rv3d is None or not shown_volumes(scene):
         return
     state = _regions.setdefault(region.as_pointer(), {"signature": None, "texture": None, "shown": None, "error": None})
     signature = _signature(region, rv3d, scene.yt_volumes_preview_scale)
@@ -146,7 +156,7 @@ def _capture():
 def _draw():
     """POST_PIXEL: draw the viewport's latest image."""
     context = bpy.context
-    if not context.scene.yt_volumes_preview or context.region_data is None:
+    if context.region_data is None or not shown_volumes(context.scene):
         return
     state = _regions.get(context.region.as_pointer())
     if state is None:
@@ -167,12 +177,29 @@ def _draw():
         blf.draw(0, f"yt_idv preview: {message}")
 
 
+def _load_key(obj, path):
+    return obj.volume_override.dataset_uuid, path
+
+
+def _hide_unconfirmed(scene):
+    """Turn off Show in Viewport for volumes whose data would load without the
+    user having confirmed it (e.g. a file saved with it on); True if any.
+    """
+    unconfirmed = [obj for obj, path in operators.pending_loads(shown_volumes(scene)) if _load_key(obj, path) not in _confirmed]
+    for obj in unconfirmed:
+        operators._log(f"{obj.name!r}: Show in Viewport turned off until its data load is confirmed")
+        obj.volume_override.show_in_viewport = False
+    return bool(unconfirmed)
+
+
 def _render_pending():
     """Timer: re-render viewports whose view changed, once changes settle."""
     waited = time.monotonic() - _last_change[0]
     if waited < SETTLE:
         return SETTLE - waited
     scene = bpy.context.scene
+    if _hide_unconfirmed(scene):
+        return None
     for state in _regions.values():
         if state["shown"] == state["signature"] or "view" not in state:
             continue
@@ -205,43 +232,50 @@ def _redraw_viewports():
 
 def _on_depsgraph_update(scene, depsgraph):
     # Anything may change the image now: a volume's look, its nodes, or geometry in front of it.
-    if scene.yt_volumes_preview and len(depsgraph.updates):
+    if len(depsgraph.updates) and shown_volumes(scene):
         _generation[0] += 1
         _redraw_viewports()
 
 
-def _toggle(self, context):
+class VOLUMEOVERRIDE_OT_toggle_viewport(bpy.types.Operator):
+    """Draw this volume over the 3D viewport with yt_idv, occluded by the scene"""
+
+    bl_idname = "volume_override.toggle_viewport"
+    bl_label = "Show in Viewport"
+
+    def invoke(self, context, event):
+        pending = [] if context.object.volume_override.show_in_viewport else operators.pending_loads([context.object])
+        if pending:
+            return context.window_manager.invoke_confirm(
+                self, event, title="Load data for the viewport?", message=operators.load_message(pending),
+                confirm_text="Load and Show", icon="WARNING",
+            )
+        return self.execute(context)
+
+    def execute(self, context):
+        obj = context.object
+        props = obj.volume_override
+        if not props.show_in_viewport:
+            _confirmed.update(_load_key(o, path) for o, path in operators.pending_loads([obj]))
+        props.show_in_viewport = not props.show_in_viewport
+        return {"FINISHED"}
+
+
+def restart():
+    """Drop every viewport's image, so the next draw renders afresh (a volume
+    was shown or hidden).
+    """
     _regions.clear()
+    _generation[0] += 1
     _redraw_viewports()
 
 
-class VOLUMEOVERRIDE_PT_viewport_preview(bpy.types.Panel):
-    """Draw flagged volumes in the 3D viewport with yt_idv"""
-
-    bl_label = "yt-volumes"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "yt-volumes"
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(context.scene, "yt_volumes_preview")
-        row = layout.row()
-        row.enabled = context.scene.yt_volumes_preview
-        row.prop(context.scene, "yt_volumes_preview_scale")
-
-
 def register():
-    bpy.types.Scene.yt_volumes_preview = bpy.props.BoolProperty(
-        name="Show Volumes",
-        description="Draw flagged volumes over the viewport with yt_idv, from each viewport's view (the first draw loads the data)",
-        default=False, update=_toggle,
-    )
+    bpy.utils.register_class(VOLUMEOVERRIDE_OT_toggle_viewport)
     bpy.types.Scene.yt_volumes_preview_scale = bpy.props.FloatProperty(
-        name="Resolution", description="Preview image size as a fraction of the viewport's",
+        name="Viewport Resolution", description="Size of the viewport's volume image, as a fraction of the viewport's",
         default=0.5, min=0.1, max=1.0, subtype="FACTOR",
     )
-    bpy.utils.register_class(VOLUMEOVERRIDE_PT_viewport_preview)
     _draw_handles[:] = [
         bpy.types.SpaceView3D.draw_handler_add(_capture, (), "WINDOW", "POST_VIEW"),
         bpy.types.SpaceView3D.draw_handler_add(_draw, (), "WINDOW", "POST_PIXEL"),
@@ -258,6 +292,5 @@ def unregister():
     if bpy.app.timers.is_registered(_render_pending):
         bpy.app.timers.unregister(_render_pending)
     _regions.clear()
-    bpy.utils.unregister_class(VOLUMEOVERRIDE_PT_viewport_preview)
     del bpy.types.Scene.yt_volumes_preview_scale
-    del bpy.types.Scene.yt_volumes_preview
+    bpy.utils.unregister_class(VOLUMEOVERRIDE_OT_toggle_viewport)

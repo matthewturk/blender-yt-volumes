@@ -654,6 +654,43 @@ def _loading_notice(context, text):
             workspace.status_text_set(None)
 
 
+def pending_loads(objects):
+    """`(obj, dataset_path)` for the yt_idv volumes among `objects` whose data
+    a render would load first (path None for the sample dataset).
+    """
+    from types import SimpleNamespace
+
+    pending = []
+    for obj in objects:
+        props = obj.volume_override
+        if not props.is_volume_override or props.renderer_mode not in YT_IDV_RENDERER_MODES:
+            continue
+        path = bpy.path.abspath(props.dataset_path) if props.dataset_path else None
+        request = SimpleNamespace(volume=SimpleNamespace(
+            custom_params={"yt_idv_backend": props.backend},
+            dataset=SimpleNamespace(dataset_id=properties.ensure_dataset_uuid(obj), dataset_path=path),
+        ))
+        if yt_idv_renderer.needs_load(request):
+            pending.append((obj, path))
+    return pending
+
+
+def load_message(pending):
+    """The confirmation text for loading `pending` (see `pending_loads`)."""
+
+    def describe(path):
+        if not path:
+            return f"the {yt_idv_renderer.SAMPLE_DATASET_NAME} sample"
+        name = os.path.basename(path.rstrip(os.sep))
+        if os.path.isfile(path) and path.endswith(".zip"):
+            size = os.path.getsize(path)
+            return f"{name} ({size / 1e9:.1f} GB)" if size >= 1e9 else f"{name} ({size / 1e6:.0f} MB)"
+        return name
+
+    loads = ", ".join(f"{describe(path)} for {obj.name!r}" for obj, path in pending)
+    return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
@@ -820,6 +857,15 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     _timer = None
     _frame_iter = None
     _session = None
+
+    def invoke(self, context, event):
+        pending = pending_loads(properties.flagged_objects(context.scene))
+        if pending:
+            return context.window_manager.invoke_confirm(
+                self, event, title="Load data to render?", message=load_message(pending),
+                confirm_text="Load and Render", icon="WARNING",
+            )
+        return self.execute(context)
 
     def execute(self, context):
         if not properties.flagged_objects(context.scene):

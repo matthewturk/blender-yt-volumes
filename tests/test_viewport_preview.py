@@ -48,6 +48,7 @@ def _flag(scene, name, location, mode="YT_IDV_MAX_INTENSITY"):
     obj.location = location
     obj.volume_override.is_volume_override = True
     obj.volume_override.renderer_mode = mode
+    obj.volume_override.show_in_viewport = True
     scene.collection.objects.link(obj)
     return obj
 
@@ -57,6 +58,7 @@ def test_volumes_are_composited_far_to_near(scene, monkeypatch):
     _flag(scene, "Near", (0.6, -1.0, 0.4))
     _flag(scene, "Far", (0.6, 5.0, 0.4))
     _flag(scene, "Debug", (0.0, 0.0, 0.0), mode="SAMPLE_CONSTANT")  # not a yt_idv mode: skipped
+    _flag(scene, "Hidden", (0.6, 0.0, 0.4)).volume_override.show_in_viewport = False  # not shown: skipped
     bpy.context.view_layer.update()
     colors = {"Near": (0.5, 0.0, 0.0, 0.5), "Far": (0.0, 0.0, 1.0, 1.0)}
     order = []
@@ -92,3 +94,51 @@ def test_window_depth_converts_to_planar_distance(scene):
     np.testing.assert_allclose(planar[0], 2.0 * distances[0], rtol=1e-4)
     np.testing.assert_allclose(planar[1, :2], 2.0 * distances[1, :2], rtol=1e-3)
     assert planar[1, 2] == pytest.approx(operators.DEPTH_NO_HIT_VALUE * 2.0)
+
+
+def _loaded(obj, source):
+    """Pretend the renderer has `obj`'s data loaded from `source`."""
+    import types
+
+    scene_ = types.SimpleNamespace(_yt_volumes_source=source)
+    yir._volume_scene_cache[obj.volume_override.dataset_uuid] = (scene_, None, obj.volume_override.backend)
+
+
+def test_pending_loads_lists_volumes_until_their_data_is_loaded(scene, tmp_path, monkeypatch):
+    monkeypatch.setattr(yir, "_volume_scene_cache", {})
+    data = tmp_path / "scene.zip"
+    data.write_bytes(b"x" * 2_500_000)
+    volume = _flag(scene, "Volume", (0, 0, 0))
+    volume.volume_override.dataset_path = str(data)
+    _flag(scene, "Debug", (0, 0, 0), mode="SAMPLE_CONSTANT")
+
+    pending = operators.pending_loads(properties.flagged_objects(scene))
+    assert [(obj.name, path) for obj, path in pending] == [("Volume", str(data))]
+    assert "scene.zip (2 MB) for 'Volume'" in operators.load_message(pending)
+
+    _loaded(volume, str(data))
+    assert operators.pending_loads([volume]) == []
+
+
+def test_the_sample_dataset_is_named_in_the_message(scene, monkeypatch):
+    monkeypatch.setattr(yir, "_volume_scene_cache", {})
+    volume = _flag(scene, "Volume", (0, 0, 0))
+    assert f"the {yir.SAMPLE_DATASET_NAME} sample for 'Volume'" in operators.load_message(operators.pending_loads([volume]))
+
+
+def test_only_confirmed_loads_happen_in_the_viewport(scene, monkeypatch):
+    monkeypatch.setattr(yir, "_volume_scene_cache", {})
+    monkeypatch.setattr(viewport_preview, "_confirmed", set())
+    monkeypatch.setattr(viewport_preview, "restart", lambda: None)
+    saved_on = _flag(scene, "Saved On", (0, 0, 0))  # e.g. a file saved with Show in Viewport on
+    assert viewport_preview._hide_unconfirmed(scene)
+    assert not saved_on.volume_override.show_in_viewport
+
+    bpy.utils.register_class(viewport_preview.VOLUMEOVERRIDE_OT_toggle_viewport)
+    try:
+        with bpy.context.temp_override(object=saved_on):
+            bpy.ops.volume_override.toggle_viewport()  # as after Load and Show
+    finally:
+        bpy.utils.unregister_class(viewport_preview.VOLUMEOVERRIDE_OT_toggle_viewport)
+    assert saved_on.volume_override.show_in_viewport
+    assert not viewport_preview._hide_unconfirmed(scene)  # confirmed: it stays on

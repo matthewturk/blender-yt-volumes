@@ -52,6 +52,12 @@ def _ensure_alpha_curve(self, context):
     self.alpha_curve = tree
 
 
+def _viewport_preview_toggled(self, context):
+    from . import viewport_preview
+
+    viewport_preview.restart()
+
+
 def _redraw_viewports(self, context):
     for area in context.screen.areas if context.screen else ():
         if area.type == "VIEW_3D":
@@ -77,6 +83,15 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=False,
     )
 
+    show_in_viewport: bpy.props.BoolProperty(
+        name="Show in Viewport",
+        description=(
+            "Draw this volume over the 3D viewport with yt_idv, from each viewport's view, occluded by "
+            "the scene; the first draw loads the data unless a render already did"
+        ),
+        default=False,
+        update=_viewport_preview_toggled,
+    )
     show_grids: bpy.props.BoolProperty(
         name="Show Grids in Viewport",
         description="Draw the dataset's grid boxes in the 3D viewport, once it has been rendered this session",
@@ -501,6 +516,15 @@ def _draw_look(layout, props):
         _draw_gn_transfer_function(box.box(), props.id_data)
 
 
+def _draw_viewport_preview(layout, obj, scene):
+    props = obj.volume_override
+    # An operator, not the property: turning it on may ask before loading the data.
+    icon = "CHECKBOX_HLT" if props.show_in_viewport else "CHECKBOX_DEHLT"
+    layout.operator("volume_override.toggle_viewport", text="Show in Viewport", icon=icon, emboss=False)
+    if props.show_in_viewport:
+        layout.prop(scene, "yt_volumes_preview_scale")
+
+
 def _draw_grids(layout, obj):
     props = obj.volume_override
     layout.prop(props, "show_grids")
@@ -560,6 +584,8 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.prop(props, "dataset_path")
         col.prop(props, "dataset_kind")
         col.prop(props, "yt_idv_volume_provider")
+        if props.renderer_mode.startswith("YT_IDV_"):
+            _draw_viewport_preview(col, obj, context.scene)
         _draw_grids(col, obj)
         col.prop(props, "zoom_target")
         row = col.row()
