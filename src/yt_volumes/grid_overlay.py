@@ -289,10 +289,14 @@ def _draw():
     region = context.region
     gpu.state.blend_set("ALPHA")
     gpu.state.depth_test_set("LESS_EQUAL")
+    # Hidden by geometry but not hiding anything: the viewport preview reads
+    # this depth buffer for occlusion, and grid lines aren't occluders.
+    gpu.state.depth_mask_set(False)
     for shader, batch in batches:
         shader.uniform_float("viewportSize", (region.width, region.height))
         shader.uniform_float("lineWidth", LINE_WIDTH)
         batch.draw(shader)
+    gpu.state.depth_mask_set(True)
     gpu.state.depth_test_set("NONE")
     gpu.state.blend_set("NONE")
 

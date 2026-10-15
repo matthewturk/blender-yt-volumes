@@ -124,6 +124,19 @@ yt_idv's `SceneGraph.save` (`.zip`); with no path, yt's IsolatedGalaxy
 sample. The field defaults to density; set it with an extra custom param
 `yt_idv_field` (e.g. `gas, temperature`).
 
+## Volumes in the viewport
+
+**Show Volumes** (3D viewport sidebar, yt-volumes tab) draws the flagged
+volumes over each 3D viewport, rendered with yt_idv from that viewport's own
+view. It re-renders a moment after the view, the frame or a volume (its look
+or transfer-function nodes) changes, at **Resolution** times the viewport's
+size. It shares F12's loaded data, so turning it on loads the data once
+(Blender is unresponsive meanwhile) and F12 after that doesn't load it again.
+Scene geometry occludes the volume as in F12: the viewport's depth buffer
+clips yt_idv's rays. Solid and Material Preview shading draw geometry into
+it; a Rendered viewport may not. Not yet: orthographic views and camera
+shift.
+
 ## Exploring in a yt_idv window
 
 **Open yt_idv Viewer** (Volume Override panel, yt_idv modes) opens yt_idv's
