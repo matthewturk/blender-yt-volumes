@@ -128,18 +128,22 @@ sample. The field defaults to density; set it with an extra custom param
 
 **Open yt_idv Viewer** (Volume Override panel, yt_idv modes) opens yt_idv's
 own window on the volume's data, with its current look, starting from the
-scene camera's view. Drag to orbit and scroll to move in; the scene camera
-follows, so F12 renders what the window shows. It works the other way too:
-move, animate or scrub the scene camera and the window follows it. Zooms and Deep Zoom shot space
-are registered as F12 registers them; as you scroll in, the window refits its
-model space around the camera, so it keeps float32 precision at any depth.
-Scrolling only moves the camera: the zoom stays the volume's or Deep Zoom's.
-The window runs as a separate process with Blender's Python, so it loads its
-own copy of the data (on the GPU too). Not yet: changing the look from the
-window (yt_idv's controls need imgui, which doesn't build for Python 3.13),
-the field of view, which stays the scene camera's, and following the zoom:
-the window keeps the zoom and Deep Zoom shot it opened with, so scrubbing a
-dive to another zoom or shot shows the camera at the wrong scale.
+scene camera's view. Drag to orbit and scroll to move in. Cameras pass between
+the two on request: **Enter** in the window moves the scene camera to its
+view, so F12 renders what the window shows, and **Send Camera to yt_idv**
+(Volume Override panel, while the window is open) moves the window to the
+scene camera and its current zoom, including Deep Zoom's. Syncing on request,
+not continuously, keeps an animated or constrained Blender camera from
+pulling the window back while you orbit.
+
+Zooms and Deep Zoom shot space are registered as F12 registers them; as you
+scroll in, the window refits its model space around the camera, so it keeps
+float32 precision at any depth. Scrolling only moves the camera: the zoom
+stays the volume's or Deep Zoom's. The window runs as a separate process with
+Blender's Python, so it loads its own copy of the data (on the GPU too). Not
+yet: changing the look from the window (yt_idv's controls need imgui, which
+doesn't build for Python 3.13) and the field of view, which stays the scene
+camera's.
 
 ## Cycles or EEVEE
 

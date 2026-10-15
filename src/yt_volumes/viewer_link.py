@@ -1,5 +1,6 @@
-"""Open a yt_idv window (`viewer.py`) on a flagged volume, its camera linked
-both ways with the scene camera.
+"""Open a yt_idv window (`viewer.py`) on a flagged volume, and pass cameras
+between it and the scene camera on request: Enter in the window, or Send
+Camera to yt_idv here.
 """
 
 import dataclasses
@@ -19,33 +20,32 @@ from . import operators, viewer
 FOLLOW_INTERVAL = 0.1  # seconds between pose-file checks
 VIEWER_HEIGHT = 720
 
-# object name -> {"process", "work_dir", "pose_path", "camera_path", "mtime", "exchanged"};
-# `exchanged` is the camera matrix last sent to or applied from the viewer.
-_viewers = {}
+_viewers = {}  # object name -> {"process", "work_dir", "pose_path", "camera_path", "mtime"}
+
+
+def _zoom(scene, obj):
+    """`obj`'s zoom settings as F12 sends them: its own, then Deep Zoom's."""
+    params = obj.volume_override.to_custom_params()
+    params.update(operators._deep_zoom_params(scene))
+    return {key: params.get(key) for key in viewer.ZOOM_KEYS}
 
 
 def _follow():
-    """Timer: apply each viewer's new pose to the scene camera, or send the
-    scene camera to the viewer when Blender moved it.
-    """
+    """Timer: apply a camera a viewer sent to the scene camera; forget closed viewers."""
     camera = bpy.context.scene.camera
     for name, link in list(_viewers.items()):
         if link["process"].poll() is not None:
             _close(name)
             continue
-        if camera is None:
-            continue
-        matrix, link["mtime"] = viewer.read_pose(link["pose_path"], link["mtime"])
-        if matrix is not None:
-            camera.matrix_world = Matrix(matrix.tolist())
-            link["exchanged"] = np.array(camera.matrix_world)
-            continue
-        current = np.array(camera.matrix_world)
-        # A camera that differs from the last pose exchanged moved in Blender (animation, scrubbing, a drag).
-        if not np.allclose(current, link["exchanged"], rtol=0, atol=1e-6):
-            viewer.write_pose(link["camera_path"], current)
-            link["exchanged"] = current
+        message, link["mtime"] = viewer.read_pose(link["pose_path"], link["mtime"])
+        if message is not None and camera is not None:
+            camera.matrix_world = Matrix(message["matrix_world"].tolist())
     return FOLLOW_INTERVAL if _viewers else None
+
+
+def send_camera(scene, obj):
+    """Send the scene camera and `obj`'s zoom to its viewer."""
+    viewer.write_pose(_viewers[obj.name]["camera_path"], np.array(scene.camera.matrix_world), _zoom(scene, obj))
 
 
 def _close(name):
@@ -113,16 +113,34 @@ class VOLUMEOVERRIDE_OT_open_viewer(bpy.types.Operator):
         process = subprocess.Popen([sys.executable, script, config_path], env=env)
         _viewers[obj.name] = {
             "process": process, "work_dir": work,
-            "pose_path": config["pose_path"], "camera_path": config["camera_path"],
-            "mtime": None, "exchanged": np.array(scene.camera.matrix_world),  # the viewer starts here
+            "pose_path": config["pose_path"], "camera_path": config["camera_path"], "mtime": None,
         }
         if not bpy.app.timers.is_registered(_follow):
             bpy.app.timers.register(_follow, first_interval=FOLLOW_INTERVAL)
-        self.report({"INFO"}, "Loading the dataset in the yt_idv window; the scene camera will follow it")
+        self.report({"INFO"}, "Loading the dataset in the yt_idv window; press Enter there to send its camera here")
         return {"FINISHED"}
 
 
-CLASSES = (VOLUMEOVERRIDE_OT_open_viewer,)
+class VOLUMEOVERRIDE_OT_send_camera_to_viewer(bpy.types.Operator):
+    """Move the yt_idv window's camera to the scene camera, with the current zoom"""
+
+    bl_idname = "volume_override.send_camera_to_viewer"
+    bl_label = "Send Camera to yt_idv"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.name in _viewers and context.scene.camera is not None
+
+    def execute(self, context):
+        send_camera(context.scene, context.object)
+        return {"FINISHED"}
+
+
+def viewer_open(obj):
+    return obj.name in _viewers
+
+
+CLASSES = (VOLUMEOVERRIDE_OT_open_viewer, VOLUMEOVERRIDE_OT_send_camera_to_viewer)
 
 
 def register():

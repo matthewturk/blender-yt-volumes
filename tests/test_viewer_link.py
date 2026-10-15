@@ -146,7 +146,7 @@ def test_a_deep_zoom_camera_is_refit_as_it_scrolls_in():
     np.testing.assert_allclose(-session.camera_world()[:3, 2], [0.0, 1.0, 0.0], atol=1e-6)
 
 
-def test_the_viewer_follows_blenders_camera_without_echoing_it(scene, tmp_path):
+def test_the_viewer_takes_blenders_camera_and_sends_its_own_on_request(scene, tmp_path):
     volume, camera = _volume_and_camera(scene)
     config = viewer_link.viewer_config(scene, volume, 640, 360, str(tmp_path / "pose.json"), str(tmp_path / "camera.json"))
     session = _session(config, types.SimpleNamespace(camera=_FakeCamera(), components=[]))
@@ -154,15 +154,13 @@ def test_the_viewer_follows_blenders_camera_without_echoing_it(scene, tmp_path):
     link = viewer.Link(session, config["pose_path"], config["camera_path"])
 
     moved = _look_at(np.array([4.0, 6.0, -1.0]), np.array(volume.matrix_world)[:3, 3])
-    viewer.write_pose(config["camera_path"], moved)  # Blender moved its camera
+    viewer.write_pose(config["camera_path"], moved)  # Send Camera to yt_idv
     link.receive()
     np.testing.assert_allclose(session.camera_world(), moved, atol=1e-5)
-    link.send()
-    assert not (tmp_path / "pose.json").exists()  # nothing sent back
+    assert not (tmp_path / "pose.json").exists()  # nothing goes back by itself
 
-    session.scene.camera.update(position=session.scene.camera.position * 1.1)  # a move in the window
-    link.send()
-    assert (tmp_path / "pose.json").exists()
+    link.send()  # Enter
+    np.testing.assert_allclose(json.loads((tmp_path / "pose.json").read_text())["matrix_world"], moved, atol=1e-5)
 
 
 class _RunningProcess:
@@ -170,30 +168,33 @@ class _RunningProcess:
         return None
 
 
-def test_blender_applies_viewer_poses_and_sends_its_own_moves(scene, tmp_path, monkeypatch):
-    _, camera = _volume_and_camera(scene)
-    pose_path, camera_path = tmp_path / "pose.json", tmp_path / "camera.json"
-    monkeypatch.setattr(viewer_link, "_viewers", {"Volume": {
+def _link(tmp_path):
+    return {
         "process": _RunningProcess(), "work_dir": str(tmp_path),
-        "pose_path": str(pose_path), "camera_path": str(camera_path),
-        "mtime": None, "exchanged": np.array(camera.matrix_world),
-    }})
+        "pose_path": str(tmp_path / "pose.json"), "camera_path": str(tmp_path / "camera.json"), "mtime": None,
+    }
+
+
+def test_blender_applies_a_sent_pose_and_sends_its_camera_only_on_request(scene, tmp_path, monkeypatch):
+    volume, camera = _volume_and_camera(scene)
+    monkeypatch.setattr(viewer_link, "_viewers", {"Volume": _link(tmp_path)})
 
     from_viewer = _look_at(np.array([3.0, -3.0, 2.0]), np.zeros(3))
-    viewer.write_pose(str(pose_path), from_viewer)
+    viewer.write_pose(str(tmp_path / "pose.json"), from_viewer)  # Enter in the window
     viewer_link._follow()
     np.testing.assert_allclose(np.array(camera.matrix_world), from_viewer, atol=1e-6)
-    viewer_link._follow()
-    assert not camera_path.exists()  # the viewer's own pose isn't sent back
 
-    camera.location = (0.0, -9.0, 0.0)  # moved in Blender
-    bpy.context.view_layer.update()  # as the UI does before timers run
+    camera.location = (0.0, -9.0, 0.0)  # moved (or animated) in Blender
+    bpy.context.view_layer.update()
     viewer_link._follow()
-    sent = json.loads(camera_path.read_text())["matrix_world"]
-    np.testing.assert_allclose(sent, np.array(camera.matrix_world), atol=1e-6)
-    mtime = camera_path.stat().st_mtime_ns
-    viewer_link._follow()
-    assert camera_path.stat().st_mtime_ns == mtime  # unchanged, so not sent again
+    assert not (tmp_path / "camera.json").exists()  # an animated camera can't pull the window back
+
+    volume.volume_override.zoom_target = "0.5, 0.5, 0.5"
+    volume.volume_override.zoom_level = 3.0
+    viewer_link.send_camera(scene, volume)  # Send Camera to yt_idv
+    sent = json.loads((tmp_path / "camera.json").read_text())
+    np.testing.assert_allclose(sent["matrix_world"], np.array(camera.matrix_world), atol=1e-6)
+    assert sent["zoom"] == {"yt_idv_shot_space": None, "yt_idv_zoom_target": "0.5, 0.5, 0.5", "yt_idv_zoom_level": 3.0}
 
 
 class _ExitedProcess:
@@ -208,7 +209,7 @@ def test_a_closed_viewers_files_are_removed(scene, tmp_path, monkeypatch):
     (work / "pose.json").write_text("{}")
     monkeypatch.setattr(viewer_link, "_viewers", {"Volume": {
         "process": _ExitedProcess(), "work_dir": str(work), "pose_path": str(work / "pose.json"),
-        "camera_path": str(work / "camera.json"), "mtime": None, "exchanged": np.eye(4),
+        "camera_path": str(work / "camera.json"), "mtime": None,
     }})
 
     assert viewer_link._follow() is None  # nothing left to follow: the timer stops
@@ -242,3 +243,37 @@ def test_a_geometry_nodes_transfer_function_goes_to_the_viewer(scene, tmp_path):
 
     assert config["renderer_mode"] in viewer.CONFIGURE
     assert np.asarray(json.loads(json.dumps(config))["custom_params"]["yt_idv_gn_tf_rgba"]).shape == (256, 4)
+
+
+def test_the_viewer_takes_blenders_zoom_and_keeps_its_camera(tmp_path):
+    start = _look_at(np.array([0.0, -2.5, 0.0]), np.zeros(3))
+    session = _deep_zoom_session(9.5, start)
+    session.scene.camera = _FakeCamera()
+    session.refit(start)
+    link = viewer.Link(session, str(tmp_path / "pose.json"), str(tmp_path / "camera.json"))
+    collection = session.scene.components[0].data
+    ratio_before, position_before = collection.applied_scale_ratio, session.scene.camera.position.copy()
+
+    zoom = {key: session.custom_params.get(key) for key in viewer.ZOOM_KEYS}
+    zoom["yt_idv_zoom_level"] = 10.5  # a decade deeper, same camera
+    viewer.write_pose(link.camera_path, start, zoom)
+    link.receive()
+
+    assert session.custom_params["yt_idv_zoom_level"] == 10.5
+    np.testing.assert_allclose(session.camera_world(), start, atol=1e-9)
+    # the zoom magnifies the data, not the camera's model position
+    assert collection.applied_scale_ratio == pytest.approx(ratio_before / 10, rel=1e-9)
+    np.testing.assert_allclose(session.scene.camera.position, position_before, rtol=1e-9)
+
+
+def test_enter_in_the_window_sends_the_camera():
+    import pyglet
+
+    sent, captions = [], []
+    link = types.SimpleNamespace(send=lambda: sent.append(True))
+    rc = types.SimpleNamespace(set_caption=captions.append)
+    on_key_press = viewer.send_on_key(link, rc, "yt_idv: Volume")
+
+    assert on_key_press(pyglet.window.key.A, 0) is False and not sent  # other keys pass through to yt_idv
+    assert on_key_press(pyglet.window.key.ENTER, 0) is True
+    assert sent == [True] and captions == ["yt_idv: Volume: camera sent to Blender"]
