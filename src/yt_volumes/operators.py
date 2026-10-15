@@ -22,7 +22,7 @@ import time
 
 import bpy
 
-from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, yt_idv_renderer
+from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -120,6 +120,7 @@ RENDERER_MODES = {
     "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
     "YT_IDV_THRESHOLD_FOG": yt_idv_renderer.yt_idv_threshold_fog_renderer,
     "YT_IDV_YT_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_yt_transfer_function_renderer,
+    "YT_IDV_GN_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_gn_transfer_function_renderer,
 }
 
 # Modes that create their own offscreen EGL context (see compositor_device in
@@ -292,6 +293,9 @@ def _yt_idv_custom_params(obj):
         params["yt_idv_alpha_curve"] = _evaluate_alpha_curve(props.alpha_curve)
     if props.color_source == "IMAGE" and props.color_image is not None:
         params["yt_idv_color_image_rgba"] = _sample_image_as_1d_rgba(props.color_image)
+    if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
+        rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+        params["yt_idv_gn_tf_rgba"] = rgba.tolist()
     return params
 
 

@@ -57,3 +57,44 @@ def test_flagged_objects_filters_by_flag(clean_scene):
 
     names = {obj.name for obj in properties.flagged_objects(scene)}
     assert names == {"Flagged"}
+
+
+def test_renderer_modes_keep_the_numbers_saved_files_use(clean_scene):
+    obj = bpy.data.objects.new("V", None)
+    numbers = {}
+    for mode in ("YT_IDV_MAX_INTENSITY", "YT_IDV_THRESHOLD_FOG", "SAMPLE_CONSTANT", "YT_IDV_GN_TRANSFER_FUNCTION"):
+        obj.volume_override.renderer_mode = mode
+        numbers[mode] = obj.volume_override["renderer_mode"]
+    assert numbers == {
+        "YT_IDV_MAX_INTENSITY": 0, "YT_IDV_THRESHOLD_FOG": 5, "SAMPLE_CONSTANT": 6, "YT_IDV_GN_TRANSFER_FUNCTION": 7,
+    }
+
+
+def test_add_volume_makes_a_flagged_cube_with_a_transfer_function(clean_scene):
+    from yt_volumes import transfer_function_nodes
+
+    assert bpy.ops.volume_override.add_volume() == {"FINISHED"}
+
+    obj = bpy.context.active_object
+    assert (obj.type, obj.empty_display_type) == ("EMPTY", "CUBE")
+    assert obj.volume_override.is_volume_override
+    assert obj.volume_override.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION"
+    assert all(node is not None for node in transfer_function_nodes.find_nodes(obj))
+
+
+def test_a_saved_transfer_function_evaluates_without_the_add_on(clean_scene, tmp_path):
+    from yt_volumes import transfer_function_nodes
+
+    bpy.ops.volume_override.add_volume()
+    path = str(tmp_path / "volume.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    properties.unregister()
+    try:
+        bpy.ops.wm.open_mainfile(filepath=path)
+        obj = bpy.data.objects["yt Volume"]
+        assert not hasattr(obj, "volume_override")
+        geometry = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).evaluated_geometry()
+        assert transfer_function_nodes.COLOR_ATTRIBUTE in geometry.mesh.attributes
+        assert transfer_function_nodes.ALPHA_ATTRIBUTE in geometry.mesh.attributes
+    finally:
+        properties.register()  # the fixture unregisters

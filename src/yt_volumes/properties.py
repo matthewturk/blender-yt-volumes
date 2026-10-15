@@ -9,6 +9,8 @@ to dispatch on; Blender doesn't interpret it.
 
 import bpy
 
+from . import transfer_function_nodes
+
 CUSTOM_PARAM_KEY_MAXLEN = 63
 
 
@@ -27,6 +29,7 @@ LOOK_SETTINGS = (
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
+    "gn_tf_value_min", "gn_tf_value_max",
     "alpha_source", "color_source",
 )
 ALPHA_CURVE_NODE_NAME = "AlphaCurve"
@@ -99,14 +102,16 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     renderer_mode: bpy.props.EnumProperty(
         name="Renderer",
         description="How yt_idv renders this volume",
+        # .blend files store the number, so keep each item's number when reordering.
         items=[
-            ("YT_IDV_MAX_INTENSITY", "Maximum Intensity Projection", "Keep the brightest sample along each ray"),
-            ("YT_IDV_MAX_INTENSITY_ALPHA", "Maximum Intensity, Value-Driven Alpha", "Maximum Intensity Projection with alpha driven by the value itself: transparent at the low end of what is visible, opaque at the high end"),
-            ("YT_IDV_TRANSFER_FUNCTION", "Isocontour Transfer Function", "Isocontour layers at fixed values in log space (yt.ColorTransferFunction.add_layers)"),
-            ("YT_IDV_PROJECTION", "Projective Integration", "Unweighted line-of-sight integration: adds samples along each ray"),
-            ("YT_IDV_YT_TRANSFER_FUNCTION", "yt Transfer Function", "A yt ColorTransferFunction you build, converted to yt_idv's so it renders as yt would"),
-            ("YT_IDV_THRESHOLD_FOG", "Threshold Fog", "A continuous transfer function: transparent below a threshold, alpha ramping up above it"),
-            ("SAMPLE_CONSTANT", "Debug: Depth x Constant", "No yt_idv: clipped path length through the box, for fast pipeline tests"),
+            ("YT_IDV_MAX_INTENSITY", "Maximum Intensity Projection", "Keep the brightest sample along each ray", "NONE", 0),
+            ("YT_IDV_MAX_INTENSITY_ALPHA", "Maximum Intensity, Value-Driven Alpha", "Maximum Intensity Projection with alpha driven by the value itself: transparent at the low end of what is visible, opaque at the high end", "NONE", 1),
+            ("YT_IDV_TRANSFER_FUNCTION", "Isocontour Transfer Function", "Isocontour layers at fixed values in log space (yt.ColorTransferFunction.add_layers)", "NONE", 2),
+            ("YT_IDV_PROJECTION", "Projective Integration", "Unweighted line-of-sight integration: adds samples along each ray", "NONE", 3),
+            ("YT_IDV_YT_TRANSFER_FUNCTION", "yt Transfer Function", "A yt ColorTransferFunction you build, converted to yt_idv's so it renders as yt would", "NONE", 4),
+            ("YT_IDV_THRESHOLD_FOG", "Threshold Fog", "A continuous transfer function: transparent below a threshold, alpha ramping up above it", "NONE", 5),
+            ("YT_IDV_GN_TRANSFER_FUNCTION", "Geometry Nodes Transfer Function", "A transfer function drawn with Geometry Nodes on this object: a Color Ramp and an opacity curve, or any nodes", "NONE", 7),
+            ("SAMPLE_CONSTANT", "Debug: Depth x Constant", "No yt_idv: clipped path length through the box, for fast pipeline tests", "NONE", 6),
         ],
         default="YT_IDV_MAX_INTENSITY",
         update=_forget_colormap_range,
@@ -232,6 +237,18 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         name="yt TF Ray Length",
         description="Divides the transfer function's emission and opacity; larger is fainter and more transparent",
         default=1.0, min=1e-9,
+    )
+
+    # Geometry Nodes transfer function (YT_IDV_GN_TRANSFER_FUNCTION)
+    gn_tf_value_min: bpy.props.FloatProperty(
+        name="TF Value Min",
+        description="Value at the transfer function's low end (yt_idv's [0, 1]-normalized value space); transparent below it",
+        default=1e-9, precision=10, min=0.0,
+    )
+    gn_tf_value_max: bpy.props.FloatProperty(
+        name="TF Value Max",
+        description="Value at the transfer function's high end; it spans Min to Max in log space",
+        default=1e-2, precision=6, min=0.0,
     )
 
     # Alpha curve / color image, shared by Threshold Fog and MIP Alpha
@@ -399,7 +416,22 @@ _MODE_SETTINGS = {
     "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power"),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor"),
+    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_value_min", "gn_tf_value_max"),
 }
+
+
+def _draw_gn_transfer_function(layout, obj):
+    ramp, curve = transfer_function_nodes.find_nodes(obj)
+    if ramp is None and curve is None:
+        layout.operator("volume_override.add_transfer_function", icon="ADD")
+        return
+    # The starter group's nodes, editable here; anything else in Geometry Nodes.
+    if ramp is not None:
+        layout.label(text="Color")
+        layout.template_color_ramp(ramp, "color_ramp", expand=True)
+    if curve is not None:
+        layout.label(text="Opacity")
+        layout.template_curve_mapping(curve, "mapping")
 
 
 def _draw_look(layout, props):
@@ -429,6 +461,8 @@ def _draw_look(layout, props):
         sub.prop(props, "color_source", expand=True)
         if props.color_source == "IMAGE":
             sub.prop(props, "color_image")
+    if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
+        _draw_gn_transfer_function(box.box(), props.id_data)
 
 
 def _draw_grids(layout, obj):
@@ -509,7 +543,36 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.operator("volume_override.reset_change_tracking", icon="FILE_REFRESH")
 
 
+class VOLUMEOVERRIDE_OT_add_volume(bpy.types.Operator):
+    """Add an Empty-Cube volume rendered by yt_idv, with a Geometry Nodes transfer function"""
+
+    bl_idname = "volume_override.add_volume"
+    bl_label = "yt Volume"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = bpy.data.objects.new("yt Volume", None)
+        obj.empty_display_type = "CUBE"
+        obj.location = context.scene.cursor.location
+        context.collection.objects.link(obj)
+        props = obj.volume_override
+        props.is_volume_override = True
+        props.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+        transfer_function_nodes.add_transfer_function_modifier(obj)
+        for selected in context.selected_objects:
+            selected.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        return {"FINISHED"}
+
+
+def _draw_add_menu(self, context):
+    self.layout.operator(VOLUMEOVERRIDE_OT_add_volume.bl_idname, icon="VOLUME_DATA")
+
+
 CLASSES = (
+    *transfer_function_nodes.CLASSES,
+    VOLUMEOVERRIDE_OT_add_volume,
     VolumeOverrideCustomParam,
     VolumeOverrideProperties,
     VOLUMEOVERRIDE_UL_custom_params,
@@ -523,9 +586,11 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Object.volume_override = bpy.props.PointerProperty(type=VolumeOverrideProperties)
+    bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
 
 
 def unregister():
+    bpy.types.VIEW3D_MT_add.remove(_draw_add_menu)
     del bpy.types.Object.volume_override
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

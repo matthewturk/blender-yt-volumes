@@ -89,8 +89,19 @@ intermediates go; default: system temp dir) and **Verbose Logging**.
 The look lives on each flagged object's **Volume Override** panel (Object
 Properties): the **Renderer** -- the yt_idv modes (Maximum Intensity,
 Value-Driven Alpha, Projection, Isocontour and yt Transfer Functions,
-Threshold Fog), or `SAMPLE_CONSTANT` (a non-physical debug renderer, see
-"Sample renderer") -- and that mode's settings. They're saved in the .blend.
+Threshold Fog, Geometry Nodes Transfer Function), or `SAMPLE_CONSTANT` (a
+non-physical debug renderer, see "Sample renderer") -- and that mode's
+settings. They're saved in the .blend.
+
+**Add > yt Volume** in the 3D viewport makes a flagged Empty-Cube with a
+Geometry Nodes transfer function already on it. Its modifier outputs points
+from the low to the high end of TF Value Min-Max (log space) carrying a
+`yt_tf_color` color and a `yt_tf_alpha` opacity; the starter group's Color
+Ramp and opacity curve are also drawn in the Volume Override panel, and any
+node setup (math, Scene Time, keyframes) that stores those attributes works.
+Other objects can read them through an Object Info node, e.g. to draw the
+transfer function as a plot. The group uses only built-in nodes, so the
+.blend opens and evaluates without the add-on.
 
 A flagged object (an Empty-Cube, or an Empty-Sphere for spherical data)
 renders its **Dataset Path**: anything `yt.load` reads, or a scene saved with

@@ -34,7 +34,7 @@ device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU (Cycles
 # Every [render] key is optional and overrides the volume's own settings in
 # the .blend; leave a key out to keep what the .blend has.
 [render]
-mode = "YT_IDV_MAX_INTENSITY_ALPHA"  # or YT_IDV_MAX_INTENSITY, _PROJECTION, _TRANSFER_FUNCTION, _THRESHOLD_FOG
+mode = "YT_IDV_MAX_INTENSITY_ALPHA"  # or YT_IDV_MAX_INTENSITY, _PROJECTION, _TRANSFER_FUNCTION, _THRESHOLD_FOG, _GN_TRANSFER_FUNCTION (needs the .blend's nodes)
 colormap = "arbre"
 # cmap_range = [4.5e-06, 0.78]  # fix the colormap range; default: auto-scale on the first frame
 # cmap_range = [[1, 1e-5, 0.4], [250, 1e-3, 0.8]]  # or a [frame, min, max] curve

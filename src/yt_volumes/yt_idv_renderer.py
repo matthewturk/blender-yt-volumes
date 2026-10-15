@@ -1235,6 +1235,31 @@ def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
     return _render_with_yt_idv(request, _configure_threshold_fog)
 
 
+def _configure_gn_transfer_function(component, custom_params):
+    """Geometry Nodes transfer function: `yt_idv_gn_tf_rgba` (rows of sRGB
+    color and alpha in [0, 1]) over `yt_idv_gn_tf_value_min`/`_max`.
+    """
+    rgba = custom_params.get("yt_idv_gn_tf_rgba")
+    if rgba is None:
+        raise ValueError("the Geometry Nodes transfer function wasn't sampled (no yt_idv_gn_tf_rgba)")
+    component.render_method = "transfer_function"
+    rgba = np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0)
+    data = (rgba * 255.0).round().astype("u1").reshape(len(rgba), 1, 4)
+    _apply_transfer_function_settings(
+        component,
+        custom_params.get("yt_idv_gn_tf_value_min", TF_FOG_VALUE_MIN),
+        custom_params.get("yt_idv_gn_tf_value_max", TF_FOG_VALUE_MAX),
+        data,
+    )
+
+
+def yt_idv_gn_transfer_function_renderer(request: RenderRequest) -> RenderResult:
+    """`RENDERER_MODES["YT_IDV_GN_TRANSFER_FUNCTION"]`: a transfer function
+    sampled from the volume object's Geometry Nodes.
+    """
+    return _render_with_yt_idv(request, _configure_gn_transfer_function)
+
+
 def _resolve_callable(spec):
     """`"module:function"` or `"path/to/file.py:function"` as a callable."""
     target, sep, name = spec.rpartition(":")

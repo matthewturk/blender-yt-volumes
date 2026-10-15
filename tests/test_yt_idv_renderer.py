@@ -1529,3 +1529,23 @@ def test_samples_per_cell_sets_cartesian_and_spherical_sample_factor():
     assert not hasattr(annotation, "sample_factor")
     yir._apply_samples_per_cell(cartesian, {})
     assert cartesian.sample_factor == 10.0  # unset leaves yt_idv's value alone
+
+
+def test_configure_gn_transfer_function_uploads_the_sampled_rgba_over_its_value_range():
+    component = _FakeComponent()
+    rgba = np.linspace(0.0, 1.0, 256)[:, None].repeat(4, axis=1).tolist()
+
+    yir._configure_gn_transfer_function(component, custom_params={
+        "yt_idv_gn_tf_rgba": rgba, "yt_idv_gn_tf_value_min": 1e-6, "yt_idv_gn_tf_value_max": 0.1,
+    })
+
+    assert component.render_method == "transfer_function"
+    assert (component.tf_min, component.tf_max, component.tf_log) == (1e-6, 0.1, True)
+    data = component.transfer_function.data
+    assert data.shape == (256, 1, 4) and data.dtype == np.uint8
+    assert data[0, 0].tolist() == [0, 0, 0, 0] and data[-1, 0].tolist() == [255, 255, 255, 255]
+
+
+def test_configure_gn_transfer_function_without_samples_raises():
+    with pytest.raises(ValueError, match="wasn't sampled"):
+        yir._configure_gn_transfer_function(_FakeComponent(), custom_params={})
