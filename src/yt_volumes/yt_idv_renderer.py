@@ -121,15 +121,20 @@ _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer func
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
-def load_sample(name, **kwargs):
-    """`yt.load_sample`, but downloading only if Blender allows online access."""
-    import bpy
+def load_sample(name, online_access=None, **kwargs):
+    """`yt.load_sample`, but downloading only if Blender allows online access
+    (`online_access`, default `bpy.app.online_access`).
+    """
     import yt
     from yt.sample_data.api import _get_test_data_dir_path
 
     # load_sample only goes online when <test_data_dir>/<top directory> is missing.
     on_disk = _get_test_data_dir_path().joinpath(name.split("/")[0]).exists()
-    if not on_disk and not bpy.app.online_access:
+    if not on_disk and online_access is None:
+        import bpy
+
+        online_access = bpy.app.online_access
+    if not on_disk and not online_access:
         raise RuntimeError(
             f"yt sample dataset {name!r} isn't downloaded and Blender's online "
             "access is off. Enable Preferences > System > Network > Allow Online "
@@ -139,7 +144,7 @@ def load_sample(name, **kwargs):
     return yt.load_sample(name, **kwargs)
 
 
-def _load_sample_source():
+def _load_sample_source(online_access=None):
     """Load the hardcoded sample dataset once per session."""
     cached = _dataset_cache.get(SAMPLE_DATASET_NAME)
     if cached is not None:
@@ -151,7 +156,7 @@ def _load_sample_source():
             "yt_idv rendering needs `yt` importable from Blender's own "
             "Python -- see docs/installing-in-blender.md."
         ) from exc
-    ds = load_sample(SAMPLE_DATASET_NAME)
+    ds = load_sample(SAMPLE_DATASET_NAME, online_access)
     data_source = ds.all_data()
     _dataset_cache[SAMPLE_DATASET_NAME] = (ds, data_source)
     return ds, data_source
@@ -243,7 +248,7 @@ def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
         for collection in _block_collections(previous):
             collection.release()
     if not path:
-        ds, data_source = _load_sample_source()
+        ds, data_source = _load_sample_source(ctx.custom_params.get("yt_idv_online_access"))
         scene = ctx.render_context.add_scene(data_source, SAMPLE_FIELD, no_ghost=True)
     elif path.endswith(".zip") or ctx.dataset.dataset_kind == "yt_idv_scene":
         from yt_idv.scene_graph import SceneGraph
@@ -890,14 +895,7 @@ def _registered_camera_kwargs(
 
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
-    corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
-    planes = _near_far_planes(position, corners=corners)
-    if model_frame is not None:
-        # Deep in a zoom the domain is ~1e9 model units away; yt_idv rebuilds
-        # rays from the inverse projection in float32, so bound far/near.
-        to_target = float(np.linalg.norm(position))
-        planes["far_plane"] = min(planes["far_plane"], FAR_REACH * to_target)
-        planes["near_plane"] = min(max(planes["near_plane"], NEAR_FRACTION * to_target), planes["far_plane"] / 2)
+    planes = camera_planes(position, model_bounds, model_frame)
 
     return {
         "position": position.astype("f4"),
@@ -907,6 +905,21 @@ def _registered_camera_kwargs(
         "aspect_ratio": aspect_ratio,
         **planes,
     }
+
+
+def camera_planes(position, model_bounds=None, model_frame=None):
+    """Near/far planes for a camera at model `position` around `model_bounds`
+    (default the unit cube); see `_registered_camera_kwargs`.
+    """
+    corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
+    planes = _near_far_planes(np.asarray(position, dtype=np.float64), corners=corners)
+    if model_frame is not None:
+        # Deep in a zoom the domain is ~1e9 model units away; yt_idv rebuilds
+        # rays from the inverse projection in float32, so bound far/near.
+        to_target = float(np.linalg.norm(position))
+        planes["far_plane"] = min(planes["far_plane"], FAR_REACH * to_target)
+        planes["near_plane"] = min(max(planes["near_plane"], NEAR_FRACTION * to_target), planes["far_plane"] / 2)
+    return planes
 
 
 _UNIT_CUBE_CORNERS = np.array(

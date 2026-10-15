@@ -488,7 +488,7 @@ def test_load_sample_downloads_when_online(fake_yt_samples, online_access):
 
 
 def test_default_volume_provider_builds_once_then_reuses_previous_scene(monkeypatch):
-    monkeypatch.setattr(yir, "_load_sample_source", lambda: ("fake-ds", "fake-data-source"))
+    monkeypatch.setattr(yir, "_load_sample_source", lambda online_access=None: ("fake-ds", "fake-data-source"))
     rc = _FakeRenderContext()
 
     no_path = types.SimpleNamespace(dataset_path=None, dataset_kind="")
@@ -534,7 +534,7 @@ def test_default_volume_provider_loads_the_dataset_path_and_reloads_when_it_chan
 def test_get_volume_scene_uses_default_provider_when_custom_params_unset(monkeypatch, _clean_yir_state):
     fake_rc = _FakeRenderContext()
     monkeypatch.setattr(yir, "_get_render_context", lambda backend, w, h: fake_rc)
-    monkeypatch.setattr(yir, "_load_sample_source", lambda: ("ds-obj", "data-source-obj"))
+    monkeypatch.setattr(yir, "_load_sample_source", lambda online_access=None: ("ds-obj", "data-source-obj"))
 
     rc, scene, ds, changed = yir._get_volume_scene(_request_with(custom_params={}), render_size=64)
 
