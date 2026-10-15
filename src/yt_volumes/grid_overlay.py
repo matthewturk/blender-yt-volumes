@@ -93,6 +93,21 @@ def loaded_boxes(obj):
     return dict(zip(("left", "right", "level"), boxes[:3]))
 
 
+def densest_point(obj):
+    """The field's peak in `obj`'s loaded data, as a zoom target of "max"
+    finds it: float64 (3,) unitary, or None before its first render.
+
+    Raises `ValueError` for spherical data, which can't be zoomed.
+    """
+    cached = yir._volume_scene_cache.get(obj.volume_override.dataset_uuid)
+    collections = [] if cached is None else yir._block_collections(cached[0])
+    if not collections:
+        return None
+    if yir._is_spherical(collections[0]):
+        raise ValueError(f"{obj.name!r} holds spherical data, which can't be zoomed")
+    return yir._zoom_target_unitary("max", collections[0])
+
+
 def loaded_levels(obj):
     """`(min, max)` level of the boxes loaded for `obj`, or None before its
     first render.

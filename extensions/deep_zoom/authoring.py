@@ -370,12 +370,29 @@ def _volumes(scene):
     return [o for o in scene.objects if getattr(getattr(o, "volume_override", None), "is_volume_override", False)]
 
 
-def _loaded_boxes(obj):
-    """The boxes the yt-volumes add-on has loaded for `obj`, or None."""
+def _yt_volumes_overlay(obj):
+    """yt-volumes' grid_overlay module, which knows what it loaded for `obj`."""
     # The add-on's package name depends on how it was installed; find it from its property group.
     package = type(obj.volume_override).__module__.rpartition(".")[0]
-    overlay = sys.modules.get(f"{package}.grid_overlay")
+    return sys.modules.get(f"{package}.grid_overlay")
+
+
+def _loaded_boxes(obj):
+    """The boxes the yt-volumes add-on has loaded for `obj`, or None."""
+    overlay = _yt_volumes_overlay(obj)
     return None if overlay is None else overlay.loaded_boxes(obj)
+
+
+def densest_point(scene):
+    """The field's peak in the first flagged volume yt-volumes has loaded data
+    for, float64 unitary, or None.
+    """
+    for obj in _volumes(scene):
+        overlay = _yt_volumes_overlay(obj)
+        point = None if overlay is None else overlay.densest_point(obj)
+        if point is not None:
+            return point
+    return None
 
 
 def _grids(scene):
@@ -588,6 +605,33 @@ class DEEPZOOM_OT_anchor_finest(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class DEEPZOOM_OT_anchor_densest(bpy.types.Operator):
+    """Anchor the selected shot (or a first shot) at the densest point of the volume's data"""
+
+    bl_idname = "deep_zoom.anchor_densest"
+    bl_label = "Anchor at Densest Point"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        settings = _settings(scene)
+        try:
+            point = densest_point(scene)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        if point is None:
+            self.report({"ERROR"}, "no volume data loaded yet: render the flagged volume once (F12)")
+            return {"CANCELLED"}
+        if settings.shots:
+            settings.shots[settings.active_shot_index].anchor = shot_space.format_anchor(point)
+        else:
+            add_shot(scene, point, scene.frame_current, "Shot 1")
+            settings.active_shot_index = 0
+        update_grid_map(scene)
+        return {"FINISHED"}
+
+
 class DEEPZOOM_OT_shot_at_finest(bpy.types.Operator):
     """Start a new shot here, anchored at the finest grid box, keeping the view"""
 
@@ -795,6 +839,8 @@ class DEEPZOOM_PT_panel(bpy.types.Panel):
             row = col.row(align=True)
             row.prop(settings.shots[settings.active_shot_index], "anchor")
             row.operator(DEEPZOOM_OT_anchor_finest.bl_idname, text="", icon="SNAP_VOLUME")
+        if _volumes(scene):
+            col.operator(DEEPZOOM_OT_anchor_densest.bl_idname)
         playing = active_shot(scene)
         if playing is not None:
             col.label(text=f"Playing: {playing.name}")
@@ -832,6 +878,7 @@ CLASSES = (
     DeepZoomSettings,
     DEEPZOOM_OT_add_shot,
     DEEPZOOM_OT_anchor_finest,
+    DEEPZOOM_OT_anchor_densest,
     DEEPZOOM_OT_shot_at_finest,
     DEEPZOOM_OT_remove_shot,
     DEEPZOOM_OT_jump_to_shot,

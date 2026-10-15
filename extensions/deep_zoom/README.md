@@ -39,7 +39,10 @@ It needs nothing beyond what Blender ships (numpy).
    when the volume last rendered are used.
 2. **Turn on Shot Space** in the *Deep Zoom* sidebar tab (N panel) and add a
    first shot. Its anchor defaults to the domain center; type in any unitary
-   `x, y, z` (or `max`, for the renderer to find the field's peak).
+   `x, y, z` (or `max`, for the renderer to find the field's peak). With
+   yt-volumes, once the flagged volume has rendered, *Anchor at Densest
+   Point* sets the selected shot (or a first one) to the field's peak in
+   float64, the same point `max` resolves to.
 3. **Dive.** The ▼ button next to *Zoom* keyframes a steady exponential dive:
    N decades over M frames, linear in the zoom. Animate the camera as usual,
    a few units from the origin.

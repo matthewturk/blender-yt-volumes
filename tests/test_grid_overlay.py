@@ -187,3 +187,36 @@ def test_box_cache_is_not_fooled_by_a_reused_id():
     scene, ds = _scene(), types.SimpleNamespace()
     grid_overlay._unitary_cache[(id(scene), id(ds))] = (object(), object(), "stale")
     assert grid_overlay._unitary_boxes(scene, ds) != "stale"
+
+
+class _Unitary(float):
+    def to(self, unit):
+        assert unit == "unitary"
+        return self
+
+
+def _loaded_volume(monkeypatch, collection):
+    obj = types.SimpleNamespace(name="Volume", volume_override=types.SimpleNamespace(dataset_uuid="uuid-1"))
+    monkeypatch.setitem(yir._volume_scene_cache, "uuid-1", (_block_scene(collection), None, None))
+    return obj
+
+
+def test_densest_point_is_the_field_peak_of_the_loaded_data(monkeypatch):
+    peak = (0.25, 0.5, 0.123456789012345)
+    collection = types.SimpleNamespace(
+        field="density",
+        data_source=types.SimpleNamespace(argmax=lambda field: [_Unitary(v) for v in peak]),
+    )
+    point = grid_overlay.densest_point(_loaded_volume(monkeypatch, collection))
+    assert point.dtype == np.float64 and point.tolist() == list(peak)
+
+
+def test_densest_point_is_none_before_the_first_render():
+    obj = types.SimpleNamespace(name="Volume", volume_override=types.SimpleNamespace(dataset_uuid="never-rendered"))
+    assert grid_overlay.densest_point(obj) is None
+
+
+def test_densest_point_refuses_spherical_data(monkeypatch):
+    collection = types.SimpleNamespace(_yt_geom_str="spherical")
+    with pytest.raises(ValueError, match="spherical"):
+        grid_overlay.densest_point(_loaded_volume(monkeypatch, collection))

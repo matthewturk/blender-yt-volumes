@@ -340,3 +340,28 @@ def test_empty_grid_structure_uses_the_boxes_yt_volumes_loaded(scene, volume, mo
     boxes = {"left": np.zeros((1, 3)), "right": np.ones((1, 3)), "level": np.zeros(1, dtype=np.int32)}
     monkeypatch.setattr(grid_overlay, "loaded_boxes", lambda obj: boxes if obj == volume else None)
     assert authoring._grids(scene) is boxes
+
+
+def test_anchor_at_densest_point_sets_the_selected_shot_from_the_volumes_data(scene, volume, monkeypatch):
+    from yt_volumes import grid_overlay
+
+    peak = ANCHOR + 1e-13
+    monkeypatch.setattr(grid_overlay, "densest_point", lambda obj: peak if obj == volume else None)
+    authoring.add_shot(scene, "0.5, 0.5, 0.5", 1, "Approach")
+    assert bpy.ops.deep_zoom.anchor_densest() == {"FINISHED"}
+    np.testing.assert_array_equal(shot_space.parse_anchor(scene.deep_zoom.shots[0].anchor), peak)
+
+
+def test_anchor_at_densest_point_makes_the_first_shot(scene, volume, monkeypatch):
+    from yt_volumes import grid_overlay
+
+    monkeypatch.setattr(grid_overlay, "densest_point", lambda obj: ANCHOR)
+    assert bpy.ops.deep_zoom.anchor_densest() == {"FINISHED"}
+    assert [s.name for s in scene.deep_zoom.shots] == ["Shot 1"]
+    np.testing.assert_array_equal(shot_space.parse_anchor(scene.deep_zoom.shots[0].anchor), ANCHOR)
+
+
+def test_anchor_at_densest_point_needs_loaded_data(scene, volume):
+    with pytest.raises(RuntimeError, match="render the flagged volume once"):
+        bpy.ops.deep_zoom.anchor_densest()
+    assert len(scene.deep_zoom.shots) == 0
