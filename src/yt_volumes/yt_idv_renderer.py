@@ -1142,7 +1142,15 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     set_external_depth_clip(scene, _pad_to_square(window_depth, render_size))
 
     _use_render_size(scene, render_size)
-    image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
+    from OpenGL import GL
+
+    # Deep in a zoom the far plane cuts large bricks, and the clipped parts of their
+    # faces never start rays (seams); clamping depth draws every face whole.
+    GL.glEnable(GL.GL_DEPTH_CLAMP)
+    try:
+        image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
+    finally:
+        GL.glDisable(GL.GL_DEPTH_CLAMP)
     image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
     image = _to_row_order(image, request.depth.row_order)
     image = _center_crop(image, height, width)
