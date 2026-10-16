@@ -228,12 +228,12 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     tf_camera_fade: bpy.props.BoolProperty(
         name="Fade Around Camera",
-        description="Hide layers sparser than the field at the camera and fade in denser ones over Fade Decades, so shells dissolve as the camera passes through them",
+        description="Fade out layers the camera has passed: those sparser than the field it has reached, over Fade Decades. With a zoom target, that field is the highest along the way in, so the fade only moves forward",
         default=False,
     )
     tf_camera_fade_decades: bpy.props.FloatProperty(
         name="Fade Decades",
-        description="Decades of the field above its value at the camera over which a layer fades in",
+        description="How many decades sparser than the field the camera has reached a layer is when it has faded out completely",
         default=1.0, min=0.01, soft_max=10.0,
     )
     tf_colormap: bpy.props.StringProperty(

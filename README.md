@@ -336,6 +336,10 @@ unit from the target in model space, and maps world to model coordinates
 relative to the target in float64. `examples/make_flythrough_blend.py` turns
 `flythrough_densest.py`'s camera paths into either kind of scene (`--fly`).
 
+`docs/zoom-movies.md` is a recipe for a zoom movie with yt Layers: fixed
+layers, fading the shells the camera passes, and calibrating Ray Length as the
+exposure.
+
 ### Authoring deep camera paths: the Deep Zoom extension
 
 `extensions/deep_zoom` is a self-contained Blender extension for designing
@@ -359,9 +363,11 @@ geometrically, as `alpha=np.geomspace(first, last, N)`) and Colormap build
 
 over log10 of the field in its own units; **Brightness Ramp** then scales the
 colors (not opacity) up to that many times brighter at the high end, so small
-dense cores glow. **Fade Around Camera** hides layers sparser than the field
-at the camera and fades denser ones in over **Fade Decades**, so a dive passes
-through shells instead of seeing them from inside. **Fit to Data** takes `(low, high)`
+dense cores glow. **Fade Around Camera** fades out layers the camera has
+passed, those sparser than the field it has reached, over **Fade Decades**, so a
+dive passes through shells instead of seeing them from inside. Layers ahead
+keep their full strength. With a zoom target, the field reached is the highest
+along the line in from the domain edge, so the fade never backs up. **Fit to Data** takes `(low, high)`
 from percentiles of the data by volume (default 50% to 100%; the panel shows
 the range it found); off, it uses Min and Max (log10). It shares Ray Length
 and Sample Factor with the mode below, and is converted the same way.

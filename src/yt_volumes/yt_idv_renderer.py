@@ -1128,6 +1128,9 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         "value": None if camera_unitary is None else _field_value_at(scene, camera_unitary),
         "ds": ds,
     }
+    spec = custom_params.get("yt_idv_zoom_target")
+    if custom_params.get("yt_idv_tf_camera_fade") and spec and camera_unitary is not None:
+        context["approach_value"] = _approach_value(scene, camera_unitary, spec)
     for component in scene.components:
         _apply_samples_per_cell(component, custom_params)
         configure_component(component, dict(custom_params, _context=context))
@@ -1251,7 +1254,8 @@ def _configure_transfer_function(component, custom_params):
     width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
     alpha = tuple(np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers))
     if get("yt_idv_tf_camera_fade"):
-        value = get("_context", {}).get("value")
+        context = get("_context", {})
+        value = context.get("approach_value", context.get("value"))
         fade = _camera_fade(_layer_values(bounds, n_layers), value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
         alpha = tuple(float(a) for a in np.asarray(alpha) * fade)
     colormap = get("yt_idv_tf_colormap", TF_COLORMAP)
@@ -1280,13 +1284,65 @@ def _layer_values(bounds, n_layers):
 
 
 def _camera_fade(layer_values, camera_value, decades):
-    """Per-layer opacity factors: 0 for layers sparser than `camera_value`
-    (the field at the camera), rising to 1 over `decades` above it; all 1
-    with the camera outside the data.
+    """Per-layer opacity factors: 1 for layers at least as dense as
+    `camera_value` (the field the camera has reached), falling to 0 for layers
+    `decades` sparser, which the camera has left behind; all 1 with the camera
+    outside the data.
     """
     if camera_value is None or camera_value <= 0:
         return np.ones(len(layer_values))
-    return np.clip((np.asarray(layer_values) - np.log10(camera_value)) / max(decades, 1e-6), 0.0, 1.0)
+    behind = np.log10(camera_value) - np.asarray(layer_values)
+    return np.clip(1.0 - behind / max(decades, 1e-6), 0.0, 1.0)
+
+
+_APPROACH_RADII = np.logspace(-10.0, 0.5, 2100)  # unitary distances from the zoom target
+_APPROACH_SMOOTHING = 0.3  # decades of distance the running maximum is averaged over
+
+
+def _smooth_monotonic(values):
+    """Two passes of a moving average over `_APPROACH_SMOOTHING` decades of
+    `_APPROACH_RADII`; a positive-weight average keeps a monotonic curve
+    monotonic. NaN (outside the data) stays NaN.
+    """
+    missing = np.isnan(values)
+    if missing.all():
+        return values
+    filled = np.where(missing, values[~missing][-1] if missing[-1] else np.nan, values)
+    filled = np.where(np.isnan(filled), values[~missing][0], filled)
+    step = np.log10(_APPROACH_RADII[1] / _APPROACH_RADII[0])
+    width = max(1, int(round(_APPROACH_SMOOTHING / step)))
+    kernel = np.ones(width) / width
+    for _ in range(2):
+        filled = np.convolve(np.pad(filled, (width // 2, width - 1 - width // 2), mode="edge"), kernel, mode="valid")
+    return np.where(missing, np.nan, filled)
+
+
+def _approach_value(scene, camera, spec):
+    """The field the camera has met on its way in to the zoom target, taken to
+    only grow: the highest value along the line from the domain edge to the
+    camera. Sampled once per target and direction, so it doesn't depend on
+    which frames are rendered.
+    """
+    collections = _block_collections(scene)
+    if not collections:
+        return None
+    target = _zoom_target_unitary(spec, collections[0])
+    offset = np.asarray(camera, dtype=np.float64) - target
+    distance = float(np.linalg.norm(offset))
+    if distance == 0.0:
+        return _field_value_at(scene, camera)
+    direction = offset / distance
+    key = (tuple(target), tuple(np.round(direction, 4)))
+    cache = collections[0].__dict__.setdefault("_yt_volumes_approach", {})
+    if key not in cache:
+        values = np.array([
+            _field_value_at(scene, target + r * direction) or np.nan for r in _APPROACH_RADII
+        ])
+        log_values = np.where(values > 0, np.log10(np.where(values > 0, values, 1.0)), np.nan)
+        # the running maximum coming in from outside, smoothed
+        cache[key] = _smooth_monotonic(np.fmax.accumulate(log_values[::-1])[::-1])
+    reached = np.interp(np.log10(distance), np.log10(_APPROACH_RADII), cache[key])
+    return None if np.isnan(reached) else float(10.0 ** reached)
 
 
 def _ramp_brightness(tf, ramp):

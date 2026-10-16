@@ -933,10 +933,39 @@ def test_layer_values_match_yt_add_layers():
     np.testing.assert_allclose(yir._layer_values((-28.0, -22.0), 4), peaks, atol=2e-3)
 
 
-def test_camera_fade_hides_layers_sparser_than_the_camera():
-    layers = np.array([-26.0, -25.0, -24.5, -24.0, -22.0])
+def test_camera_fade_dims_only_layers_the_camera_has_passed():
+    layers = np.array([-27.0, -26.0, -25.5, -25.0, -22.0])
     np.testing.assert_allclose(yir._camera_fade(layers, 1e-25, 1.0), [0.0, 0.0, 0.5, 1.0, 1.0])
     np.testing.assert_allclose(yir._camera_fade(layers, None, 1.0), 1.0)  # outside the data
+
+
+def test_approach_value_is_the_running_maximum_along_the_way_in(monkeypatch):
+    collection = types.SimpleNamespace(_yt_volumes_zoom_max=np.zeros(3))
+    monkeypatch.setattr(yir, "_block_collections", lambda scene: [collection])
+    # denser inward, with a dip at r = 0.1 and a spike at r = 1e-3
+    def field(scene, point):
+        r = np.linalg.norm(point)
+        bump = 100.0 if 9e-4 < r < 1.1e-3 else (0.01 if 0.05 < r < 0.2 else 1.0)
+        return bump / max(r, 1e-12)
+    monkeypatch.setattr(yir, "_field_value_at", field)
+
+    at = lambda r: yir._approach_value(None, np.array([r, 0.0, 0.0]), "max")
+    assert at(1.0) == pytest.approx(1.0, rel=0.05)
+    assert at(0.1) == pytest.approx(5.0, rel=0.05)  # held at its value going into the dip (r = 0.2)
+    assert at(5e-4) == pytest.approx(100.0 / 9e-4, rel=0.05)  # the spike holds until passed
+    assert at(1e-6) == pytest.approx(1e6, rel=0.05)
+
+
+def test_smoothed_running_maximum_stays_monotonic_without_jumps():
+    staircase = np.where(np.arange(yir._APPROACH_RADII.size) < 1000, 3.0, 1.0)  # a 2-decade jump
+    staircase[-50:] = np.nan  # outside the data
+
+    smooth = yir._smooth_monotonic(staircase)
+
+    inside = smooth[:-50]
+    assert np.all(np.diff(inside) <= 1e-12)  # still non-increasing outward
+    assert np.abs(np.diff(inside)).max() < 0.05  # the jump is spread over ~0.3 decades
+    assert np.isnan(smooth[-50:]).all()
 
 
 def test_percentile_ends_are_the_outermost_occupied_bins():
