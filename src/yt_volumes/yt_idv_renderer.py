@@ -1250,6 +1250,10 @@ def _configure_transfer_function(component, custom_params):
     n_layers = int(get("yt_idv_tf_n_layers", TF_N_LAYERS))
     width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
     alpha = tuple(np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers))
+    if get("yt_idv_tf_camera_fade"):
+        value = get("_context", {}).get("value")
+        fade = _camera_fade(_layer_values(bounds, n_layers), value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
+        alpha = tuple(float(a) for a in np.asarray(alpha) * fade)
     colormap = get("yt_idv_tf_colormap", TF_COLORMAP)
     ramp = float(get("yt_idv_tf_brightness_ramp", 1.0))
 
@@ -1264,6 +1268,25 @@ def _configure_transfer_function(component, custom_params):
     _apply_yt_transfer_function(
         component, custom_params, ("layers", bounds, n_layers, width, alpha, colormap, ramp), make,
     )
+
+
+def _layer_values(bounds, n_layers):
+    """log10 values of the layers `add_layers` puts over `bounds`: evenly
+    spaced, the ends a tenth of the range per layer inside it.
+    """
+    low, high = bounds
+    inset = (high - low) / (10.0 * n_layers)
+    return np.linspace(low + inset, high - inset, n_layers)
+
+
+def _camera_fade(layer_values, camera_value, decades):
+    """Per-layer opacity factors: 0 for layers sparser than `camera_value`
+    (the field at the camera), rising to 1 over `decades` above it; all 1
+    with the camera outside the data.
+    """
+    if camera_value is None or camera_value <= 0:
+        return np.ones(len(layer_values))
+    return np.clip((np.asarray(layer_values) - np.log10(camera_value)) / max(decades, 1e-6), 0.0, 1.0)
 
 
 def _ramp_brightness(tf, ramp):

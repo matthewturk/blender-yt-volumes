@@ -28,6 +28,7 @@ LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
     "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
+    "tf_camera_fade", "tf_camera_fade_decades",
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
@@ -224,6 +225,16 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         name="Brightness Ramp",
         description="Brightness of the highest layers relative to the lowest, rising geometrically with log10 of the field; opacity is unchanged. Above 1 makes dense, small cores glow",
         default=1.0, min=1e-3, soft_max=1000.0,
+    )
+    tf_camera_fade: bpy.props.BoolProperty(
+        name="Fade Around Camera",
+        description="Hide layers sparser than the field at the camera and fade in denser ones over Fade Decades, so shells dissolve as the camera passes through them",
+        default=False,
+    )
+    tf_camera_fade_decades: bpy.props.FloatProperty(
+        name="Fade Decades",
+        description="Decades of the field above its value at the camera over which a layer fades in",
+        default=1.0, min=0.01, soft_max=10.0,
     )
     tf_colormap: bpy.props.StringProperty(
         name="Layers Colormap",
@@ -502,6 +513,7 @@ _MODE_SETTINGS = {
     "YT_IDV_PROJECTION": ("colormap",),
     "YT_IDV_TRANSFER_FUNCTION": (
         "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
+        "tf_camera_fade", "tf_camera_fade_decades",
         "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
         "yt_tf_ray_length", "yt_tf_sample_factor",
     ),
@@ -553,6 +565,8 @@ def _draw_look(layout, props):
             row.enabled = not props.tf_fit_range
         elif name in ("tf_percentile_low", "tf_percentile_high"):
             row.enabled = props.tf_fit_range
+        elif name == "tf_camera_fade_decades":
+            row.enabled = props.tf_camera_fade
         row.prop(props, name)
     box.prop(props, "rescale_colormap")
     row = box.row(align=True)

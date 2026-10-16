@@ -923,6 +923,22 @@ def test_brightness_ramp_scales_colors_with_log_value_but_not_opacity():
     np.testing.assert_allclose(tf.funcs[3].y, 0.5)
 
 
+def test_layer_values_match_yt_add_layers():
+    import yt
+
+    tf = yt.ColorTransferFunction((-28.0, -22.0), nbins=6001, grey_opacity=True)
+    tf.add_layers(4, w=1e-4)
+    alpha = tf.funcs[3].y
+    peaks = tf.funcs[3].x[np.nonzero((alpha[1:-1] > alpha[:-2]) & (alpha[1:-1] >= alpha[2:]))[0] + 1]
+    np.testing.assert_allclose(yir._layer_values((-28.0, -22.0), 4), peaks, atol=2e-3)
+
+
+def test_camera_fade_hides_layers_sparser_than_the_camera():
+    layers = np.array([-26.0, -25.0, -24.5, -24.0, -22.0])
+    np.testing.assert_allclose(yir._camera_fade(layers, 1e-25, 1.0), [0.0, 0.0, 0.5, 1.0, 1.0])
+    np.testing.assert_allclose(yir._camera_fade(layers, None, 1.0), 1.0)  # outside the data
+
+
 def test_percentile_ends_are_the_outermost_occupied_bins():
     edges = np.linspace(-10.0, 0.0, 11)
     volume = np.array([0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1e-30, 0.0])  # the last occupied bin vanishes in the sum
