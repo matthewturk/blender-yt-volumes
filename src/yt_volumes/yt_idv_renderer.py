@@ -194,21 +194,22 @@ def _use_render_size(scene, size):
     a component frees its old one when `fb` is reassigned, the scene doesn't.
     """
     from OpenGL import GL
-    from yt_idv.opengl_support import Framebuffer
-
-    def sized():
-        fb = Framebuffer()
-        fb._yt_volumes_size = size
-        return fb
+    from yt_idv.opengl_support import Framebuffer, Texture2D
 
     GL.glViewport(0, 0, size, size)
     if getattr(scene.fb, "_yt_volumes_size", None) != size:
-        old, scene.fb = scene.fb, sized()
+        # 8-bit, like the context's own surface it replaces: projection adds up
+        # alpha per brick crossed, and only an 8-bit target clamps it to 1.
+        color = Texture2D(data=np.zeros((size, size, 4), "u1"), boundary_x="repeat", boundary_y="repeat")
+        old, scene.fb = scene.fb, Framebuffer(fb_tex=color)
+        scene.fb._yt_volumes_size = size
         if old is not None:
             old.release()
     for element in scene:
         if getattr(element.fb, "_yt_volumes_size", None) != size:
-            element.fb = sized()
+            fb = Framebuffer()
+            fb._yt_volumes_size = size
+            element.fb = fb
 
 
 @dataclasses.dataclass

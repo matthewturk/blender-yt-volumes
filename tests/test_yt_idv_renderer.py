@@ -1627,3 +1627,44 @@ def test_yt_transfer_function_reattaches_its_table_after_another_mode_swapped_it
 
     assert component.transfer_function is converted["transfer_function"]
     assert (component.tf_min, component.tf_max) == (0.1, 0.9)
+
+
+def test_render_sizes_use_an_8_bit_scene_framebuffer(monkeypatch):
+    # Projection adds up alpha per brick crossed; a float target kept it above 1 (blown-out, blocky renders).
+    from OpenGL import GL
+    import yt_idv.opengl_support as ogl
+
+    class FakeTexture:
+        def __init__(self, data, **kwargs):
+            self.data = data
+
+    class FakeFramebuffer:
+        released = False
+
+        def __init__(self, fb_tex=None):
+            self.fb_tex = fb_tex
+
+        def release(self):
+            self.released = True
+
+    class FakeScene:
+        def __init__(self):
+            self.fb = None
+            self.components = [types.SimpleNamespace(fb=None)]
+
+        def __iter__(self):
+            return iter(self.components)
+
+    monkeypatch.setattr(GL, "glViewport", lambda *args: None)
+    monkeypatch.setattr(ogl, "Framebuffer", FakeFramebuffer)
+    monkeypatch.setattr(ogl, "Texture2D", FakeTexture)
+    scene = FakeScene()
+
+    yir._use_render_size(scene, 64)
+    first = scene.fb
+    assert first.fb_tex.data.dtype == np.uint8 and first.fb_tex.data.shape == (64, 64, 4)
+    yir._use_render_size(scene, 64)
+    assert scene.fb is first  # same size: kept
+    yir._use_render_size(scene, 32)
+    assert first.released and scene.fb.fb_tex.data.shape == (32, 32, 4)
+    assert scene.components[0].fb._yt_volumes_size == 32
