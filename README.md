@@ -89,7 +89,7 @@ intermediates go; default: system temp dir) and **Verbose Logging**.
 
 The look lives on each flagged object's **Volume Override** panel (Object
 Properties): the **Renderer** -- the yt_idv modes (Maximum Intensity,
-Value-Driven Alpha, Projection, Isocontour and yt Transfer Functions,
+Value-Driven Alpha, Projection, yt Layers and yt Transfer Functions,
 Threshold Fog, Geometry Nodes Transfer Function), or `SAMPLE_CONSTANT` (a
 non-physical debug renderer, see "Sample renderer") -- and that mode's
 settings. They're saved in the .blend.
@@ -225,9 +225,8 @@ through the real two-pass pipeline, or call it directly on a hand-built
 https://github.com/yt-project/yt_idv) volume renderer -- real offscreen
 OpenGL, not a toy stand-in -- in five modes, all selectable via the
 volume's **Renderer** setting: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
-Projection), `YT_IDV_TRANSFER_FUNCTION` (a real transfer function --
-isocontour layers at fixed densities in log space,
-`yt.ColorTransferFunction.add_layers`, not a placeholder colormap),
+Projection), `YT_IDV_TRANSFER_FUNCTION` (yt Layers: a real transfer function
+built with `yt.ColorTransferFunction.add_layers`, see "yt transfer functions"),
 `YT_IDV_PROJECTION` (unweighted line-of-sight integration -- tends to look
 smoother/less speckled than MIP for the same data), `YT_IDV_THRESHOLD_FOG`
 (a continuous, hazy alpha ramp above a density threshold), and
@@ -347,13 +346,25 @@ two-shot dive into DeeplyNestedZoom authored by
 
 ### yt transfer functions
 
+**yt Layers** (`YT_IDV_TRANSFER_FUNCTION`) is `add_layers` without writing a
+file: the panel's Layers, Layer Width (`w`), Alpha First/Last (spaced
+geometrically, as `alpha=np.geomspace(first, last, N)`) and Colormap build
+
+    tf = yt.ColorTransferFunction((low, high), grey_opacity=True)
+    tf.add_layers(N, w=width, alpha=alpha, colormap=colormap)
+
+over log10 of the field in its own units. **Fit to Data** takes `(low, high)`
+from percentiles of the data by volume (default 50% to 100%; the panel shows
+the range it found); off, it uses Min and Max (log10). It shares Ray Length
+and Sample Factor with the mode below, and is converted the same way.
+
 `render.mode = "YT_IDV_YT_TRANSFER_FUNCTION"` renders with a transfer function
 you build in yt, a `ColorTransferFunction` with grey opacity over log10 of
 the field. It is converted with yt_idv's `tf_conversion` (yt-project/yt_idv#288),
 so it renders as yt would. Name the function in `[render.yt_idv]`:
 
     yt_tf = "my_tf.py:make"      # or "module:function"
-    yt_tf_ray_length = 0.03      # divides emission and opacity
+    yt_tf_ray_length = 0.03      # divides emission and opacity; default 0.02
     yt_tf_sample_factor = 8      # thin layers need finer ray steps
 
 `make()` with no arguments is converted once. `make(context)` is called every
@@ -1053,7 +1064,7 @@ same file match:
 - **Renderer** (`renderer_mode`): a `YT_IDV_*` mode, or `SAMPLE_CONSTANT`
   for pipeline tests without yt_idv.
 - The current mode's settings: backend (EGL/OSMesa), colormap (Maximum
-  Intensity, Projection), isocontour value range/layers/colormap, threshold
+  Intensity, Projection), yt Layers' range/layers/width/alpha/colormap, threshold
   fog range/colormap/alpha max/ramp power, MIP-alpha colormap/max/ramp
   power, and the yt transfer function with its ray length and sample factor.
   Defaults match `yt_idv_renderer.py`'s module constants.

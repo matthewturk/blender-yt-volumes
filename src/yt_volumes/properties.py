@@ -26,7 +26,8 @@ class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
 # [render.yt_idv] table may set any of them).
 LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
-    "tf_value_min", "tf_value_max", "tf_n_layers", "tf_colormap",
+    "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
+    "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap",
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
@@ -123,7 +124,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         items=[
             ("YT_IDV_MAX_INTENSITY", "Maximum Intensity Projection", "Keep the brightest sample along each ray", "NONE", 0),
             ("YT_IDV_MAX_INTENSITY_ALPHA", "Maximum Intensity, Value-Driven Alpha", "Maximum Intensity Projection with alpha driven by the value itself: transparent at the low end of what is visible, opaque at the high end", "NONE", 1),
-            ("YT_IDV_TRANSFER_FUNCTION", "Isocontour Transfer Function", "Isocontour layers at fixed values in log space (yt.ColorTransferFunction.add_layers)", "NONE", 2),
+            ("YT_IDV_TRANSFER_FUNCTION", "yt Layers", "Evenly spaced layers in log10 of the field, as yt's ColorTransferFunction.add_layers", "NONE", 2),
             ("YT_IDV_PROJECTION", "Projective Integration", "Unweighted line-of-sight integration: adds samples along each ray", "NONE", 3),
             ("YT_IDV_YT_TRANSFER_FUNCTION", "yt Transfer Function", "A yt ColorTransferFunction you build, converted to yt_idv's so it renders as yt would", "NONE", 4),
             ("YT_IDV_THRESHOLD_FOG", "Threshold Fog", "A continuous transfer function: transparent below a threshold, alpha ramping up above it", "NONE", 5),
@@ -173,26 +174,56 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=(0.0, 1.0),
     )
 
-    # Isocontour transfer function (YT_IDV_TRANSFER_FUNCTION)
-    tf_value_min: bpy.props.FloatProperty(
-        name="Isocontour Value Min",
-        description="Lower bound of the isocontour layers, in yt_idv's [0, 1]-normalized value space",
-        default=1e-6, precision=8, min=0.0,
+    # yt layers (YT_IDV_TRANSFER_FUNCTION): ColorTransferFunction.add_layers
+    tf_fit_range: bpy.props.BoolProperty(
+        name="Fit to Data",
+        description="Span the layers' transfer function, in log space, over the data between the Low and High percentiles by volume; off uses Min and Max (log10)",
+        default=True,
     )
-    tf_value_max: bpy.props.FloatProperty(
-        name="Isocontour Value Max",
-        description="Upper bound of the isocontour layers, same normalized space as Value Min",
-        default=2e-3, precision=6, min=0.0,
+    tf_percentile_low: bpy.props.FloatProperty(
+        name="Low %",
+        description="Percentile of the data, by volume, at the transfer function's low end",
+        default=50.0, min=0.0, max=100.0,
+    )
+    tf_percentile_high: bpy.props.FloatProperty(
+        name="High %",
+        description="Percentile of the data, by volume, at the transfer function's high end; 100 keeps the densest cell (the top layer sits a little inside it)",
+        default=100.0, min=0.0, max=100.0,
+    )
+    tf_log_min: bpy.props.FloatProperty(
+        name="Min (log10)",
+        description="log10 of the field, in its own units, at the transfer function's low end; used with Fit to Data off",
+        default=-28.0, precision=3,
+    )
+    tf_log_max: bpy.props.FloatProperty(
+        name="Max (log10)",
+        description="log10 of the field, in its own units, at the transfer function's high end; used with Fit to Data off",
+        default=-22.0, precision=3,
     )
     tf_n_layers: bpy.props.IntProperty(
-        name="Isocontour Layers",
-        description="Number of layers, evenly spaced in log between Value Min and Max",
-        default=5, min=1, max=64,
+        name="Layers",
+        description="Number of layers, evenly spaced in log10 just inside the transfer function's range",
+        default=8, min=1, max=64,
+    )
+    tf_layer_width: bpy.props.FloatProperty(
+        name="Layer Width",
+        description="Each layer's Gaussian width, add_layers' w, in (log10 of the field) squared; 0 uses yt's default, which is very thin",
+        default=0.003, min=0.0, precision=4, step=0.1,
+    )
+    tf_alpha_first: bpy.props.FloatProperty(
+        name="Alpha First",
+        description="Opacity of the lowest layer; the layers between are spaced geometrically up to Alpha Last. Lower keeps the outer layers from hiding the inner ones",
+        default=1.0, min=1e-4, max=1.0,
+    )
+    tf_alpha_last: bpy.props.FloatProperty(
+        name="Alpha Last",
+        description="Opacity of the highest layer",
+        default=1.0, min=1e-4, max=1.0,
     )
     tf_colormap: bpy.props.StringProperty(
-        name="Isocontour Colormap",
-        description="Any yt/matplotlib colormap name",
-        default="viridis",
+        name="Layers Colormap",
+        description="Any yt/matplotlib colormap name, spanning the transfer function's range",
+        default="arbre",
     )
 
     # Threshold fog (YT_IDV_THRESHOLD_FOG)
@@ -247,13 +278,13 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     yt_tf_sample_factor: bpy.props.FloatProperty(
         name="yt TF Sample Factor",
-        description="Ray samples per cell for this mode; thin layers need more. 0 uses Samples per Cell",
+        description="Ray samples per cell for the yt modes; thin layers need more. 0 uses Samples per Cell",
         default=0.0, min=0.0,
     )
     yt_tf_ray_length: bpy.props.FloatProperty(
         name="yt TF Ray Length",
-        description="Divides the transfer function's emission and opacity; larger is fainter and more transparent",
-        default=1.0, min=1e-9,
+        description="Divides the transfer function's emission and opacity, as a yt camera's ray length in unitary units; larger is fainter and more transparent",
+        default=0.02, min=1e-9,
     )
 
     # Geometry Nodes transfer function (YT_IDV_GN_TRANSFER_FUNCTION)
@@ -449,7 +480,11 @@ class VOLUMEOVERRIDE_OT_remove_custom_param(bpy.types.Operator):
 _MODE_SETTINGS = {
     "YT_IDV_MAX_INTENSITY": ("colormap",),
     "YT_IDV_PROJECTION": ("colormap",),
-    "YT_IDV_TRANSFER_FUNCTION": ("tf_value_min", "tf_value_max", "tf_n_layers", "tf_colormap"),
+    "YT_IDV_TRANSFER_FUNCTION": (
+        "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap",
+        "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
+        "yt_tf_ray_length", "yt_tf_sample_factor",
+    ),
     "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power"),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor"),
@@ -494,6 +529,10 @@ def _draw_look(layout, props):
             row.enabled = not props.gn_tf_fit_range
         elif name in ("gn_tf_percentile_low", "gn_tf_percentile_high"):
             row.enabled = props.gn_tf_fit_range
+        elif name in ("tf_log_min", "tf_log_max"):
+            row.enabled = not props.tf_fit_range
+        elif name in ("tf_percentile_low", "tf_percentile_high"):
+            row.enabled = props.tf_fit_range
         row.prop(props, name)
     box.prop(props, "rescale_colormap")
     row = box.row(align=True)
@@ -514,6 +553,12 @@ def _draw_look(layout, props):
             sub.prop(props, "color_image")
     if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
         _draw_gn_transfer_function(box.box(), props.id_data)
+    if props.renderer_mode == "YT_IDV_TRANSFER_FUNCTION":
+        from . import yt_idv_renderer
+
+        bounds = yt_idv_renderer.layer_bounds(props.dataset_uuid)
+        if bounds is not None:
+            box.label(text=f"log10 range: {bounds[0]:.2f} to {bounds[1]:.2f}")
 
 
 def _draw_viewport_preview(layout, obj, scene):

@@ -45,9 +45,9 @@ the dense clumps, reddish outer shells, yellow-white inner ones (arbre). With
 purpose; at zoom level 0 the denser shells left are only a few pixels across.
 Use `popii_static` for free flying inside the box, or Deep Zoom to magnify.
 TF Ray Length divides opacity: yt's TF is per unit of a yt camera's ray
-length (in unitary units). The dive uses 0.03; the default 1.0 makes every
-shell ~33x fainter, which can look like nothing at all. Halve it to double
-opacity.
+length (in unitary units). The dive uses 0.03; the default is 0.02. 1.0 makes
+every shell ~33x fainter than the dive's, which can look like nothing at all.
+Halve it to double opacity.
 """
 
 import numpy as np

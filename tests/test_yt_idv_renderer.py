@@ -899,31 +899,38 @@ def test_mip_alpha_constants_produce_a_transparent_to_opaque_ramp():
 # --- Preferences-panel override mechanism (custom_params -> _configure_*) --
 # The yt/matplotlib-dependent _get_*_data calls are replaced with spies.
 
-def test_configure_transfer_function_empty_custom_params_uses_module_constants(monkeypatch):
+def test_layer_bounds_fit_percentiles_of_the_data_or_use_fixed_log10_values(monkeypatch):
+    collection = types.SimpleNamespace(_textures_are_normalized=False)
+    edges = np.linspace(-30.0, -20.0, 11)  # uniform by volume
+    monkeypatch.setattr(yir, "_value_distribution", lambda c: (edges, np.ones(10), np.ones(10)))
+
+    assert yir._layer_bounds(collection, {}) == pytest.approx((-25.0, -20.0))  # 50% to 100%
+    assert yir._layer_bounds(collection, {"yt_idv_tf_percentile_low": 10.0, "yt_idv_tf_percentile_high": 90.0}) == pytest.approx((-29.0, -21.0))
+    fixed = {"yt_idv_tf_fit_range": False, "yt_idv_tf_log_min": -27.0, "yt_idv_tf_log_max": -23.0}
+    assert yir._layer_bounds(collection, fixed) == (-27.0, -23.0)
+
+
+def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     component = _FakeComponent()
-    calls = []
-    monkeypatch.setattr(yir, "_get_isocontour_transfer_function_data", lambda *a: (calls.append(a), np.zeros((256, 1, 4), dtype="u1"))[1])
+    component.data = types.SimpleNamespace()
+    applied = []
+    monkeypatch.setattr(yir, "_layer_bounds", lambda collection, params: (-28.0, -22.0))
+    monkeypatch.setattr(yir, "_apply_yt_transfer_function", lambda c, params, key, make: applied.append((key, make)))
 
-    yir._configure_transfer_function(component, custom_params={})
-
-    assert calls == [(yir.TF_VALUE_MIN, yir.TF_VALUE_MAX, yir.TF_N_LAYERS, yir.TF_COLORMAP)]
-    assert component.tf_min == yir.TF_VALUE_MIN
-    assert component.tf_max == yir.TF_VALUE_MAX
-
-
-def test_configure_transfer_function_custom_params_override_module_constants(monkeypatch):
-    component = _FakeComponent()
-    calls = []
-    monkeypatch.setattr(yir, "_get_isocontour_transfer_function_data", lambda *a: (calls.append(a), np.zeros((256, 1, 4), dtype="u1"))[1])
-
-    yir._configure_transfer_function(component, custom_params={
-        "yt_idv_tf_value_min": 5e-4, "yt_idv_tf_value_max": 0.5,
-        "yt_idv_tf_n_layers": 9, "yt_idv_tf_colormap": "inferno",
+    yir._configure_transfer_function(component, {
+        "yt_idv_tf_n_layers": 4, "yt_idv_tf_layer_width": 0.01, "yt_idv_tf_colormap": "viridis",
+        "yt_idv_tf_alpha_first": 0.1, "yt_idv_tf_alpha_last": 1.0,
     })
 
-    assert calls == [(5e-4, 0.5, 9, "inferno")]
-    assert component.tf_min == 5e-4
-    assert component.tf_max == 0.5
+    (key, make), = applied
+    assert key[1:4] == ((-28.0, -22.0), 4, 0.01) and key[-1] == "viridis"
+    tf = make()
+    assert tf.grey_opacity and tuple(tf.x_bounds) == (-28.0, -22.0)
+    # four peaks, alpha rising geometrically from 0.1 to 1
+    alpha = tf.funcs[3].y
+    peaks = np.nonzero((alpha[1:-1] > alpha[:-2]) & (alpha[1:-1] >= alpha[2:]))[0] + 1
+    assert len(peaks) == 4
+    np.testing.assert_allclose(alpha[peaks], np.geomspace(0.1, 1.0, 4), rtol=0.02)
 
 
 def test_configure_threshold_fog_custom_params_override_module_constants(monkeypatch):
@@ -1618,7 +1625,7 @@ def test_yt_transfer_function_reattaches_its_table_after_another_mode_swapped_it
     component = _FakeComponent()
     converted = {"transfer_function": object(), "tf_min": 0.1, "tf_max": 0.9, "tf_log": True}
     component.data = object()
-    key = (id(component.data), "tf.py:make", 1.0)
+    key = (id(component.data), "tf.py:make", 0.02)
     monkeypatch.setitem(yir._yt_tf_applied, id(component), (key, converted))
     monkeypatch.setattr(yir, "_resolve_callable", lambda spec: lambda: pytest.fail("rebuilt the table"))
     component.transfer_function = object()  # e.g. the GN mode's table

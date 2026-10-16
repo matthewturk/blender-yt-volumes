@@ -76,14 +76,12 @@ DEFAULT_BACKEND = "egl"  # OSMesa corrupts non-square renders
 # The context's own surface; every render draws into framebuffers of its own size.
 CONTEXT_SURFACE_SIZE = 64
 
-# --- Isocontour transfer function -----------------------------------------
-# Values are in yt_idv's [0, 1] min-max-normalized space, not physical units.
-# With `tf_log=True` the shader uses natural log, so `ColorTransferFunction`
-# bounds use `math.log`, not `log10`.
-TF_VALUE_MIN = 1e-6
-TF_VALUE_MAX = 2e-3
-TF_N_LAYERS = 5  # isocontour layers, evenly log-spaced between TF_VALUE_MIN/MAX
-TF_COLORMAP = "viridis"
+# --- yt layers transfer function ---------------------------------------------
+# Bounds are log10 of the field in its own units, as for a yt ColorTransferFunction.
+TF_LOG_MIN = -28.0
+TF_LOG_MAX = -22.0
+TF_N_LAYERS = 8
+TF_COLORMAP = "arbre"
 TF_NBINS = 256  # matches TransferFunctionTexture's expected (256, 1, 4) shape
 
 # --- Threshold fog transfer function -----------------------------------------
@@ -116,7 +114,6 @@ _render_context_cache = {}  # backend -> rc
 _volume_scene_cache = {}  # dataset_id -> (scene, ds, backend)
 _render_result_cache = {}  # (dataset_id, render_size) -> last RenderResult
 _depth_textures = {}  # (id(component), shape) -> its external depth-clip Texture2D
-_transfer_function_cache = {}  # (n_layers, colormap, value_min, value_max) -> (256, 1, 4) uint8 RGBA texture data
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
 _gn_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture for the GN mode
@@ -688,31 +685,6 @@ def set_external_depth_clip(scene, depth=None):
         )
 
 
-def _build_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap, nbins=TF_NBINS):
-    """`n_layers` isocontours evenly log-spaced between `value_min`/`value_max`
-    (normalized values), via `ColorTransferFunction.add_layers`.
-
-    Returns `(nbins, 1, 4)` uint8 RGBA for `TransferFunctionTexture.data`.
-    """
-    import yt
-
-    tf = yt.ColorTransferFunction((math.log(value_min), math.log(value_max)), nbins=nbins)
-    tf.add_layers(n_layers, colormap=colormap)
-    rgba = np.stack([channel.y for channel in tf.funcs], axis=-1)  # (nbins, 4), [0, 1]
-    return np.clip(rgba * 255.0, 0, 255).astype("u1").reshape(nbins, 1, 4)
-
-
-def _get_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap):
-    """Cached `_build_isocontour_transfer_function_data`."""
-    key = (n_layers, colormap, value_min, value_max)
-    cached = _transfer_function_cache.get(key)
-    if cached is not None:
-        return cached
-    data = _build_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap)
-    _transfer_function_cache[key] = data
-    return data
-
-
 def _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power):
     """`alpha_max * frac**ramp_power` for `frac` in [0, 1] over `nbins` bins.
 
@@ -1233,18 +1205,44 @@ def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
     component.transfer_function.data = tf_data
 
 
-def _configure_transfer_function(component, custom_params):
-    """Isocontour transfer function; `yt_idv_tf_*` custom_params override the
-    `TF_*` defaults.
+def _layer_bounds(collection, custom_params):
+    """`(low, high)` log10 bounds of the layers transfer function: the data
+    between `yt_idv_tf_percentile_low`/`_high` (by volume), or without
+    `yt_idv_tf_fit_range` `yt_idv_tf_log_min`/`_max`.
     """
-    component.render_method = "transfer_function"
-    value_min = custom_params.get("yt_idv_tf_value_min", TF_VALUE_MIN)
-    value_max = custom_params.get("yt_idv_tf_value_max", TF_VALUE_MAX)
-    n_layers = int(custom_params.get("yt_idv_tf_n_layers", TF_N_LAYERS))
-    colormap = custom_params.get("yt_idv_tf_colormap", TF_COLORMAP)
-    _apply_transfer_function_settings(
-        component, value_min, value_max,
-        _get_isocontour_transfer_function_data(value_min, value_max, n_layers, colormap),
+    distribution = _value_distribution(collection)
+    if distribution is not None and custom_params.get("yt_idv_tf_fit_range", True):
+        low, high = _percentile_range(
+            distribution,
+            custom_params.get("yt_idv_tf_percentile_low", 50.0),
+            custom_params.get("yt_idv_tf_percentile_high", 100.0),
+        )
+        return tuple(float(np.log10(_physical(collection, v))) for v in (low, high))
+    return (float(custom_params.get("yt_idv_tf_log_min", TF_LOG_MIN)),
+            float(custom_params.get("yt_idv_tf_log_max", TF_LOG_MAX)))
+
+
+def _configure_transfer_function(component, custom_params):
+    """yt's `ColorTransferFunction.add_layers` from the `yt_idv_tf_*`
+    custom_params, converted as for the yt Transfer Function mode.
+    """
+    get = custom_params.get
+    bounds = _layer_bounds(component.data, custom_params)
+    component.data._yt_volumes_layer_bounds = bounds
+    n_layers = int(get("yt_idv_tf_n_layers", TF_N_LAYERS))
+    width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
+    alpha = tuple(np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers))
+    colormap = get("yt_idv_tf_colormap", TF_COLORMAP)
+
+    def make():
+        import yt
+
+        tf = yt.ColorTransferFunction(bounds, nbins=8192, grey_opacity=True)
+        tf.add_layers(n_layers, w=width, alpha=alpha, colormap=colormap)
+        return tf
+
+    _apply_yt_transfer_function(
+        component, custom_params, ("layers", bounds, n_layers, width, alpha, colormap), make,
     )
 
 
@@ -1277,8 +1275,8 @@ def yt_idv_max_intensity_alpha_renderer(request: RenderRequest) -> RenderResult:
 
 
 def yt_idv_transfer_function_renderer(request: RenderRequest) -> RenderResult:
-    """`RENDERER_MODES["YT_IDV_TRANSFER_FUNCTION"]`: isocontour layers in log
-    space.
+    """`RENDERER_MODES["YT_IDV_TRANSFER_FUNCTION"]`: yt's `add_layers`,
+    evenly spaced in log10 of the field.
     """
     return _render_with_yt_idv(request, _configure_transfer_function)
 
@@ -1396,6 +1394,15 @@ def _physical(collection, value):
     if collection._textures_are_normalized:
         return value * (collection.max_val - collection.min_val) + collection.min_val
     return value
+
+
+def layer_bounds(dataset_id):
+    """The log10 `(low, high)` the yt Layers mode last used for a loaded
+    dataset, or None.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    collections = [] if cached is None else _block_collections(cached[0])
+    return getattr(collections[0], "_yt_volumes_layer_bounds", None) if collections else None
 
 
 def gn_tf_fit(dataset_id):
@@ -1518,18 +1525,29 @@ def _configure_yt_transfer_function(component, custom_params):
     `camera` (unitary float64 position), `value` (the field there, from the
     blocks; None outside them) and `ds`.
     """
-    from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
-
     spec = custom_params.get("yt_idv_yt_tf")
     if not spec:
         raise ValueError("the yt Transfer Function mode needs yt_idv_yt_tf (Preferences > yt Transfer Function)")
+    make = _resolve_callable(spec)
+    if inspect.signature(make).parameters:
+        _apply_yt_transfer_function(component, custom_params, None, lambda: make(custom_params.get("_context", {})))
+    else:
+        _apply_yt_transfer_function(component, custom_params, spec, make)
+
+
+def _apply_yt_transfer_function(component, custom_params, key, make):
+    """Convert and apply the yt ColorTransferFunction `make()` returns, with
+    `yt_idv_yt_tf_ray_length` and `_sample_factor`; reused while `key` (None:
+    never) and the blocks are unchanged.
+    """
+    from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
+
     sample_factor = float(custom_params.get("yt_idv_yt_tf_sample_factor", 0.0))
     if sample_factor > 0:
         component.sample_factor = sample_factor
-    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 1.0))
-    make = _resolve_callable(spec)
-    per_frame = bool(inspect.signature(make).parameters)
-    key = (id(component.data), spec, ray_length)
+    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02))
+    per_frame = key is None
+    key = (id(component.data), key, ray_length)
     applied = _yt_tf_applied.get(id(component))
     if applied is not None and applied[0] == key and not per_frame:
         if component.transfer_function is applied[1]["transfer_function"]:
@@ -1537,7 +1555,7 @@ def _configure_yt_transfer_function(component, custom_params):
         # another mode attached its own table in between
         apply_converted_transfer_function(component, applied[1])
         return
-    tf = make(custom_params.get("_context", {})) if per_frame else make()
+    tf = make()
     try:
         # thin yt layers need a finer table than the 1024-texel default
         converted = convert_yt_transfer_function(tf, component.data, ray_length, nbins=4096)
