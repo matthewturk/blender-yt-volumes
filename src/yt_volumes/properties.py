@@ -27,7 +27,7 @@ class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
 LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
-    "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap",
+    "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
@@ -219,6 +219,11 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         name="Alpha Last",
         description="Opacity of the highest layer",
         default=1.0, min=1e-4, max=1.0,
+    )
+    tf_brightness_ramp: bpy.props.FloatProperty(
+        name="Brightness Ramp",
+        description="Brightness of the highest layers relative to the lowest, rising geometrically with log10 of the field; opacity is unchanged. Above 1 makes dense, small cores glow",
+        default=1.0, min=1e-3, soft_max=1000.0,
     )
     tf_colormap: bpy.props.StringProperty(
         name="Layers Colormap",
@@ -496,7 +501,7 @@ _MODE_SETTINGS = {
     "YT_IDV_MAX_INTENSITY": ("colormap",),
     "YT_IDV_PROJECTION": ("colormap",),
     "YT_IDV_TRANSFER_FUNCTION": (
-        "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap",
+        "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
         "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
         "yt_tf_ray_length", "yt_tf_sample_factor",
     ),

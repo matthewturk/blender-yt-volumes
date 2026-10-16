@@ -1251,17 +1251,30 @@ def _configure_transfer_function(component, custom_params):
     width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
     alpha = tuple(np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers))
     colormap = get("yt_idv_tf_colormap", TF_COLORMAP)
+    ramp = float(get("yt_idv_tf_brightness_ramp", 1.0))
 
     def make():
         import yt
 
         tf = yt.ColorTransferFunction(bounds, nbins=8192, grey_opacity=True)
         tf.add_layers(n_layers, w=width, alpha=alpha, colormap=colormap)
+        _ramp_brightness(tf, ramp)
         return tf
 
     _apply_yt_transfer_function(
-        component, custom_params, ("layers", bounds, n_layers, width, alpha, colormap), make,
+        component, custom_params, ("layers", bounds, n_layers, width, alpha, colormap, ramp), make,
     )
+
+
+def _ramp_brightness(tf, ramp):
+    """Scale a yt ColorTransferFunction's colors (not its opacity) from 1x at
+    the low end of its range to `ramp`x at the high end, geometrically in log10.
+    """
+    if ramp == 1.0:
+        return
+    for channel in tf.funcs[:3]:
+        fraction = (channel.x - channel.x[0]) / (channel.x[-1] - channel.x[0])
+        channel.y *= ramp ** fraction
 
 
 def yt_idv_max_intensity_renderer(request: RenderRequest) -> RenderResult:

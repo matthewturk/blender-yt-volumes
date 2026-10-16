@@ -357,7 +357,9 @@ geometrically, as `alpha=np.geomspace(first, last, N)`) and Colormap build
     tf = yt.ColorTransferFunction((low, high), grey_opacity=True)
     tf.add_layers(N, w=width, alpha=alpha, colormap=colormap)
 
-over log10 of the field in its own units. **Fit to Data** takes `(low, high)`
+over log10 of the field in its own units; **Brightness Ramp** then scales the
+colors (not opacity) up to that many times brighter at the high end, so small
+dense cores glow. **Fit to Data** takes `(low, high)`
 from percentiles of the data by volume (default 50% to 100%; the panel shows
 the range it found); off, it uses Min and Max (log10). It shares Ray Length
 and Sample Factor with the mode below, and is converted the same way.

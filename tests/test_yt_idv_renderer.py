@@ -910,6 +910,19 @@ def test_layer_bounds_fit_percentiles_of_the_data_or_use_fixed_log10_values(monk
     assert yir._layer_bounds(collection, fixed) == (-27.0, -23.0)
 
 
+def test_brightness_ramp_scales_colors_with_log_value_but_not_opacity():
+    import yt
+
+    tf = yt.ColorTransferFunction((-20.0, -10.0), nbins=11, grey_opacity=True)
+    for channel in tf.funcs:
+        channel.y[:] = 0.5
+
+    yir._ramp_brightness(tf, 100.0)
+
+    np.testing.assert_allclose(tf.funcs[0].y, 0.5 * 100.0 ** np.linspace(0, 1, 11))
+    np.testing.assert_allclose(tf.funcs[3].y, 0.5)
+
+
 def test_percentile_ends_are_the_outermost_occupied_bins():
     edges = np.linspace(-10.0, 0.0, 11)
     volume = np.array([0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1e-30, 0.0])  # the last occupied bin vanishes in the sum
@@ -932,7 +945,7 @@ def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     })
 
     (key, make), = applied
-    assert key[1:4] == ((-28.0, -22.0), 4, 0.01) and key[-1] == "viridis"
+    assert key[1:4] == ((-28.0, -22.0), 4, 0.01) and key[-2:] == ("viridis", 1.0)
     tf = make()
     assert tf.grey_opacity and tuple(tf.x_bounds) == (-28.0, -22.0)
     # four peaks, alpha rising geometrically from 0.1 to 1
