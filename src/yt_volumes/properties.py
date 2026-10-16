@@ -278,8 +278,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     yt_tf_sample_factor: bpy.props.FloatProperty(
         name="yt TF Sample Factor",
-        description="Ray samples per cell for the yt modes; thin layers need more. 0 uses Samples per Cell",
-        default=0.0, min=0.0,
+        description="Ray samples per cell for the yt modes; thin layers need more than the other modes. 0 uses Samples per Cell",
+        default=16.0, min=0.0,
     )
     yt_tf_ray_length: bpy.props.FloatProperty(
         name="yt TF Ray Length",

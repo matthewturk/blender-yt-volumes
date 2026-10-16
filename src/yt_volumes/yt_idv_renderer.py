@@ -399,6 +399,14 @@ def _set_model_transform(collection, offset, ratio):
     collection.apply_scale((offset - current_offset) / current_ratio, ratio / current_ratio)
 
 
+def _zoom_factor(collection):
+    """How many times larger the zoom makes a length in model units than
+    unzoomed; 1 without a zoom.
+    """
+    base = getattr(collection, "_yt_volumes_base_transform", None)
+    return 1.0 if base is None else base[1] / collection.applied_scale_ratio
+
+
 def _base_transform(collection):
     """The `(offset, ratio)` that maps the collection into the volume cube,
     recorded the first time a zoom changes it.
@@ -1436,7 +1444,8 @@ def _configure_gn_transfer_function(component, custom_params):
     if rgba is None:
         raise ValueError("the Geometry Nodes transfer function wasn't sampled (no yt_idv_gn_tf_rgba)")
     component.render_method = "transfer_function"
-    scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0))
+    # Per box width of path at any zoom, as unzoomed.
+    scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0)) / _zoom_factor(component.data)
     data = (np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0) * scale).astype("f4").reshape(len(rgba), 1, 4)
     value_min, value_max = (
         _normalized(component.data, 10.0 ** float(custom_params.get(f"yt_idv_gn_tf_value_{end}", default)))
@@ -1553,10 +1562,11 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
-    sample_factor = float(custom_params.get("yt_idv_yt_tf_sample_factor", 0.0))
+    sample_factor = float(custom_params.get("yt_idv_yt_tf_sample_factor", 16.0))
     if sample_factor > 0:
-        component.sample_factor = sample_factor
-    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02))
+        _apply_samples_per_cell(component, {"yt_idv_samples_per_cell": sample_factor})
+    # A zoom stretches model units, along which yt_idv integrates; keep opacity per data length.
+    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _zoom_factor(component.data)
     per_frame = key is None
     key = (id(component.data), key, ray_length)
     applied = _yt_tf_applied.get(id(component))

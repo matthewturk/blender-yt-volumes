@@ -365,7 +365,7 @@ so it renders as yt would. Name the function in `[render.yt_idv]`:
 
     yt_tf = "my_tf.py:make"      # or "module:function"
     yt_tf_ray_length = 0.03      # divides emission and opacity; default 0.02
-    yt_tf_sample_factor = 8      # thin layers need finer ray steps
+    yt_tf_sample_factor = 8      # samples per cell; default 16, 0 uses Samples per Cell
 
 `make()` with no arguments is converted once. `make(context)` is called every
 frame with `frame`, `camera` (the camera's unitary float64 position) and `ds`,

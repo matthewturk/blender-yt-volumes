@@ -1645,6 +1645,21 @@ def test_yt_transfer_function_reattaches_its_table_after_another_mode_swapped_it
     assert (component.tf_min, component.tf_max) == (0.1, 0.9)
 
 
+def test_yt_transfer_function_opacity_is_per_data_length_at_any_zoom(monkeypatch):
+    import yt_idv.tf_conversion as tfc
+
+    component = _FakeComponent()
+    component.data = types.SimpleNamespace(_yt_volumes_base_transform=(np.zeros(3), 0.5), applied_scale_ratio=0.5e-4)
+    lengths = []
+    monkeypatch.setattr(tfc, "convert_yt_transfer_function", lambda tf, data, ray_length, nbins: lengths.append(ray_length) or {})
+    monkeypatch.setattr(tfc, "apply_converted_transfer_function", lambda c, converted: None)
+    monkeypatch.setitem(yir._yt_tf_applied, id(component), None)
+
+    yir._apply_yt_transfer_function(component, {"yt_idv_yt_tf_ray_length": 0.03}, None, lambda: None)
+
+    assert lengths == [pytest.approx(0.03 * 1e4)]  # model units are 1e4 times longer
+
+
 def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
     # Projection adds up alpha per brick crossed; a float target kept it above 1 (blown-out, blocky
     # renders), and an 8-bit one rounds away faint transfer-function emission (bands, lost gas).
