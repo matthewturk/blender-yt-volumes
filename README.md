@@ -51,6 +51,7 @@ both, starting from a stock Blender download. For deep camera paths, also zip
 | `examples/spherical_earth.toml`, `earth_spin.toml` + `make_earth_blend.py` | spherical data in an Empty-Sphere; time-varying |
 | `examples/make_flythrough_blend.py` | a `flythrough_densest.py` path (not included) as a Deep Zoom scene |
 | `examples/shells_tf.py` | yt transfer functions that follow the camera |
+| `examples/cosmology_halos.toml` + `make_cosmology_halos_blend.py` | an Enzo cosmology run in physical time with yt_astro_analysis halos as spheres (needs `yt_astro_analysis`) |
 
 ## Contents
 

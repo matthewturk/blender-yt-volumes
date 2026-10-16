@@ -1,0 +1,33 @@
+# Enzo cosmology (enzo_cosmology_plus, z = 50 -> 0) evolving in physical time,
+# with yt_astro_analysis halos as spheres.
+#
+#   python examples/make_cosmology_halos_blend.py examples/cosmology_halos.toml
+#   python -m yt_volumes.render_series examples/cosmology_halos.toml
+#
+# The first command finds the halos (cached next to the frames, in
+# halo_catalogs) and writes the .blend; the frame -> output plan is
+# render_series's own, so the halos change on the frames the gas does. Relative
+# paths resolve against this file's directory.
+
+[data]
+series = "/data/yt_sample_data/enzo_cosmology_plus/DD????/DD????"
+field = "density"
+no_ghost = false
+
+[time]
+by = "time"          # frames follow simulation time; the 47 outputs are ~0.3 Gyr apart
+units = "Gyr"
+pick = "nearest"
+# Explicit, so rendering part of the run (--frames) maps frames to outputs as the full run does:
+# DD0000 (0.049 Gyr) at frame 1 to DD0046 (13.816 Gyr) at frame 282.
+keys = [[1, 0.0491097], [282, 13.8163]]
+
+[blender]
+file = "cosmology_halos.blend"
+volume = "Volume"
+frames = "1-282"     # 6 frames per output: ~12 s at 24 fps for 13.8 Gyr
+output = "../renders/cosmology_halos/frame_"
+resolution = [1280, 720]
+samples = 16
+device = "OPTIX"
+
