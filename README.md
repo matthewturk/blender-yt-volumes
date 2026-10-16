@@ -327,6 +327,10 @@ it; `[zoom]` in a config sets it.
   1e-8. Cycles objects near the target stay registered with the data, though
   Blender clips them closer than 1e-6 world units to the camera.
 
+While zoomed, **Limit Zoom Depth** (on by default) ends rays at **Zoom Depth**
+(default 2) times the camera's distance to the target, a little past it, so the
+sparse gas filling the rest of the box behind it doesn't haze the view.
+
 Either way the worker rescales yt_idv each frame so the camera is about one
 unit from the target in model space, and maps world to model coordinates
 relative to the target in float64. `examples/make_flythrough_blend.py` turns

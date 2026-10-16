@@ -72,6 +72,7 @@ class Session:
         self.scene.camera.update(**yir._registered_camera_kwargs(
             camera, self.registered, self.ds, self.width, self.height,
             model_bounds=self.bounds, model_frame=self.frame,
+            zoom_depth=self.custom_params.get("yt_idv_zoom_depth"),
         ))
 
     def camera_world(self):
@@ -100,7 +101,7 @@ class Session:
             self.refit(self.camera_world())
             position = np.asarray(self.scene.camera.position, dtype=np.float64)
         # Fixed planes would clip everything once the camera moved in past the start's near plane.
-        planes = yir.camera_planes(position, self.bounds, self.frame)
+        planes = yir.camera_planes(position, self.bounds, self.frame, self.custom_params.get("yt_idv_zoom_depth"))
         camera = self.scene.camera
         if (camera.near_plane, camera.far_plane) != (planes["near_plane"], planes["far_plane"]):
             camera.update(**planes)

@@ -884,6 +884,7 @@ def _world_to_model(volume, model_frame=None):
 
 def _registered_camera_kwargs(
     camera, volume, ds, width, height, model_bounds=None, model_frame=None, frame_aspect=None,
+    zoom_depth=None,
 ):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
     object bounding-box registration into yt_idv model space, for a `width` x
@@ -935,7 +936,7 @@ def _registered_camera_kwargs(
 
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
-    planes = camera_planes(position, model_bounds, model_frame)
+    planes = camera_planes(position, model_bounds, model_frame, zoom_depth)
 
     return {
         "position": position.astype("f4"),
@@ -947,9 +948,10 @@ def _registered_camera_kwargs(
     }
 
 
-def camera_planes(position, model_bounds=None, model_frame=None):
+def camera_planes(position, model_bounds=None, model_frame=None, zoom_depth=None):
     """Near/far planes for a camera at model `position` around `model_bounds`
-    (default the unit cube); see `_registered_camera_kwargs`.
+    (default the unit cube); see `_registered_camera_kwargs`. When zoomed,
+    `zoom_depth` puts the far plane at that many times the distance to the target.
     """
     corners = _UNIT_CUBE_CORNERS if model_bounds is None else _box_corners(*model_bounds)
     planes = _near_far_planes(np.asarray(position, dtype=np.float64), corners=corners)
@@ -957,7 +959,7 @@ def camera_planes(position, model_bounds=None, model_frame=None):
         # Deep in a zoom the domain is ~1e9 model units away; yt_idv rebuilds
         # rays from the inverse projection in float32, so bound far/near.
         to_target = float(np.linalg.norm(position))
-        planes["far_plane"] = min(planes["far_plane"], FAR_REACH * to_target)
+        planes["far_plane"] = min(planes["far_plane"], (zoom_depth or FAR_REACH) * to_target)
         planes["near_plane"] = min(max(planes["near_plane"], NEAR_FRACTION * to_target), planes["far_plane"] / 2)
     return planes
 
@@ -1134,7 +1136,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         **_registered_camera_kwargs(
             request.camera, request.volume, ds, render_size, render_size,
             model_bounds=_scene_model_bounds(scene), model_frame=model_frame,
-            frame_aspect=width / height,
+            frame_aspect=width / height, zoom_depth=custom_params.get("yt_idv_zoom_depth"),
         )
     )
 

@@ -1512,6 +1512,15 @@ def test_planes_are_bounded_relative_to_the_target_in_a_zoom_frame():
     assert kwargs["near_plane"] == pytest.approx(yir.NEAR_FRACTION * to_target)
 
 
+def test_zoom_depth_ends_rays_past_the_target():
+    planes = yir.camera_planes(np.array([0.0, 0.0, 1.5]), (np.full(3, -1e9), np.full(3, 1e9)), (np.zeros(3), 1.0), zoom_depth=2.0)
+    assert planes["far_plane"] == pytest.approx(3.0)
+    unlimited = yir.camera_planes(np.array([0.0, 0.0, 1.5]), (np.full(3, -1e9), np.full(3, 1e9)), (np.zeros(3), 1.0))
+    assert unlimited["far_plane"] == pytest.approx(yir.FAR_REACH * 1.5)
+    unzoomed = yir.camera_planes(np.array([0.5, 0.5, 3.0]), zoom_depth=2.0)  # no zoom frame: no limit
+    assert unzoomed["far_plane"] > 3.0
+
+
 def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():
     # one block over [0, 1]^3 with 2 cells per side, so 3 vertex texels per side
     data = np.arange(27, dtype="f4").reshape(3, 3, 3) / 26.0

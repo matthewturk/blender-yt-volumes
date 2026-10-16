@@ -404,6 +404,19 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         ),
         default=0.0,
     )
+    zoom_limit_depth: bpy.props.BoolProperty(
+        name="Limit Zoom Depth",
+        description=(
+            "While zoomed, end rays at Zoom Depth times the camera's distance to the zoom "
+            "target, so the gas far behind it, mostly sparse, doesn't haze the view"
+        ),
+        default=True,
+    )
+    zoom_depth: bpy.props.FloatProperty(
+        name="Zoom Depth",
+        description="How far rays reach while zoomed, in multiples of the camera's distance to the zoom target; above 1 reaches past it",
+        default=2.0, min=1.0, soft_max=100.0,
+    )
     dataset_uuid: bpy.props.StringProperty(
         name="Dataset ID",
         description=(
@@ -434,6 +447,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         if self.zoom_target:
             params["yt_idv_zoom_target"] = self.zoom_target
             params["yt_idv_zoom_level"] = self.zoom_level
+        if self.zoom_limit_depth:  # also for a zoom from Deep Zoom
+            params["yt_idv_zoom_depth"] = self.zoom_depth
         for item in self.custom_params_extra:
             if item.key:
                 params[item.key] = item.value
@@ -636,6 +651,11 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         row = col.row()
         row.enabled = bool(props.zoom_target)
         row.prop(props, "zoom_level")
+        row = col.row(align=True)
+        row.prop(props, "zoom_limit_depth")
+        sub = row.row(align=True)
+        sub.enabled = props.zoom_limit_depth
+        sub.prop(props, "zoom_depth", text="")
         if props.dataset_uuid:
             row = col.row()
             row.enabled = False
