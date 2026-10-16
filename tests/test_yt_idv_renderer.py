@@ -910,6 +910,15 @@ def test_layer_bounds_fit_percentiles_of_the_data_or_use_fixed_log10_values(monk
     assert yir._layer_bounds(collection, fixed) == (-27.0, -23.0)
 
 
+def test_percentile_ends_are_the_outermost_occupied_bins():
+    edges = np.linspace(-10.0, 0.0, 11)
+    volume = np.array([0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1e-30, 0.0])  # the last occupied bin vanishes in the sum
+
+    low, high = yir._percentile_range((edges, volume, volume), 0.0, 100.0)
+
+    assert np.log10([low, high]) == pytest.approx([-9.0, -1.0])
+
+
 def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     component = _FakeComponent()
     component.data = types.SimpleNamespace()

@@ -1361,7 +1361,18 @@ def _percentile_range(distribution, low, high):
     """Normalized values at the `low` and `high` percentiles (by volume)."""
     edges, volume, _ = distribution
     cdf = _cumulative(edges, volume)
-    return 10.0 ** np.interp(low / 100.0, cdf, edges), 10.0 ** np.interp(high / 100.0, cdf, edges)
+    # The densest cells' volumes can vanish in the cumulative sum, so the ends
+    # come from the outermost occupied bins rather than where the sum reaches 0 or 1.
+    occupied = np.nonzero(volume)[0]
+
+    def at(percentile):
+        if percentile <= 0.0:
+            return edges[occupied[0]]
+        if percentile >= 100.0:
+            return edges[occupied[-1] + 1]
+        return np.interp(percentile / 100.0, cdf, edges)
+
+    return 10.0 ** at(low), 10.0 ** at(high)
 
 
 def _point_distribution(collection, distribution, value_min, value_max, n_points):
