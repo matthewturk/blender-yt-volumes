@@ -186,6 +186,30 @@ def _get_render_context(backend):
     return rc
 
 
+def _unorm16_texture(size):
+    """A `size` x `size` RGBA texture stored as GL_RGBA16: clamped to [0, 1] on
+    every write, as projection's summed color and alpha need, without 8-bit's
+    rounding of faint linear values (bands, lost gas).
+    """
+    import traitlets
+    from OpenGL import GL
+    from yt_idv.opengl_support import Texture2D
+
+    class Unorm16Texture(Texture2D):
+        @traitlets.observe("data")
+        def _set_data(self, change):
+            data = change["new"]
+            with self.bind():
+                GL.glTexStorage2D(GL.GL_TEXTURE_2D, 1, GL.GL_RGBA16, data.shape[0], data.shape[1])
+                for name, value in (
+                    (GL.GL_TEXTURE_WRAP_S, self.boundary_x), (GL.GL_TEXTURE_WRAP_T, self.boundary_y),
+                    (GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST), (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
+                ):
+                    GL.glTexParameteri(GL.GL_TEXTURE_2D, name, value)
+
+    return Unorm16Texture(data=np.zeros((size, size, 4), "u1"), boundary_x="repeat", boundary_y="repeat")
+
+
 def _use_render_size(scene, size):
     """Make the next `rc.run()` render `scene` as a `size` x `size` image: set
     the viewport and give the scene and its components framebuffers that size.
@@ -194,22 +218,21 @@ def _use_render_size(scene, size):
     a component frees its old one when `fb` is reassigned, the scene doesn't.
     """
     from OpenGL import GL
-    from yt_idv.opengl_support import Framebuffer, Texture2D
+    from yt_idv.opengl_support import Framebuffer
+
+    def sized(fb_tex=None):
+        fb = Framebuffer() if fb_tex is None else Framebuffer(fb_tex=fb_tex)
+        fb._yt_volumes_size = size
+        return fb
 
     GL.glViewport(0, 0, size, size)
     if getattr(scene.fb, "_yt_volumes_size", None) != size:
-        # 8-bit, like the context's own surface it replaces: projection adds up
-        # alpha per brick crossed, and only an 8-bit target clamps it to 1.
-        color = Texture2D(data=np.zeros((size, size, 4), "u1"), boundary_x="repeat", boundary_y="repeat")
-        old, scene.fb = scene.fb, Framebuffer(fb_tex=color)
-        scene.fb._yt_volumes_size = size
+        old, scene.fb = scene.fb, sized(_unorm16_texture(size))
         if old is not None:
             old.release()
     for element in scene:
         if getattr(element.fb, "_yt_volumes_size", None) != size:
-            fb = Framebuffer()
-            fb._yt_volumes_size = size
-            element.fb = fb
+            element.fb = sized()
 
 
 @dataclasses.dataclass
