@@ -52,7 +52,6 @@ MODE_KEY_BY_NAME = {
     "max_intensity_alpha": "YT_IDV_MAX_INTENSITY_ALPHA",
     "transfer_function": "YT_IDV_TRANSFER_FUNCTION",
     "projection": "YT_IDV_PROJECTION",
-    "threshold_fog": "YT_IDV_THRESHOLD_FOG",
 }
 
 DOMAIN_WIDTH_KPC = 1000.1  # IsolatedGalaxy domain_width.in_units("kpc")

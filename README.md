@@ -90,14 +90,14 @@ intermediates go; default: system temp dir) and **Verbose Logging**.
 The look lives on each flagged object's **Volume Override** panel (Object
 Properties): the **Renderer** -- the yt_idv modes (Maximum Intensity,
 Value-Driven Alpha, Projection, yt Layers and yt Transfer Functions,
-Threshold Fog, Geometry Nodes Transfer Function), or `SAMPLE_CONSTANT` (a
+Geometry Nodes Transfer Function), or `SAMPLE_CONSTANT` (a
 non-physical debug renderer, see "Sample renderer") -- and that mode's
 settings. They're saved in the .blend.
 
 **Add > yt Volume** in the 3D viewport makes a flagged Empty-Cube with a
 Geometry Nodes transfer function already on it. Its modifier passes its input
 geometry through and adds instances of nothing (so nothing draws or renders),
-in order from the low to the high end of TF Value Min-Max (log space),
+in order from the low to the high end of the transfer function's range (log space),
 carrying a `yt_tf_color` color and a `yt_tf_alpha` opacity, plus an
 edges-only outline of the Empty's cube or sphere: with a modifier's geometry,
 the viewport no longer draws the Empty, and loose edges don't render. Drivers
@@ -108,8 +108,8 @@ attributes works.
 
 The transfer function's x runs linearly in log10 of the value. With **Fit to
 Data** (on by default) it spans the data between the **Low %** and **High %**
-percentiles by volume (1 and 100); off, TF Min/Max set it in log10 of the
-field in its own units. The ramp's color is weighted by the opacity curve, as in
+percentiles by volume (10 and 100); off, Min/Max (log10) set it in the field's
+own units. yt Layers uses the same range settings. The ramp's color is weighted by the opacity curve, as in
 yt, so what is transparent doesn't glow. **Opacity Scale** multiplies emission
 and opacity per box width of path: thin or small structures need it large. After a render the
 starter group's points also carry the data's distribution, for viewer node
@@ -229,10 +229,9 @@ volume's **Renderer** setting: `YT_IDV_MAX_INTENSITY` (Maximum Intensity
 Projection), `YT_IDV_TRANSFER_FUNCTION` (yt Layers: a real transfer function
 built with `yt.ColorTransferFunction.add_layers`, see "yt transfer functions"),
 `YT_IDV_PROJECTION` (unweighted line-of-sight integration -- tends to look
-smoother/less speckled than MIP for the same data), `YT_IDV_THRESHOLD_FOG`
-(a continuous, hazy alpha ramp above a density threshold), and
+smoother/less speckled than MIP for the same data), and
 `YT_IDV_MAX_INTENSITY_ALPHA` (MIP with a value-driven, not presence-driven,
-alpha). By default all five render one hardcoded sample dataset
+alpha). By default all four render one hardcoded sample dataset
 (`yt.load_sample("IsolatedGalaxy")`) -- but `custom_params["yt_idv_
 volume_provider"]` (set via `obj.volume_override.yt_idv_volume_provider`,
 a `"module.submodule:function_name"` string) replaces that with a Python
@@ -356,7 +355,7 @@ two-shot dive into DeeplyNestedZoom authored by
 ### yt transfer functions
 
 **Auto Exposure** (on by default for yt Layers, yt Transfer Function, Geometry
-Nodes Transfer Function and Threshold Fog) scales the transfer function's brightness, not its opacity, until the
+Nodes Transfer Function) scales the transfer function's brightness, not its opacity, until the
 brightest 0.1% of pixels sit near white with at most 0.5% clipped: up to four
 re-renders, starting from the last render's exposure, so animations change
 smoothly. The panel shows the gain. Opacity stays with Ray Length or Opacity
@@ -377,9 +376,9 @@ passed, those sparser than the field it has reached, over **Fade Decades**, so a
 dive passes through shells instead of seeing them from inside. Layers ahead
 keep their full strength. With a zoom target, the field reached is the highest
 along the line in from the domain edge, so the fade never backs up. **Fit to Data** takes `(low, high)`
-from percentiles of the data by volume (default 50% to 100%; the panel shows
+from percentiles of the data by volume (default 10% to 100%; the panel shows
 the range it found); off, it uses Min and Max (log10). It shares Ray Length
-and Sample Factor with the mode below, and is converted the same way.
+with the mode below, and is converted the same way.
 
 `render.mode = "YT_IDV_YT_TRANSFER_FUNCTION"` renders with a transfer function
 you build in yt, a `ColorTransferFunction` with grey opacity over log10 of
@@ -388,7 +387,7 @@ so it renders as yt would. Name the function in `[render.yt_idv]`:
 
     yt_tf = "my_tf.py:make"      # or "module:function"
     yt_tf_ray_length = 0.03      # divides emission and opacity; default 0.02
-    yt_tf_sample_factor = 8      # samples per cell; default 16, 0 uses Samples per Cell
+    samples_per_cell = 8         # default 0: 16 for the yt modes, 4 for the others
 
 `make()` with no arguments is converted once. `make(context)` is called every
 frame with `frame`, `camera` (the camera's unitary float64 position) and `ds`,
@@ -522,8 +521,7 @@ in `scripts/yt_idv_exploration/` (retained, not just described):
 6. **`passthrough.frag.glsl` (used as `block_rendering.transfer_function`'s
    own second pass) unconditionally sets `color.a = 1.0`**, discarding the
    first pass's real per-pixel accumulated alpha entirely -- so any
-   `"transfer_function"`-render-method render (isocontours, or the new
-   threshold-fog mode below) composited its background as opaque black
+   `"transfer_function"`-render-method render composited its background as opaque black
    instead of transparent. Not fixed by editing that shared shader in place
    (several OTHER usages -- outlines, text, line plots -- genuinely want
    always-opaque); fixed by adding a new sibling shader,
@@ -557,26 +555,6 @@ usage"), now merged into `main`. Without it, `set_external_depth_clip` raises
 rather than silently doing nothing (no component would have
 `use_external_depth_clip`, and every render would still look plausible).
 
-### Threshold fog transfer function -- a fourth render mode, `YT_IDV_THRESHOLD_FOG`
-
-Requested directly: "a colormap that is fully transparent except at some
-threshold value... ramp up the alpha to make it look foggy." Needed no new
-shader/uniform work -- `transfer_function.frag.glsl` already discards any
-sample below `tf_min` entirely, so setting `tf_min` to the threshold gives
-"fully transparent below this" for free; the new part is
-`_build_threshold_fog_transfer_function_data` building a CONTINUOUS ramp
-(alpha rising from 0 at the threshold up to `TF_FOG_ALPHA_MAX`, front-loaded
-via `TF_FOG_RAMP_POWER < 1` so it looks genuinely hazy rather than a hard
-line) instead of the existing mode's discrete isocontour layers. Finding
-good `TF_FOG_VALUE_MIN`/`MAX`/`RAMP_POWER` values took real, scene-specific
-tuning (see `yt_idv_renderer.py`'s own comment on `TF_FOG_RAMP_POWER` for
-why) -- and building the real end-to-end demo with it caught bug 6 above
-(background compositing as opaque black) along the way. Result:
-`images/34_partial_occlusion_fog_sphere_and_volume.png` -- a soft, glowing
-haze with a brighter core, genuinely translucent (confirmed against a
-checkerboard, `images/35_*`) rather than MIP/projection's harder,
-near-uniform floor fill.
-
 ### Maximum Intensity with a value-driven alpha -- a fifth render mode, `YT_IDV_MAX_INTENSITY_ALPHA`
 
 Requested directly: zoom in on a real physical scale (10 kpc) and see MIP
@@ -586,7 +564,7 @@ decoupled from the selected value -- it can't do this regardless of the
 colormap. Fixed with a new sibling shader, `apply_colormap_alpha.frag.glsl`
 (keeps the colormap's own alpha channel instead of overriding it) and a new
 `max_intensity_alpha` combo, plus a real alpha-ramped colormap
-(`_build_mip_alpha_colormap_data`, reusing the fog mode's own ramp shape)
+(`_build_mip_alpha_colormap_data`)
 assigned directly to `component.colormap.data`.
 
 Getting the "zoom in on 10 kpc" framing right took real, empirical
@@ -790,11 +768,7 @@ matches its Cycles-only color exactly (`|final - beauty| == 0.0000`).
 Result: `images/32_partial_occlusion_sphere_and_volume.png` -- the sphere's
 real material is clearly visible on one side and clearly replaced by the
 volume's own color on the other. See `scripts/yt_idv_exploration/README.md`
-("Sphere partially occluded by the volume") for the full writeup. The same
-script also runs with `VOLUME_OVERRIDE_MODE=threshold_fog` (see above),
-producing `images/34_partial_occlusion_fog_sphere_and_volume.png` -- a
-softer, hazier version of the same partial occlusion, using the new fog
-transfer function instead of MIP's harder color swap.
+("Sphere partially occluded by the volume") for the full writeup.
 
 ### Also demonstrated (retained in `scripts/yt_idv_exploration/blender_scene/`)
 
@@ -1086,17 +1060,16 @@ same file match:
 
 - **Renderer** (`renderer_mode`): a `YT_IDV_*` mode, or `SAMPLE_CONSTANT`
   for pipeline tests without yt_idv.
-- The current mode's settings: backend (EGL/OSMesa), colormap (Maximum
-  Intensity, Projection), yt Layers' range/layers/width/alpha/colormap, threshold
-  fog range/colormap/alpha max/ramp power, MIP-alpha colormap/max/ramp
-  power, and the yt transfer function with its ray length and sample factor.
-  Defaults match `yt_idv_renderer.py`'s module constants.
+- The current mode's settings: backend (EGL/OSMesa), samples per cell, one
+  colormap (empty uses the mode's default), the transfer function range
+  shared by yt Layers and the Geometry Nodes mode, yt Layers' layers, width,
+  alpha and fade, MIP-alpha max/ramp power, and the yt transfer function with
+  its ray length.
 - **Rescale Colormap Every Render**, or else the **remembered colormap
-  range**: the first render with nothing remembered fits the range and
+  range** (Maximum Intensity, Value-Driven Alpha and Projection): the first render with nothing remembered fits the range and
   stores it on the volume; later renders reuse it. Changing the renderer
   mode, or unchecking it, makes the next render fit a new one.
-- **Alpha Source: Custom Curve** / **Color Source: Image** for Threshold Fog
-  and MIP Alpha. The curve lives on a `ShaderNodeFloatCurve` in a node group
+- **Alpha Source: Custom Curve** / **Color Source: Image** for MIP Alpha. The curve lives on a `ShaderNodeFloatCurve` in a node group
   the volume points to (a `CurveMapping` can't be a property itself); it is
   sampled into `yt_idv_alpha_curve` and replaces the ramp-power shape. The
   image is averaged across rows and resampled into `yt_idv_color_image_rgba`;

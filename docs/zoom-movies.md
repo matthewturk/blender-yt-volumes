@@ -43,10 +43,10 @@ shorter one makes the front shells opaque and the image darker.
 
 ## Checklist and costs
 
-- Render with yt_idv compositing front to back (the draw-order fix): without it,
-  thick zoomed views composite as seen from behind. Auto Exposure also needs
-  yt_idv's transfer-function pass to keep its premultiplied color (the
-  passthrough_alpha blend fix); otherwise brightness can't exceed alpha.
+- Use a yt_idv with its compositing fixes (blocks drawn nearest first and
+  integrated front to back; premultiplied color passed through as is). Without
+  them, thick zoomed views composite as seen from behind, and Auto Exposure
+  can't brighten thin gas.
 - `render_volume` sets the zoom target and level from `[zoom]` every frame, so
   give the level as a curve there (`level = [[1, 0.0], [250, 4.2]]`), not only as
   keyframes.

@@ -25,4 +25,4 @@ mode = "YT_IDV_YT_TRANSFER_FUNCTION"
 [render.yt_idv]
 yt_tf = "shells_tf.py:popii"
 yt_tf_ray_length = 0.03
-yt_tf_sample_factor = 8.0
+samples_per_cell = 8.0

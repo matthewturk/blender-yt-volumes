@@ -165,11 +165,11 @@ def test_build_volume_params_dataset_and_params_version_are_independent(clean_sc
     obj = bpy.context.active_object
     obj.volume_override.is_volume_override = True
     obj.volume_override.dataset_path = "/data/sim_001"
-    obj.volume_override.fog_alpha_max = 0.5
+    obj.volume_override.mip_alpha_max = 0.5
 
     operators.build_volume_params(obj)  # first call, establishes history
 
-    obj.volume_override.fog_alpha_max = 0.6  # cheap param changes, dataset doesn't
+    obj.volume_override.mip_alpha_max = 0.6  # cheap param changes, dataset doesn't
     second = operators.build_volume_params(obj)
     assert second.params_version.changed is True
     assert second.dataset.version.changed is False
@@ -240,15 +240,15 @@ def _flagged_cube():
 
 def test_build_volume_params_includes_the_objects_look_settings(clean_scene_with_props):
     obj = _flagged_cube()
-    obj.volume_override.renderer_mode = "YT_IDV_THRESHOLD_FOG"
-    obj.volume_override.fog_colormap = "inferno"
-    obj.volume_override.fog_ramp_power = 0.42
+    obj.volume_override.renderer_mode = "YT_IDV_MAX_INTENSITY_ALPHA"
+    obj.volume_override.colormap = "inferno"
+    obj.volume_override.mip_alpha_ramp_power = 0.42
 
     params = operators.build_volume_params(obj).custom_params
 
-    assert params["renderer_mode"] == "YT_IDV_THRESHOLD_FOG"
-    assert params["yt_idv_fog_colormap"] == "inferno"
-    assert params["yt_idv_fog_ramp_power"] == pytest.approx(0.42)
+    assert params["renderer_mode"] == "YT_IDV_MAX_INTENSITY_ALPHA"
+    assert params["yt_idv_colormap"] == "inferno"
+    assert params["yt_idv_mip_alpha_ramp_power"] == pytest.approx(0.42)
     # Untouched fields default to yt_idv_renderer's module constants.
     from yt_volumes import yt_idv_renderer as yir
     assert params["yt_idv_mip_alpha_max"] == pytest.approx(yir.MIP_ALPHA_MAX)
@@ -979,7 +979,7 @@ def test_every_yt_idv_renderer_mode_gets_the_cpu_compositor():
     # yt_idv's eglMakeCurrent then fails with EGL_BAD_ACCESS.
     yt_idv_modes = {m for m, fn in operators.RENDERER_MODES.items() if fn.__module__.endswith("yt_idv_renderer")}
     assert yt_idv_modes == operators.YT_IDV_RENDERER_MODES
-    assert {"YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_THRESHOLD_FOG"} <= yt_idv_modes
+    assert {"YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_GN_TRANSFER_FUNCTION"} <= yt_idv_modes
 
 
 def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_props):

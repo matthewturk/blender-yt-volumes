@@ -119,7 +119,6 @@ RENDERER_MODES = {
     "YT_IDV_MAX_INTENSITY_ALPHA": yt_idv_renderer.yt_idv_max_intensity_alpha_renderer,
     "YT_IDV_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_transfer_function_renderer,
     "YT_IDV_PROJECTION": yt_idv_renderer.yt_idv_projection_renderer,
-    "YT_IDV_THRESHOLD_FOG": yt_idv_renderer.yt_idv_threshold_fog_renderer,
     "YT_IDV_YT_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_yt_transfer_function_renderer,
     "YT_IDV_GN_TRANSFER_FUNCTION": yt_idv_renderer.yt_idv_gn_transfer_function_renderer,
 }

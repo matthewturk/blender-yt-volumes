@@ -221,7 +221,6 @@ def cmd_render_with_depth(args):
         "max_intensity_alpha": yt_idv_renderer.yt_idv_max_intensity_alpha_renderer,
         "transfer_function": yt_idv_renderer.yt_idv_transfer_function_renderer,
         "projection": yt_idv_renderer.yt_idv_projection_renderer,
-        "threshold_fog": yt_idv_renderer.yt_idv_threshold_fog_renderer,
     }
     with open(args.request) as f:
         req = json.load(f)
@@ -269,7 +268,7 @@ def main():
     p_render_depth = sub.add_parser("render_with_depth")
     p_render_depth.add_argument("--request", required=True)
     p_render_depth.add_argument("--depth-npy", required=True)
-    p_render_depth.add_argument("--mode", choices=["max_intensity", "max_intensity_alpha", "transfer_function", "projection", "threshold_fog"], default="projection")
+    p_render_depth.add_argument("--mode", choices=["max_intensity", "max_intensity_alpha", "transfer_function", "projection"], default="projection")
     p_render_depth.add_argument("--out-npy", required=True)
     p_render_depth.set_defaults(func=cmd_render_with_depth)
 

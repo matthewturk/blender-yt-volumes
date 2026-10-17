@@ -51,11 +51,11 @@ DEFAULTS = {
     # Unset keys keep the volume's own settings from the .blend.
     "render": {
         "mode": None,  # e.g. "YT_IDV_MAX_INTENSITY"
-        "colormap": None,  # sets the current mode's colormap
+        "colormap": None,  # the volume's Colormap
         "cmap_range": None,  # [min, max], or a curve [[frame, min, max], ...]
         "cmap_interpolation": "linear",  # between curve keys: "linear" or "log"
         "reset_cmap_each_frame": None,  # the volume's Rescale Colormap Every Render
-        "yt_idv": {},  # any properties.LOOK_SETTINGS name, e.g. fog_alpha_max
+        "yt_idv": {},  # any properties.LOOK_SETTINGS name, e.g. mip_alpha_max
     },
     "zoom": {
         "target": None,  # "max", or [x, y, z] in unitary coordinates
@@ -73,13 +73,6 @@ DEFAULTS = {
 SUBSET_KINDS = ("region", "sphere", "box")
 ENGINES = ("CYCLES", "BLENDER_EEVEE")
 DEVICES = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI", "CPU")
-COLORMAP_PROPERTY = {
-    "YT_IDV_MAX_INTENSITY": "colormap",
-    "YT_IDV_PROJECTION": "colormap",
-    "YT_IDV_TRANSFER_FUNCTION": "tf_colormap",
-    "YT_IDV_THRESHOLD_FOG": "fog_colormap",
-    "YT_IDV_MAX_INTENSITY_ALPHA": "mip_alpha_colormap",
-}
 PATH_KEYS = (("data", "path"), ("data", "scene"), ("blender", "file"), ("blender", "output"), ("blender", "work_dir"))
 
 _active_config = None  # read by volume_provider during a render
@@ -543,9 +536,8 @@ def apply_render_settings(props, render):
 
     if render.get("mode") is not None:
         props.renderer_mode = render["mode"]
-    colormap_property = COLORMAP_PROPERTY.get(props.renderer_mode)
-    if render.get("colormap") and colormap_property:
-        setattr(props, colormap_property, render["colormap"])
+    if render.get("colormap"):
+        props.colormap = render["colormap"]
     if render.get("reset_cmap_each_frame") is not None:
         props.rescale_colormap = render["reset_cmap_each_frame"]
     for key, value in render.get("yt_idv", {}).items():

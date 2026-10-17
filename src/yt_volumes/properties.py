@@ -27,13 +27,10 @@ class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
 LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
-    "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
+    "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_brightness_ramp",
     "tf_camera_fade", "tf_camera_fade_decades", "auto_exposure",
-    "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
-    "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
-    "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
-    "gn_tf_fit_range", "gn_tf_percentile_low", "gn_tf_percentile_high",
-    "gn_tf_value_min", "gn_tf_value_max", "gn_tf_opacity_scale",
+    "mip_alpha_max", "mip_alpha_ramp_power",
+    "yt_tf", "yt_tf_ray_length", "gn_tf_opacity_scale",
     "alpha_source", "color_source",
 )
 ALPHA_CURVE_NODE_NAME = "AlphaCurve"
@@ -128,7 +125,6 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             ("YT_IDV_TRANSFER_FUNCTION", "yt Layers", "Evenly spaced layers in log10 of the field, as yt's ColorTransferFunction.add_layers", "NONE", 2),
             ("YT_IDV_PROJECTION", "Projective Integration", "Unweighted line-of-sight integration: adds samples along each ray", "NONE", 3),
             ("YT_IDV_YT_TRANSFER_FUNCTION", "yt Transfer Function", "A yt ColorTransferFunction you build, converted to yt_idv's so it renders as yt would", "NONE", 4),
-            ("YT_IDV_THRESHOLD_FOG", "Threshold Fog", "A continuous transfer function: transparent below a threshold, alpha ramping up above it", "NONE", 5),
             ("YT_IDV_GN_TRANSFER_FUNCTION", "Geometry Nodes Transfer Function", "A transfer function drawn with Geometry Nodes on this object: a Color Ramp and an opacity curve, or any nodes", "NONE", 7),
             ("SAMPLE_CONSTANT", "Debug: Depth x Constant", "No yt_idv: clipped path length through the box, for fast pipeline tests", "NONE", 6),
         ],
@@ -147,14 +143,14 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     samples_per_cell: bpy.props.FloatProperty(
         name="Samples per Cell",
         description=(
-            "Ray samples per cell width. Too few shows as wood grain and chevrons where cells "
-            "are large on screen, as in deep zooms; 8-16 for final frames"
+            "Ray samples per cell width; 0 uses the mode's default (16 for the yt modes, else 4). "
+            "Too few shows as wood grain and chevrons where cells are large on screen, as in deep zooms"
         ),
-        default=4.0, min=0.1, soft_max=32.0,
+        default=0.0, min=0.0, soft_max=32.0,
     )
     colormap: bpy.props.StringProperty(
         name="Colormap",
-        description="Maximum Intensity and Projection: any yt/matplotlib colormap name. Empty keeps yt_idv's default",
+        description="Any yt/matplotlib colormap name. Empty uses the mode's default",
         default="",
     )
     rescale_colormap: bpy.props.BoolProperty(
@@ -175,16 +171,16 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=(0.0, 1.0),
     )
 
-    # yt layers (YT_IDV_TRANSFER_FUNCTION): ColorTransferFunction.add_layers
+    # The transfer function's range: yt Layers and Geometry Nodes Transfer Function
     tf_fit_range: bpy.props.BoolProperty(
         name="Fit to Data",
-        description="Span the layers' transfer function, in log space, over the data between the Low and High percentiles by volume; off uses Min and Max (log10)",
+        description="Span the transfer function, in log space, over the data between the Low and High percentiles by volume; off uses Min and Max (log10)",
         default=True,
     )
     tf_percentile_low: bpy.props.FloatProperty(
         name="Low %",
         description="Percentile of the data, by volume, at the transfer function's low end",
-        default=50.0, min=0.0, max=100.0,
+        default=10.0, min=0.0, max=100.0,
     )
     tf_percentile_high: bpy.props.FloatProperty(
         name="High %",
@@ -199,8 +195,10 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     tf_log_max: bpy.props.FloatProperty(
         name="Max (log10)",
         description="log10 of the field, in its own units, at the transfer function's high end; used with Fit to Data off",
-        default=-22.0, precision=3,
+        default=-20.0, precision=3,
     )
+
+    # yt Layers (YT_IDV_TRANSFER_FUNCTION): ColorTransferFunction.add_layers
     tf_n_layers: bpy.props.IntProperty(
         name="Layers",
         description="Number of layers, evenly spaced in log10 just inside the transfer function's range",
@@ -236,45 +234,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         description="How many decades sparser than the field the camera has reached a layer is when it has faded out completely",
         default=1.0, min=0.01, soft_max=10.0,
     )
-    tf_colormap: bpy.props.StringProperty(
-        name="Layers Colormap",
-        description="Any yt/matplotlib colormap name, spanning the transfer function's range",
-        default="arbre",
-    )
-
-    # Threshold fog (YT_IDV_THRESHOLD_FOG)
-    fog_value_min: bpy.props.FloatProperty(
-        name="Fog Threshold (Value Min)",
-        description="Fully transparent below this value (yt_idv's [0, 1]-normalized value space)",
-        default=1e-9, precision=10, min=0.0,
-    )
-    fog_value_max: bpy.props.FloatProperty(
-        name="Fog Value Max",
-        description="Alpha reaches Fog Alpha Max at this value",
-        default=1e-2, precision=6, min=0.0,
-    )
-    fog_colormap: bpy.props.StringProperty(
-        name="Fog Colormap",
-        description="Any yt/matplotlib colormap name",
-        default="dusk",
-    )
-    fog_alpha_max: bpy.props.FloatProperty(
-        name="Fog Alpha Max",
-        description="Alpha at Fog Value Max; below 1 keeps the densest gas soft",
-        default=0.85, min=0.0, max=1.0,
-    )
-    fog_ramp_power: bpy.props.FloatProperty(
-        name="Fog Ramp Power",
-        description="Shape of the alpha ramp in log value: 1 is linear, below 1 rises fast past the threshold, above 1 stays thin longer",
-        default=0.15, min=0.01, max=10.0,
-    )
 
     # Maximum intensity with value-driven alpha (YT_IDV_MAX_INTENSITY_ALPHA)
-    mip_alpha_colormap: bpy.props.StringProperty(
-        name="MIP Alpha Colormap",
-        description="Any yt/matplotlib colormap name",
-        default="dusk",
-    )
     mip_alpha_max: bpy.props.FloatProperty(
         name="MIP Alpha Max",
         description="Alpha at the high end of the visible range; below 1 keeps objects behind the brightest material visible",
@@ -282,7 +243,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     mip_alpha_ramp_power: bpy.props.FloatProperty(
         name="MIP Alpha Ramp Power",
-        description="Shape of the alpha ramp across the visible range, as for Fog Ramp Power",
+        description="Shape of the alpha ramp across the visible range: 1 is linear, below 1 rises fast from the low end, above 1 stays thin longer",
         default=0.15, min=0.01, max=10.0,
     )
 
@@ -302,11 +263,6 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         description="'module:function' or 'file.py:function' returning a yt ColorTransferFunction (grey opacity, log10 of the field)",
         default="",
     )
-    yt_tf_sample_factor: bpy.props.FloatProperty(
-        name="yt TF Sample Factor",
-        description="Ray samples per cell for the yt modes; thin layers need more than the other modes. 0 uses Samples per Cell",
-        default=16.0, min=0.0,
-    )
     yt_tf_ray_length: bpy.props.FloatProperty(
         name="yt TF Ray Length",
         description="Divides the transfer function's emission and opacity, as a yt camera's ray length in unitary units; larger is fainter and more transparent",
@@ -314,41 +270,15 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
 
     # Geometry Nodes transfer function (YT_IDV_GN_TRANSFER_FUNCTION)
-    gn_tf_fit_range: bpy.props.BoolProperty(
-        name="Fit to Data",
-        description="Span the transfer function, in log space, over the data between the Low and High percentiles by volume; off uses TF Value Min and Max",
-        default=True,
-    )
-    gn_tf_percentile_low: bpy.props.FloatProperty(
-        name="Low %",
-        description="Percentile of the data, by volume, at the transfer function's low end; a little above 0 drops the near-empty tail",
-        default=1.0, min=0.0, max=100.0,
-    )
-    gn_tf_percentile_high: bpy.props.FloatProperty(
-        name="High %",
-        description="Percentile of the data, by volume, at the transfer function's high end; 100 keeps the densest cell",
-        default=100.0, min=0.0, max=100.0,
-    )
     gn_tf_opacity_scale: bpy.props.FloatProperty(
         name="Opacity Scale",
         description="Multiplies the transfer function's emission and opacity, per box width of path; raise it until small or thin structures show",
         default=100.0, min=0.0, soft_max=10000.0,
     )
-    gn_tf_value_min: bpy.props.FloatProperty(
-        name="TF Min (log10)",
-        description="log10 of the field, in its own units, at the transfer function's low end; used with Fit to Data off",
-        default=-28.0, precision=3,
-    )
-    gn_tf_value_max: bpy.props.FloatProperty(
-        name="TF Max (log10)",
-        description="log10 of the field, in its own units, at the transfer function's high end; used with Fit to Data off",
-        default=-10.0, precision=3,
-    )
-
-    # Alpha curve / color image, shared by Threshold Fog and MIP Alpha
+    # Alpha curve / color image for MIP Alpha
     alpha_source: bpy.props.EnumProperty(
         name="Alpha Source",
-        description="How the alpha ramp for Threshold Fog / MIP Alpha is shaped",
+        description="How the MIP Alpha ramp is shaped",
         items=[
             ("RAMP_POWER", "Ramp Power", "The Ramp Power setting: a single-exponent curve"),
             ("CURVE", "Custom Curve", "A hand-drawn curve"),
@@ -360,9 +290,9 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     alpha_curve: bpy.props.PointerProperty(name="Alpha Curve", type=bpy.types.NodeTree)
     color_source: bpy.props.EnumProperty(
         name="Color Source",
-        description="Where Threshold Fog / MIP Alpha get their RGB",
+        description="Where MIP Alpha gets its RGB",
         items=[
-            ("NAMED", "Named Colormap", "The Fog/MIP Alpha Colormap setting"),
+            ("NAMED", "Named Colormap", "The Colormap setting"),
             ("IMAGE", "Image", "A Blender Image, averaged across rows into a 1D gradient"),
         ],
         default="NAMED",
@@ -518,23 +448,20 @@ class VOLUMEOVERRIDE_OT_remove_custom_param(bpy.types.Operator):
         return {"FINISHED"}
 
 
+_TF_RANGE = ("tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max")
 _MODE_SETTINGS = {
     "YT_IDV_MAX_INTENSITY": ("colormap",),
     "YT_IDV_PROJECTION": ("colormap",),
     "YT_IDV_TRANSFER_FUNCTION": (
-        "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
-        "tf_camera_fade", "tf_camera_fade_decades",
-        "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
-        "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure",
+        "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "colormap", "tf_brightness_ramp",
+        "tf_camera_fade", "tf_camera_fade_decades", *_TF_RANGE, "yt_tf_ray_length", "auto_exposure",
     ),
-    "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power", "auto_exposure"),
-    "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
-    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure"),
-    "YT_IDV_GN_TRANSFER_FUNCTION": (
-        "gn_tf_opacity_scale", "gn_tf_fit_range", "gn_tf_percentile_low", "gn_tf_percentile_high",
-        "gn_tf_value_min", "gn_tf_value_max", "auto_exposure",
-    ),
+    "YT_IDV_MAX_INTENSITY_ALPHA": ("colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
+    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "auto_exposure"),
+    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", *_TF_RANGE, "auto_exposure"),
 }
+# Modes that color with a colormap over a fitted range (Rescale Colormap, Colormap Range).
+_COLORMAP_RANGE_MODES = ("YT_IDV_MAX_INTENSITY", "YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_PROJECTION")
 
 
 def _draw_gn_transfer_function(layout, obj):
@@ -545,8 +472,8 @@ def _draw_gn_transfer_function(layout, obj):
     if fit is not None:
         low, high = np.log10(fit["physical_range"])
         layout.label(text=f"log10 range: {low:.2f} to {high:.2f} {fit['units']}")
-    elif not props.gn_tf_fit_range:
-        low, high = props.gn_tf_value_min, props.gn_tf_value_max
+    elif not props.tf_fit_range:
+        low, high = props.tf_log_min, props.tf_log_max
     else:
         low = high = None
     ramp, curve = transfer_function_nodes.find_nodes(obj)
@@ -576,11 +503,7 @@ def _draw_look(layout, props):
     col = box.column(align=True)
     for name in _MODE_SETTINGS[props.renderer_mode]:
         row = col.row()
-        if name in ("gn_tf_value_min", "gn_tf_value_max"):
-            row.enabled = not props.gn_tf_fit_range
-        elif name in ("gn_tf_percentile_low", "gn_tf_percentile_high"):
-            row.enabled = props.gn_tf_fit_range
-        elif name in ("tf_log_min", "tf_log_max"):
+        if name in ("tf_log_min", "tf_log_max"):
             row.enabled = not props.tf_fit_range
         elif name in ("tf_percentile_low", "tf_percentile_high"):
             row.enabled = props.tf_fit_range
@@ -593,14 +516,15 @@ def _draw_look(layout, props):
             gain = yt_idv_renderer.exposure_gain(props.dataset_uuid)
             if gain is not None:
                 col.label(text=f"Exposure: x{gain:.3g} on the transfer function")
-    box.prop(props, "rescale_colormap")
-    row = box.row(align=True)
-    row.enabled = not props.rescale_colormap
-    row.prop(props, "colormap_range_set", text="")
-    sub = row.row(align=True)
-    sub.enabled = props.colormap_range_set
-    sub.prop(props, "colormap_range", text="")
-    if props.renderer_mode in ("YT_IDV_THRESHOLD_FOG", "YT_IDV_MAX_INTENSITY_ALPHA"):
+    if props.renderer_mode in _COLORMAP_RANGE_MODES:
+        box.prop(props, "rescale_colormap")
+        row = box.row(align=True)
+        row.enabled = not props.rescale_colormap
+        row.prop(props, "colormap_range_set", text="")
+        sub = row.row(align=True)
+        sub.enabled = props.colormap_range_set
+        sub.prop(props, "colormap_range", text="")
+    if props.renderer_mode == "YT_IDV_MAX_INTENSITY_ALPHA":
         sub = box.box()
         sub.prop(props, "alpha_source", expand=True)
         if props.alpha_source == "CURVE" and props.alpha_curve is not None:

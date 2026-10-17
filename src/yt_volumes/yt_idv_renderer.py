@@ -47,7 +47,10 @@ yt_idv gotchas handled here or in the required yt_idv patches:
   - OSMesa corrupts non-square renders; the default backend is EGL.
   - The EGL config needs `EGL_ALPHA_SIZE` or backgrounds come back opaque.
   - `transfer_function` needs the `passthrough_alpha` second pass to keep its
-    accumulated alpha.
+    accumulated alpha, and yt_idv's compositing fixes: blocks drawn nearest
+    first and integrated front to back, and that pass blending premultiplied
+    color as is. Without them thick views composite as seen from behind, and
+    color can't exceed alpha (auto exposure can't brighten thin gas).
   - Blender's GPU compositor holds an EGL context that makes yt_idv's
     `eglMakeCurrent` fail (`EGL_BAD_ACCESS`); `operators` forces the CPU
     compositor during yt_idv renders.
@@ -78,22 +81,15 @@ CONTEXT_SURFACE_SIZE = 64
 
 # --- yt layers transfer function ---------------------------------------------
 # Bounds are log10 of the field in its own units, as for a yt ColorTransferFunction.
+# The transfer function range, shared by yt Layers and the Geometry Nodes mode:
+# volume percentiles of the data, or log10 bounds with Fit to Data off.
+TF_PERCENTILES = (10.0, 100.0)
 TF_LOG_MIN = -28.0
-TF_LOG_MAX = -22.0
+TF_LOG_MAX = -20.0
 TF_N_LAYERS = 8
 TF_COLORMAP = "arbre"
-TF_NBINS = 256  # matches TransferFunctionTexture's expected (256, 1, 4) shape
-
-# --- Threshold fog transfer function -----------------------------------------
-# `transfer_function.frag.glsl` discards samples below `tf_min`, so
-# TF_FOG_VALUE_MIN is the threshold; alpha ramps up above it.
-TF_FOG_VALUE_MIN = 1e-9
-TF_FOG_VALUE_MAX = 1e-2  # alpha reaches TF_FOG_ALPHA_MAX at this value
-TF_FOG_COLORMAP = "dusk"
-TF_FOG_ALPHA_MAX = 0.85  # < 1.0 keeps the fog soft at its densest
-TF_FOG_RAMP_POWER = 0.15  # < 1 = alpha rises fast just past the threshold
-# The transfer_function modes integrate opacity along the ray, so their value
-# ranges are sensitive to camera geometry and need per-scene tuning.
+SAMPLES_PER_CELL = 4.0  # Samples per Cell 0 means this, or for the yt modes:
+YT_SAMPLES_PER_CELL = 16.0  # thin yt layers need finer steps
 
 # --- Max intensity with value-driven alpha ------------------------------------
 # The ramp is a fraction of the per-view auto cmap_min/cmap_max range, so it
@@ -114,7 +110,6 @@ _render_context_cache = {}  # backend -> rc
 _volume_scene_cache = {}  # dataset_id -> (scene, ds, backend)
 _render_result_cache = {}  # (dataset_id, render_size) -> last RenderResult
 _depth_textures = {}  # (id(component), shape) -> its external depth-clip Texture2D
-_fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
 _float_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture
 _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
@@ -698,7 +693,7 @@ def set_external_depth_clip(scene, depth=None):
         )
 
 
-def _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power):
+def _alpha_ramp(nbins, alpha_max, ramp_power):
     """`alpha_max * frac**ramp_power` for `frac` in [0, 1] over `nbins` bins.
 
     Bins are uniform in log value, since the shader applies `tf_log`.
@@ -731,67 +726,16 @@ def _resample_rgb(rgb, nbins):
     return out
 
 
-def _build_threshold_fog_transfer_function_data(
-    value_min, value_max, colormap, alpha_max, ramp_power, nbins=TF_NBINS,
-    alpha_curve=None, color_rgba=None,
-):
-    """Threshold-fog LUT: transparent below `value_min` (enforced by the shader's
-    `tf_min` cutoff), alpha ramping up above it.
-
-    Returns `(nbins, 1, 4)` float32 RGBA, color weighted by alpha as in yt.
-
-    `alpha_curve` (floats in [0, 1], scaled by `alpha_max`) and `color_rgba`
-    (`(n, 3)` or `(n, 4)` in [0, 1]; any alpha column is ignored) optionally
-    replace the ramp and the named colormap, independently.
-    """
-    if color_rgba is not None:
-        rgb = _resample_rgb(color_rgba, nbins)[:, :3]
-    else:
-        import matplotlib
-        import yt  # noqa: F401 -- import side effect: registers yt's own colormaps (e.g. "dusk") into matplotlib
-
-        cmap = matplotlib.colormaps[colormap]
-        frac = np.linspace(0.0, 1.0, nbins)
-        rgb = cmap(frac)[:, :3]  # (nbins, 3); alpha comes from the ramp
-
-    if alpha_curve is not None:
-        alpha = _resample_1d(alpha_curve, nbins) * alpha_max
-    else:
-        alpha = _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power)
-
-    rgba = np.concatenate([rgb * alpha[:, None], alpha[:, None]], axis=1)
-    return rgba.astype("f4").reshape(nbins, 1, 4)
-
-
-def _get_threshold_fog_transfer_function_data(
-    value_min, value_max, colormap, alpha_max, ramp_power, alpha_curve=None, color_rgba=None,
-):
-    """Cached `_build_threshold_fog_transfer_function_data`; list arguments
-    become tuples for the cache key.
-    """
-    alpha_key = tuple(alpha_curve) if alpha_curve is not None else None
-    color_key = tuple(tuple(row) for row in color_rgba) if color_rgba is not None else None
-    key = (colormap, value_min, value_max, alpha_max, ramp_power, alpha_key, color_key)
-    cached = _fog_transfer_function_cache.get(key)
-    if cached is not None:
-        return cached
-    data = _build_threshold_fog_transfer_function_data(
-        value_min, value_max, colormap, alpha_max, ramp_power,
-        alpha_curve=alpha_curve, color_rgba=color_rgba,
-    )
-    _fog_transfer_function_cache[key] = data
-    return data
-
-
 def _build_mip_alpha_colormap_data(
     colormap, alpha_max, ramp_power, nbins=MIP_ALPHA_NBINS, alpha_curve=None, color_rgba=None,
 ):
     """`(nbins, 4)` float32 RGBA for `ColormapTexture.data`, alpha ramped as in
-    `_threshold_fog_alpha_ramp`.
+    `_alpha_ramp`.
 
     Position is relative to the per-view `cmap_min`/`cmap_max`, not a fixed
-    value. `alpha_curve`/`color_rgba` as in
-    `_build_threshold_fog_transfer_function_data`.
+    value. `alpha_curve` (floats in [0, 1], scaled by `alpha_max`) and
+    `color_rgba` (`(n, 3)` or `(n, 4)` in [0, 1]; any alpha column is ignored)
+    optionally replace the ramp and the named colormap, independently.
     """
     if color_rgba is not None:
         rgb = _resample_rgb(color_rgba, nbins)[:, :3]
@@ -806,7 +750,7 @@ def _build_mip_alpha_colormap_data(
     if alpha_curve is not None:
         alpha = _resample_1d(alpha_curve, nbins) * alpha_max
     else:
-        alpha = _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power)
+        alpha = _alpha_ramp(nbins, alpha_max, ramp_power)
 
     return np.concatenate([rgb, alpha[:, None]], axis=1).astype("f4")
 
@@ -1237,11 +1181,12 @@ def exposure_gain(dataset_id):
 
 
 def _apply_samples_per_cell(component, custom_params):
-    """Set the component's ray sampling from `yt_idv_samples_per_cell`."""
-    samples = custom_params.get("yt_idv_samples_per_cell")
-    if samples is None or not hasattr(component, "sample_factor"):
+    """Set the component's ray sampling from `yt_idv_samples_per_cell`; 0
+    means SAMPLES_PER_CELL.
+    """
+    if not hasattr(component, "sample_factor"):
         return
-    samples = float(samples)
+    samples = float(custom_params.get("yt_idv_samples_per_cell") or SAMPLES_PER_CELL)
     if _is_spherical(component.data):
         # spherical sample_factor is log10 of the step over the element's smallest width
         component.sample_factor = -math.log10(samples)
@@ -1291,17 +1236,18 @@ def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
     component.transfer_function.data = tf_data
 
 
-def _layer_bounds(collection, custom_params):
-    """`(low, high)` log10 bounds of the layers transfer function: the data
-    between `yt_idv_tf_percentile_low`/`_high` (by volume), or without
+def _tf_bounds(collection, custom_params):
+    """`(low, high)` log10 bounds, in the field's own units, of the yt Layers
+    and Geometry Nodes transfer functions: the data between
+    `yt_idv_tf_percentile_low`/`_high` (by volume), or without
     `yt_idv_tf_fit_range` `yt_idv_tf_log_min`/`_max`.
     """
     distribution = _value_distribution(collection)
     if distribution is not None and custom_params.get("yt_idv_tf_fit_range", True):
         low, high = _percentile_range(
             distribution,
-            custom_params.get("yt_idv_tf_percentile_low", 50.0),
-            custom_params.get("yt_idv_tf_percentile_high", 100.0),
+            custom_params.get("yt_idv_tf_percentile_low", TF_PERCENTILES[0]),
+            custom_params.get("yt_idv_tf_percentile_high", TF_PERCENTILES[1]),
         )
         return tuple(float(np.log10(_physical(collection, v))) for v in (low, high))
     return (float(custom_params.get("yt_idv_tf_log_min", TF_LOG_MIN)),
@@ -1313,7 +1259,7 @@ def _configure_transfer_function(component, custom_params):
     custom_params, converted as for the yt Transfer Function mode.
     """
     get = custom_params.get
-    bounds = _layer_bounds(component.data, custom_params)
+    bounds = _tf_bounds(component.data, custom_params)
     component.data._yt_volumes_layer_bounds = bounds
     n_layers = int(get("yt_idv_tf_n_layers", TF_N_LAYERS))
     width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
@@ -1323,7 +1269,7 @@ def _configure_transfer_function(component, custom_params):
         value = context.get("approach_value", context.get("value"))
         fade = _camera_fade(_layer_values(bounds, n_layers), value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
         alpha = tuple(float(a) for a in np.asarray(alpha) * fade)
-    colormap = get("yt_idv_tf_colormap", TF_COLORMAP)
+    colormap = get("yt_idv_colormap") or TF_COLORMAP
     ramp = float(get("yt_idv_tf_brightness_ramp", 1.0))
 
     def make():
@@ -1432,7 +1378,7 @@ def _configure_max_intensity_alpha(component, custom_params):
     the defaults.
     """
     component.render_method = "max_intensity_alpha"
-    colormap = custom_params.get("yt_idv_mip_alpha_colormap", MIP_ALPHA_COLORMAP)
+    colormap = custom_params.get("yt_idv_colormap") or MIP_ALPHA_COLORMAP
     alpha_max = custom_params.get("yt_idv_mip_alpha_max", MIP_ALPHA_MAX)
     ramp_power = custom_params.get("yt_idv_mip_alpha_ramp_power", MIP_ALPHA_RAMP_POWER)
     alpha_curve = custom_params.get("yt_idv_alpha_curve")
@@ -1454,33 +1400,6 @@ def yt_idv_transfer_function_renderer(request: RenderRequest) -> RenderResult:
     evenly spaced in log10 of the field.
     """
     return _render_with_yt_idv(request, _configure_transfer_function)
-
-
-def _configure_threshold_fog(component, custom_params):
-    """Threshold fog; `yt_idv_fog_*`, `yt_idv_alpha_curve` and
-    `yt_idv_color_image_rgba` custom_params override the defaults.
-    """
-    component.render_method = "transfer_function"
-    value_min = custom_params.get("yt_idv_fog_value_min", TF_FOG_VALUE_MIN)
-    value_max = custom_params.get("yt_idv_fog_value_max", TF_FOG_VALUE_MAX)
-    colormap = custom_params.get("yt_idv_fog_colormap", TF_FOG_COLORMAP)
-    alpha_max = custom_params.get("yt_idv_fog_alpha_max", TF_FOG_ALPHA_MAX)
-    ramp_power = custom_params.get("yt_idv_fog_ramp_power", TF_FOG_RAMP_POWER)
-    alpha_curve = custom_params.get("yt_idv_alpha_curve")
-    color_rgba = custom_params.get("yt_idv_color_image_rgba")
-    data = _get_threshold_fog_transfer_function_data(
-        value_min, value_max, colormap, alpha_max, ramp_power,
-        alpha_curve=alpha_curve, color_rgba=color_rgba,
-    )
-    _use_float_table(component, data)
-    _apply_transfer_function_settings(component, value_min, value_max, data)
-
-
-def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
-    """`RENDERER_MODES["YT_IDV_THRESHOLD_FOG"]`: transparent below
-    `TF_FOG_VALUE_MIN`, alpha ramping up to `TF_FOG_ALPHA_MAX`.
-    """
-    return _render_with_yt_idv(request, _configure_threshold_fog)
 
 
 def _positive_value_range(collection):
@@ -1601,10 +1520,7 @@ def gn_tf_fit(dataset_id):
 
 def _configure_gn_transfer_function(component, custom_params):
     """Geometry Nodes transfer function: `yt_idv_gn_tf_rgba` (rows of sRGB
-    color and alpha in [0, 1]) over the data's range between
-    `yt_idv_gn_tf_percentile_low`/`_high` (by volume), or without
-    `yt_idv_gn_tf_fit_range` over `yt_idv_gn_tf_value_min`/`_max`: log10 of
-    the field in its own units.
+    color and alpha in [0, 1]) over `_tf_bounds`.
     """
     rgba = custom_params.get("yt_idv_gn_tf_rgba")
     if rgba is None:
@@ -1615,19 +1531,10 @@ def _configure_gn_transfer_function(component, custom_params):
     data = np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0)
     data[:, :3] *= data[:, 3:]  # color weighted by opacity, as in yt
     data = (data * scale).astype("f4").reshape(len(rgba), 1, 4)
-    value_min, value_max = (
-        _normalized(component.data, 10.0 ** float(custom_params.get(f"yt_idv_gn_tf_value_{end}", default)))
-        for end, default in (("min", -28.0), ("max", -10.0))
-    )
+    value_min, value_max = (_normalized(component.data, 10.0 ** b) for b in _tf_bounds(component.data, custom_params))
+    # The shader drops samples outside [tf_min, tf_max]; float32 texels can round past float64 ends.
+    value_min, value_max = value_min * (1 - 1e-6), value_max * (1 + 1e-6)
     distribution = _value_distribution(component.data)
-    if distribution is not None and custom_params.get("yt_idv_gn_tf_fit_range", True):
-        value_min, value_max = _percentile_range(
-            distribution,
-            custom_params.get("yt_idv_gn_tf_percentile_low", 1.0),
-            custom_params.get("yt_idv_gn_tf_percentile_high", 100.0),
-        )
-        # The shader drops samples outside [tf_min, tf_max]; float32 texels can round past float64 ends.
-        value_min, value_max = value_min * (1 - 1e-6), value_max * (1 + 1e-6)
     if distribution is not None:
         component.data._yt_volumes_gn_tf_fit = {
             "physical_range": (_physical(component.data, value_min), _physical(component.data, value_max)),
@@ -1732,14 +1639,13 @@ def _configure_yt_transfer_function(component, custom_params):
 
 def _apply_yt_transfer_function(component, custom_params, key, make):
     """Convert and apply the yt ColorTransferFunction `make()` returns, with
-    `yt_idv_yt_tf_ray_length` and `_sample_factor`; reused while `key` (None:
-    never) and the blocks are unchanged.
+    `yt_idv_yt_tf_ray_length`; reused while `key` (None: never) and the
+    blocks are unchanged.
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
-    sample_factor = float(custom_params.get("yt_idv_yt_tf_sample_factor", 16.0))
-    if sample_factor > 0:
-        _apply_samples_per_cell(component, {"yt_idv_samples_per_cell": sample_factor})
+    if not custom_params.get("yt_idv_samples_per_cell"):
+        _apply_samples_per_cell(component, {"yt_idv_samples_per_cell": YT_SAMPLES_PER_CELL})
     # A zoom stretches model units, along which yt_idv integrates; keep opacity per data length.
     ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _zoom_factor(component.data)
     per_frame = key is None

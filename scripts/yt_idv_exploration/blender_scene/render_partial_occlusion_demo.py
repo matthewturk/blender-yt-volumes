@@ -45,13 +45,11 @@ MODE_KEY_BY_NAME = {
     "max_intensity": "YT_IDV_MAX_INTENSITY",
     "transfer_function": "YT_IDV_TRANSFER_FUNCTION",
     "projection": "YT_IDV_PROJECTION",
-    "threshold_fog": "YT_IDV_THRESHOLD_FOG",
 }
 # (plain, checkerboard) output basenames per mode; max_intensity's are
 # referenced by the READMEs.
 OUTPUT_IMAGE_NAMES = {
     "max_intensity": ("28_partial_occlusion_sphere_and_volume.png", "29_partial_occlusion_over_checkerboard.png"),
-    "threshold_fog": ("30_partial_occlusion_fog_sphere_and_volume.png", "31_partial_occlusion_fog_over_checkerboard.png"),
 }
 
 os.makedirs(WORK_DIR, exist_ok=True)

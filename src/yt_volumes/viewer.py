@@ -29,7 +29,6 @@ CONFIGURE = {
     "YT_IDV_MAX_INTENSITY_ALPHA": yir._configure_max_intensity_alpha,
     "YT_IDV_TRANSFER_FUNCTION": yir._configure_transfer_function,
     "YT_IDV_PROJECTION": yir._configure_projection,
-    "YT_IDV_THRESHOLD_FOG": yir._configure_threshold_fog,
     "YT_IDV_YT_TRANSFER_FUNCTION": yir._configure_yt_transfer_function,
     "YT_IDV_GN_TRANSFER_FUNCTION": yir._configure_gn_transfer_function,
 }

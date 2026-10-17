@@ -27,7 +27,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     assert params["yt_idv_tf_n_layers"] == 7
     assert params["renderer_mode"] == "YT_IDV_MAX_INTENSITY"
     assert params["field_name"] == "density"
-    assert params["yt_idv_samples_per_cell"] == 4.0
+    assert params["yt_idv_samples_per_cell"] == 0.0  # the mode's default
     # dataset identity is tracked separately by build_dataset_params().
     assert "dataset_path" not in params
     assert "dataset_kind" not in params
@@ -62,12 +62,11 @@ def test_flagged_objects_filters_by_flag(clean_scene):
 def test_renderer_modes_keep_the_numbers_saved_files_use(clean_scene):
     obj = bpy.data.objects.new("V", None)
     numbers = {}
-    for mode in ("YT_IDV_MAX_INTENSITY", "YT_IDV_THRESHOLD_FOG", "SAMPLE_CONSTANT", "YT_IDV_GN_TRANSFER_FUNCTION"):
+    for mode in ("YT_IDV_MAX_INTENSITY", "SAMPLE_CONSTANT", "YT_IDV_GN_TRANSFER_FUNCTION"):
         obj.volume_override.renderer_mode = mode
         numbers[mode] = obj.volume_override["renderer_mode"]
-    assert numbers == {
-        "YT_IDV_MAX_INTENSITY": 0, "YT_IDV_THRESHOLD_FOG": 5, "SAMPLE_CONSTANT": 6, "YT_IDV_GN_TRANSFER_FUNCTION": 7,
-    }
+    assert numbers == {"YT_IDV_MAX_INTENSITY": 0, "SAMPLE_CONSTANT": 6, "YT_IDV_GN_TRANSFER_FUNCTION": 7}
+
 
 
 def test_add_volume_makes_a_flagged_cube_with_a_transfer_function(clean_scene):

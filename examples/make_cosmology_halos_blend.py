@@ -154,8 +154,8 @@ def style_transfer_function(volume):
     """
     props = volume.volume_override
     props.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
-    props.gn_tf_fit_range = True
-    props.gn_tf_percentile_low, props.gn_tf_percentile_high = PERCENTILES
+    props.tf_fit_range = True
+    props.tf_percentile_low, props.tf_percentile_high = PERCENTILES
     props.gn_tf_opacity_scale = OPACITY_SCALE
     props.auto_exposure = True
     props.samples_per_cell = 8.0

@@ -890,7 +890,7 @@ def test_configure_max_intensity_only_sets_render_method():
 
 
 def test_mip_alpha_constants_produce_a_transparent_to_opaque_ramp():
-    ramp = yir._threshold_fog_alpha_ramp(yir.MIP_ALPHA_NBINS, yir.MIP_ALPHA_MAX, yir.MIP_ALPHA_RAMP_POWER)
+    ramp = yir._alpha_ramp(yir.MIP_ALPHA_NBINS, yir.MIP_ALPHA_MAX, yir.MIP_ALPHA_RAMP_POWER)
     assert ramp[0] == pytest.approx(0.0)
     assert ramp[-1] == pytest.approx(yir.MIP_ALPHA_MAX)
     assert np.all(np.diff(ramp) >= 0.0)
@@ -899,15 +899,15 @@ def test_mip_alpha_constants_produce_a_transparent_to_opaque_ramp():
 # --- Preferences-panel override mechanism (custom_params -> _configure_*) --
 # The yt/matplotlib-dependent _get_*_data calls are replaced with spies.
 
-def test_layer_bounds_fit_percentiles_of_the_data_or_use_fixed_log10_values(monkeypatch):
+def test_tf_bounds_fit_percentiles_of_the_data_or_use_fixed_log10_values(monkeypatch):
     collection = types.SimpleNamespace(_textures_are_normalized=False)
     edges = np.linspace(-30.0, -20.0, 11)  # uniform by volume
     monkeypatch.setattr(yir, "_value_distribution", lambda c: (edges, np.ones(10), np.ones(10)))
 
-    assert yir._layer_bounds(collection, {}) == pytest.approx((-25.0, -20.0))  # 50% to 100%
-    assert yir._layer_bounds(collection, {"yt_idv_tf_percentile_low": 10.0, "yt_idv_tf_percentile_high": 90.0}) == pytest.approx((-29.0, -21.0))
+    assert yir._tf_bounds(collection, {}) == pytest.approx((-29.0, -20.0))  # 10% to 100%
+    assert yir._tf_bounds(collection, {"yt_idv_tf_percentile_low": 10.0, "yt_idv_tf_percentile_high": 90.0}) == pytest.approx((-29.0, -21.0))
     fixed = {"yt_idv_tf_fit_range": False, "yt_idv_tf_log_min": -27.0, "yt_idv_tf_log_max": -23.0}
-    assert yir._layer_bounds(collection, fixed) == (-27.0, -23.0)
+    assert yir._tf_bounds(collection, fixed) == (-27.0, -23.0)
 
 
 def test_brightness_ramp_scales_colors_with_log_value_but_not_opacity():
@@ -981,11 +981,11 @@ def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     component = _FakeComponent()
     component.data = types.SimpleNamespace()
     applied = []
-    monkeypatch.setattr(yir, "_layer_bounds", lambda collection, params: (-28.0, -22.0))
+    monkeypatch.setattr(yir, "_tf_bounds", lambda collection, params: (-28.0, -22.0))
     monkeypatch.setattr(yir, "_apply_yt_transfer_function", lambda c, params, key, make: applied.append((key, make)))
 
     yir._configure_transfer_function(component, {
-        "yt_idv_tf_n_layers": 4, "yt_idv_tf_layer_width": 0.01, "yt_idv_tf_colormap": "viridis",
+        "yt_idv_tf_n_layers": 4, "yt_idv_tf_layer_width": 0.01, "yt_idv_colormap": "viridis",
         "yt_idv_tf_alpha_first": 0.1, "yt_idv_tf_alpha_last": 1.0,
     })
 
@@ -1000,44 +1000,6 @@ def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     np.testing.assert_allclose(alpha[peaks], np.geomspace(0.1, 1.0, 4), rtol=0.02)
 
 
-def test_configure_threshold_fog_custom_params_override_module_constants(monkeypatch):
-    component = _FakeComponent()
-    calls = []
-    monkeypatch.setattr(
-        yir, "_get_threshold_fog_transfer_function_data",
-        lambda *a, **k: (calls.append((a, k)), np.zeros((256, 1, 4), dtype="u1"))[1],
-    )
-
-    yir._configure_threshold_fog(component, custom_params={
-        "yt_idv_fog_value_min": 1e-7, "yt_idv_fog_value_max": 0.05,
-        "yt_idv_fog_colormap": "algae", "yt_idv_fog_alpha_max": 0.5, "yt_idv_fog_ramp_power": 2.0,
-    })
-
-    assert calls == [((1e-7, 0.05, "algae", 0.5, 2.0), {"alpha_curve": None, "color_rgba": None})]
-    assert component.tf_min == 1e-7
-    assert component.tf_max == 0.05
-
-
-def test_configure_threshold_fog_passes_through_alpha_curve_and_color_rgba(monkeypatch):
-    component = _FakeComponent()
-    calls = []
-    monkeypatch.setattr(
-        yir, "_get_threshold_fog_transfer_function_data",
-        lambda *a, **k: (calls.append((a, k)), np.zeros((256, 1, 4), dtype="u1"))[1],
-    )
-    alpha_curve = [0.0, 0.5, 1.0]
-    color_rgba = [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]
-
-    yir._configure_threshold_fog(component, custom_params={
-        "yt_idv_alpha_curve": alpha_curve, "yt_idv_color_image_rgba": color_rgba,
-    })
-
-    assert calls == [(
-        (yir.TF_FOG_VALUE_MIN, yir.TF_FOG_VALUE_MAX, yir.TF_FOG_COLORMAP, yir.TF_FOG_ALPHA_MAX, yir.TF_FOG_RAMP_POWER),
-        {"alpha_curve": alpha_curve, "color_rgba": color_rgba},
-    )]
-
-
 def test_configure_max_intensity_alpha_custom_params_override_module_constants(monkeypatch):
     component = _FakeComponent()
     component.colormap = _FakeTransferFunctionTexture()  # just needs a settable .data
@@ -1048,7 +1010,7 @@ def test_configure_max_intensity_alpha_custom_params_override_module_constants(m
     )
 
     yir._configure_max_intensity_alpha(component, custom_params={
-        "yt_idv_mip_alpha_colormap": "arbre", "yt_idv_mip_alpha_max": 0.9, "yt_idv_mip_alpha_ramp_power": 0.5,
+        "yt_idv_colormap": "arbre", "yt_idv_mip_alpha_max": 0.9, "yt_idv_mip_alpha_ramp_power": 0.5,
     })
 
     assert calls == [(("arbre", 0.9, 0.5), {"alpha_curve": None, "color_rgba": None})]
@@ -1102,21 +1064,21 @@ def test_render_method_mode_switch_is_idempotent_on_the_same_component():
     assert component.tf_min == 1e-5
 
 
-def test_threshold_fog_alpha_ramp_starts_at_zero_and_ends_at_alpha_max():
-    ramp = yir._threshold_fog_alpha_ramp(nbins=256, alpha_max=0.85, ramp_power=2.0)
+def test_alpha_ramp_starts_at_zero_and_ends_at_alpha_max():
+    ramp = yir._alpha_ramp(nbins=256, alpha_max=0.85, ramp_power=2.0)
     assert ramp.shape == (256,)
     assert ramp[0] == pytest.approx(0.0)
     assert ramp[-1] == pytest.approx(0.85)
 
 
-def test_threshold_fog_alpha_ramp_is_monotonically_nondecreasing():
-    ramp = yir._threshold_fog_alpha_ramp(nbins=256, alpha_max=1.0, ramp_power=2.0)
+def test_alpha_ramp_is_monotonically_nondecreasing():
+    ramp = yir._alpha_ramp(nbins=256, alpha_max=1.0, ramp_power=2.0)
     assert np.all(np.diff(ramp) >= 0.0)
 
 
-def test_threshold_fog_alpha_ramp_power_above_one_stays_below_the_linear_ramp():
-    linear = yir._threshold_fog_alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=1.0)
-    slow = yir._threshold_fog_alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=2.0)
+def test_alpha_ramp_power_above_one_stays_below_the_linear_ramp():
+    linear = yir._alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=1.0)
+    slow = yir._alpha_ramp(nbins=101, alpha_max=1.0, ramp_power=2.0)
     midpoint = 50
     assert slow[midpoint] < linear[midpoint]
 
@@ -1140,53 +1102,6 @@ def test_resample_rgb_interpolates_each_channel_independently():
     assert resampled[2] == pytest.approx([0.0, 1.0, 0.0])
 
 
-def test_build_threshold_fog_transfer_function_data_with_curve_and_color_overrides():
-    # With both overrides given, no yt/matplotlib is needed.
-    alpha_curve = [0.0, 1.0]  # a plain linear ramp 0 -> 1
-    color_rgba = [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]  # red -> blue
-
-    data = yir._build_threshold_fog_transfer_function_data(
-        value_min=1e-9, value_max=1e-2, colormap="unused", alpha_max=0.5, ramp_power=1.0,
-        nbins=4, alpha_curve=alpha_curve, color_rgba=color_rgba,
-    )
-
-    assert data.shape == (4, 1, 4)
-    assert data.dtype == np.dtype("f4")
-    # alpha: curve resampled to 4 bins (0, 1/3, 2/3, 1) * alpha_max=0.5
-    assert list(data[:, 0, 3]) == pytest.approx([0.0, 1 / 6, 1 / 3, 0.5], abs=1e-6)
-    # color: red -> blue, weighted by alpha; color_rgba's own alpha column is ignored
-    assert data[1, 0, :3] == pytest.approx([2 / 3 / 6, 0.0, 1 / 3 / 6], abs=1e-6)
-    assert data[-1, 0, :3] == pytest.approx([0.0, 0.0, 0.5], abs=1e-6)
-
-
-def test_build_threshold_fog_transfer_function_data_alpha_curve_only_keeps_named_color_path(monkeypatch):
-    # Without color_rgba the named-colormap path (yt/matplotlib) still runs;
-    # force those imports to fail since they may be installed.
-    monkeypatch.setitem(sys.modules, "yt", None)
-    monkeypatch.setitem(sys.modules, "matplotlib", None)
-    with pytest.raises(ImportError):
-        yir._build_threshold_fog_transfer_function_data(
-            value_min=1e-9, value_max=1e-2, colormap="dusk", alpha_max=0.5, ramp_power=1.0,
-            alpha_curve=[0.0, 1.0],
-        )
-
-
-def test_get_threshold_fog_transfer_function_data_caches_by_curve_and_color_content():
-    alpha_curve = [0.0, 1.0]
-    color_rgba = [[1.0, 0.0, 0.0, 1.0]]
-    first = yir._get_threshold_fog_transfer_function_data(
-        1e-9, 1e-2, "unused", 0.5, 1.0, alpha_curve=alpha_curve, color_rgba=color_rgba,
-    )
-    second = yir._get_threshold_fog_transfer_function_data(
-        1e-9, 1e-2, "unused", 0.5, 1.0, alpha_curve=list(alpha_curve), color_rgba=[list(row) for row in color_rgba],
-    )
-    assert first is second  # same content, different list objects -- still a cache hit
-    different = yir._get_threshold_fog_transfer_function_data(
-        1e-9, 1e-2, "unused", 0.5, 1.0, alpha_curve=[0.0, 0.5, 1.0], color_rgba=color_rgba,
-    )
-    assert different is not first
-
-
 def test_build_mip_alpha_colormap_data_with_curve_and_color_overrides():
     alpha_curve = [0.0, 1.0]
     color_rgba = [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]
@@ -1201,22 +1116,6 @@ def test_build_mip_alpha_colormap_data_with_curve_and_color_overrides():
     assert list(data[:, 3]) == pytest.approx([0.0, 1 / 6, 1 / 3, 0.5], abs=1e-5)
     assert data[0, 0] == pytest.approx(1.0) and data[0, 2] == pytest.approx(0.0)
     assert data[-1, 0] == pytest.approx(0.0) and data[-1, 2] == pytest.approx(1.0)
-
-
-def test_apply_transfer_function_settings_works_with_fog_bounds_and_a_fake_ramp():
-    component = _FakeComponent()
-    fake_fog_data = np.zeros((256, 1, 4), dtype="u1")
-    fake_fog_data[:, 0, 3] = np.linspace(0, 255, 256).astype("u1")  # alpha ramps 0 -> 255
-
-    yir._apply_transfer_function_settings(
-        component, tf_min=yir.TF_FOG_VALUE_MIN, tf_max=yir.TF_FOG_VALUE_MAX, tf_data=fake_fog_data,
-    )
-
-    assert component.tf_min == yir.TF_FOG_VALUE_MIN
-    assert component.tf_max == yir.TF_FOG_VALUE_MAX
-    assert component.tf_log is True
-    assert component.transfer_function.data[0, 0, 3] == 0
-    assert component.transfer_function.data[-1, 0, 3] == 255
 
 
 def test_pad_to_square_centers_the_array_and_fills_the_margin():
@@ -1614,8 +1513,8 @@ def test_samples_per_cell_sets_cartesian_and_spherical_sample_factor():
     assert cartesian.sample_factor == 10.0
     assert spherical.sample_factor == pytest.approx(-1.0)  # a tenth of the element's width
     assert not hasattr(annotation, "sample_factor")
-    yir._apply_samples_per_cell(cartesian, {})
-    assert cartesian.sample_factor == 10.0  # unset leaves yt_idv's value alone
+    yir._apply_samples_per_cell(cartesian, {"yt_idv_samples_per_cell": 0.0})
+    assert cartesian.sample_factor == yir.SAMPLES_PER_CELL  # 0: the default
 
 
 def _gn_component(monkeypatch):
@@ -1633,9 +1532,9 @@ def test_configure_gn_transfer_function_uploads_the_scaled_rgba_over_its_value_r
     rgba = np.linspace(0.0, 1.0, 256)[:, None].repeat(4, axis=1).tolist()
 
     yir._configure_gn_transfer_function(component, custom_params={
-        "yt_idv_gn_tf_rgba": rgba, "yt_idv_gn_tf_fit_range": False, "yt_idv_gn_tf_opacity_scale": 50.0,
+        "yt_idv_gn_tf_rgba": rgba, "yt_idv_tf_fit_range": False, "yt_idv_gn_tf_opacity_scale": 50.0,
         # log10 of the field in its own units; the fake normalizes over [1, 11]
-        "yt_idv_gn_tf_value_min": np.log10(1.1), "yt_idv_gn_tf_value_max": np.log10(2.0),
+        "yt_idv_tf_log_min": np.log10(1.1), "yt_idv_tf_log_max": np.log10(2.0),
     })
 
     assert component.render_method == "transfer_function"
@@ -1668,10 +1567,10 @@ def test_gn_transfer_function_fits_percentiles_of_the_data_by_volume(monkeypatch
 
     yir._configure_gn_transfer_function(component, custom_params={
         "yt_idv_gn_tf_rgba": np.ones((256, 4)).tolist(),
-        "yt_idv_gn_tf_value_min": -30.0, "yt_idv_gn_tf_value_max": 0.0,  # ignored while fitting
+        "yt_idv_tf_log_min": -30.0, "yt_idv_tf_log_max": 0.0,  # ignored while fitting
     })
 
-    # 1% by volume falls in the thin gas; 100% is the densest texel
+    # 10% by volume falls in the thin gas; 100% is the densest texel
     assert component.tf_min == pytest.approx(1e-10, rel=0.02)
     assert component.tf_max == pytest.approx(1e-3, rel=1e-5) and component.tf_max > 1e-3
     fit = component.data._yt_volumes_gn_tf_fit
@@ -1691,7 +1590,7 @@ def test_gn_transfer_function_high_percentile_can_cut_the_dense_tail(monkeypatch
     component.data = _two_block_data()
 
     yir._configure_gn_transfer_function(component, custom_params={
-        "yt_idv_gn_tf_rgba": np.ones((256, 4)).tolist(), "yt_idv_gn_tf_percentile_high": 99.0,
+        "yt_idv_gn_tf_rgba": np.ones((256, 4)).tolist(), "yt_idv_tf_percentile_high": 99.0,
     })
 
     assert component.tf_max == pytest.approx(1e-10, rel=0.02)

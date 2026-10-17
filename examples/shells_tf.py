@@ -27,7 +27,7 @@ What each knob does, and what to expect:
 - `WIDTH`: shell thickness, in (log10 density)**2. Bigger = fatter, softer,
   more opaque shells that merge into fog; smaller = crisp thin skins that can
   break up into speckle. Try 0.001-0.01. If shells look dotted or banded,
-  raise TF Sample Factor (8 is a good start) before raising WIDTH.
+  raise Samples per Cell (16 is the yt modes' default) before raising WIDTH.
 - `alpha = np.geomspace(0.3, 1.0, ...)`: opacity from the sparsest to the
   densest shell. Lower the first number to see deeper into the volume
   through the outer shells; set both ends to 1.0 for solid shells.

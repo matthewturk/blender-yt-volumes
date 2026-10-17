@@ -221,14 +221,14 @@ def volume_props():
 
 
 def test_an_empty_render_table_keeps_the_volumes_settings(volume_props):
-    volume_props.renderer_mode = "YT_IDV_THRESHOLD_FOG"
-    volume_props.fog_colormap = "arbre"
+    volume_props.renderer_mode = "YT_IDV_MAX_INTENSITY_ALPHA"
+    volume_props.colormap = "arbre"
     volume_props.rescale_colormap = True
 
     rv.apply_render_settings(volume_props, rv.DEFAULTS["render"])
 
-    assert volume_props.renderer_mode == "YT_IDV_THRESHOLD_FOG"
-    assert volume_props.fog_colormap == "arbre"
+    assert volume_props.renderer_mode == "YT_IDV_MAX_INTENSITY_ALPHA"
+    assert volume_props.colormap == "arbre"
     assert volume_props.rescale_colormap is True
 
 
