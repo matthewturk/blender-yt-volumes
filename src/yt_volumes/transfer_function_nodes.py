@@ -27,7 +27,7 @@ DISTRIBUTION_NODE_NAME = "TF Distribution"
 # Image channels -> point attributes.
 DISTRIBUTION_ATTRIBUTES = (("X", "yt_tf_volume_fraction"), ("Y", "yt_tf_mass_fraction"), ("Z", "yt_tf_log10_value"))
 MODIFIER_NAME = "yt Transfer Function"
-NBINS = 256
+NBINS = 4096  # points the ramp and curve are evaluated at: fine enough for thin layers
 SIZE_INPUT = "Display Size"
 TYPE_INPUT = "Display Type"
 _SPHERE = 6  # Object.empty_display_type's stored value for 'SPHERE'
@@ -179,9 +179,16 @@ def _add_distribution(tree, value, name, nbins):
     texture.name = texture.label = DISTRIBUTION_NODE_NAME
     texture.inputs["Image"].default_value = image
     texture.interpolation, texture.extension = "Closest", "EXTEND"
+    # Point i sits at x = i / (nbins - 1); sample its pixel's center, not an edge
+    # float32 can round onto the next pixel.
+    center = nodes.new("ShaderNodeMath")
+    center.operation = "MULTIPLY_ADD"
+    center.inputs[1].default_value = (nbins - 1) / nbins
+    center.inputs[2].default_value = 0.5 / nbins
+    link(value.outputs["X"], center.inputs[0])
     at_x = nodes.new("ShaderNodeCombineXYZ")
     at_x.inputs["Y"].default_value = 0.5
-    link(value.outputs["X"], at_x.inputs["X"])
+    link(center.outputs["Value"], at_x.inputs["X"])
     link(at_x.outputs["Vector"], texture.inputs["Vector"])
     channels = nodes.new("ShaderNodeSeparateXYZ")
     link(texture.outputs["Color"], channels.inputs["Vector"])
@@ -194,7 +201,7 @@ def _add_distribution(tree, value, name, nbins):
         if stores:
             link(stores[-1].outputs["Geometry"], store.inputs["Geometry"])
         stores.append(store)
-    at_x.location, texture.location, channels.location = (300, -700), (500, -700), (700, -700)
+    center.location, at_x.location, texture.location, channels.location = (100, -700), (300, -700), (500, -700), (700, -700)
     for column, store in enumerate(stores):
         store.location = (900 + 200 * column, -500)
     return stores

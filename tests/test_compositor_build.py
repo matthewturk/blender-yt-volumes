@@ -192,23 +192,24 @@ def test_compositor_image_node_round_trips_a_known_linear_value_correctly(clean_
     )
 
 
-def test_compositor_volume_layer_image_node_passes_through_display_ready_value_unchanged(clean_scene, tmp_path):
-    # Volume-layer semantics: display-ready colormap data must survive
-    # unchanged -- the read-side decode cancels the view transform's encode.
+@pytest.mark.parametrize("color, alpha", [(0.283, 1.0), (0.1, 0.2), (0.9, 0.2)])
+def test_compositor_volume_layer_comes_out_as_rendered_over_black(clean_scene, tmp_path, color, alpha):
+    # Volume-layer semantics: display-referred, premultiplied, possibly brighter
+    # than its alpha (emission); over black it must come out unchanged.
     scene = clean_scene
     scene.render.resolution_x = 4
     scene.render.resolution_y = 4
     scene.view_settings.view_transform = "Standard"
     scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGB"  # premultiplied color, i.e. over black
     out_path = str(tmp_path / "volume_value_render")
     scene.render.filepath = out_path
 
+    rgba = np.zeros((4, 4, 4), dtype=np.float32)
+    rgba[..., :3], rgba[..., 3] = color, alpha
     src = bpy.data.images.new("src", width=4, height=4, alpha=True, float_buffer=True)
     cb.set_linear_colorspace(src)  # what write_render_result does
-    value = 0.283
-    px = np.full((4, 4, 4), value, dtype=np.float32)
-    px[..., 3] = 1.0
-    src.pixels.foreach_set(px.ravel())
+    src.pixels.foreach_set(cb.display_to_linear(rgba).ravel())
     exr_path = str(tmp_path / "volume_value.exr")
     src.filepath_raw = exr_path
     src.file_format = "OPEN_EXR"
@@ -216,20 +217,14 @@ def test_compositor_volume_layer_image_node_passes_through_display_ready_value_u
     bpy.data.images.remove(src)
 
     tree = cb.ensure_compositor_tree(scene)
-    img_node = cb._make_image_node(
-        tree, "Test_VolumeValue", exr_path, cb.set_display_referred_colorspace,
-    )
-    socket = cb._color_output_socket(img_node)
-    cb._link_final_output(scene, tree, socket)
+    img_node = cb._make_image_node(tree, "Test_VolumeValue", exr_path, cb.set_linear_colorspace)
+    cb._link_final_output(scene, tree, cb._color_output_socket(img_node))
 
     bpy.ops.render.render(write_still=True)
 
     from PIL import Image as PILImage
     out = np.array(PILImage.open(out_path + ".png"))
-    expected = round(value * 255)
-    assert tuple(int(c) for c in out[0, 0, :3]) == (expected, expected, expected), (
-        f"expected display-ready {value} to survive as {expected} unchanged, got {tuple(out[0, 0, :3])}"
-    )
+    assert abs(int(out[0, 0, 0]) - round(color * 255)) <= 1, f"expected {round(color * 255)}, got {out[0, 0, :3]}"
 
 
 def _write_exr(path, value, size=2):

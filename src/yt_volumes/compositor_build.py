@@ -27,6 +27,7 @@ depth along the same ray are not blended physically.
 import os
 
 import bpy
+import numpy as np
 
 NODE_PREFIX = "VO_"
 FINAL_OUTPUT_SOCKET_NAME = "Image"
@@ -41,8 +42,13 @@ LINEAR_COLORSPACE_CANDIDATES = ("Non-Color", "Linear Rec.709", "scene_linear")
 #   bakes an sRGB encode into the EXR, so result EXRs are written "Non-Color".
 # - The beauty pass is scene-linear and is read as "Non-Color"; the Standard
 #   view transform applies the one sRGB encode it needs.
-# - Volume layers (yt_idv colormap output) are already display-referred, so
-#   they are read as "sRGB" to cancel the Standard view transform's encode.
+# - Volume layers (yt_idv output) are display-referred and premultiplied.
+#   `display_to_linear` decodes their color channels as they are, before
+#   writing, and they are read as "Non-Color", so over black the view
+#   transform's encode gives back exactly what was rendered. Tagging them
+#   "sRGB" instead un-premultiplies before decoding, which brightens partly
+#   transparent pixels (0.1 at alpha 0.2 came out 0.23) and blows up colors
+#   brighter than their alpha.
 
 
 def _is_group_api(scene):
@@ -63,9 +69,14 @@ def set_linear_colorspace(image):
     )
 
 
-def set_display_referred_colorspace(image):
-    """Tag a display-referred volume layer as "sRGB" (see colorspace notes above)."""
-    image.colorspace_settings.name = "sRGB"
+def display_to_linear(rgba):
+    """Premultiplied display-referred RGBA (sRGB-encoded color, any
+    brightness) with its color channels decoded to linear, alpha unchanged.
+    """
+    rgba = np.array(rgba, dtype=np.float32)
+    color = np.maximum(rgba[..., :3], 0.0)
+    rgba[..., :3] = np.where(color <= 0.04045, color / 12.92, ((color + 0.055) / 1.055) ** 2.4)
+    return rgba
 
 
 def ensure_compositor_tree(scene):
@@ -236,9 +247,7 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
             beauty_node.image = beauty_img
         for obj_name, exr_path in volume_layers:
             vol_node = tree.nodes[_node_name("Vol", obj_name)]
-            vol_img = _load_fresh_image(
-                exr_path, _node_name("Vol", obj_name), set_display_referred_colorspace,
-            )
+            vol_img = _load_fresh_image(exr_path, _node_name("Vol", obj_name), set_linear_colorspace)
             if vol_node.image is None or vol_node.image.as_pointer() != vol_img.as_pointer():
                 vol_node.image = vol_img
         _mute_pass1_file_outputs(tree)
@@ -250,9 +259,7 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     current_output = _color_output_socket(beauty_node)
 
     for i, (obj_name, exr_path) in enumerate(volume_layers):
-        vol_node = _make_image_node(
-            tree, _node_name("Vol", obj_name), exr_path, set_display_referred_colorspace,
-        )
+        vol_node = _make_image_node(tree, _node_name("Vol", obj_name), exr_path, set_linear_colorspace)
         alpha_over = _make_alpha_over(
             tree, _node_name("Over", str(i), obj_name),
             current_output, _color_output_socket(vol_node),

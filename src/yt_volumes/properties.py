@@ -28,7 +28,7 @@ LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
     "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
-    "tf_camera_fade", "tf_camera_fade_decades",
+    "tf_camera_fade", "tf_camera_fade_decades", "auto_exposure",
     "fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power",
     "mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_sample_factor", "yt_tf_ray_length",
@@ -286,6 +286,16 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=0.15, min=0.01, max=10.0,
     )
 
+    auto_exposure: bpy.props.BoolProperty(
+        name="Auto Exposure",
+        description=(
+            "Transfer function modes: scale the transfer function's brightness (not its opacity) so the "
+            "brightest structure sits near white with little clipping. Each render starts from the last "
+            "one's exposure, so animations change smoothly"
+        ),
+        default=False,
+    )
+
     # yt transfer function (YT_IDV_YT_TRANSFER_FUNCTION)
     yt_tf: bpy.props.StringProperty(
         name="yt Transfer Function",
@@ -515,14 +525,14 @@ _MODE_SETTINGS = {
         "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_colormap", "tf_brightness_ramp",
         "tf_camera_fade", "tf_camera_fade_decades",
         "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
-        "yt_tf_ray_length", "yt_tf_sample_factor",
+        "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure",
     ),
     "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power"),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
-    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor"),
+    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure"),
     "YT_IDV_GN_TRANSFER_FUNCTION": (
         "gn_tf_opacity_scale", "gn_tf_fit_range", "gn_tf_percentile_low", "gn_tf_percentile_high",
-        "gn_tf_value_min", "gn_tf_value_max",
+        "gn_tf_value_min", "gn_tf_value_max", "auto_exposure",
     ),
 }
 
@@ -530,10 +540,15 @@ _MODE_SETTINGS = {
 def _draw_gn_transfer_function(layout, obj):
     from . import yt_idv_renderer
 
-    fit = yt_idv_renderer.gn_tf_fit(obj.volume_override.dataset_uuid)
+    props = obj.volume_override
+    fit = yt_idv_renderer.gn_tf_fit(props.dataset_uuid)
     if fit is not None:
         low, high = np.log10(fit["physical_range"])
         layout.label(text=f"log10 range: {low:.2f} to {high:.2f} {fit['units']}")
+    elif not props.gn_tf_fit_range:
+        low, high = props.gn_tf_value_min, props.gn_tf_value_max
+    else:
+        low = high = None
     ramp, curve = transfer_function_nodes.find_nodes(obj)
     if ramp is None and curve is None:
         layout.operator("volume_override.add_transfer_function", icon="ADD")
@@ -545,6 +560,10 @@ def _draw_gn_transfer_function(layout, obj):
     if curve is not None:
         layout.label(text="Opacity")
         layout.template_curve_mapping(curve, "mapping")
+    if low is not None:
+        # The ramp and curve run 0-1 across the range; this places a zoomed-in view.
+        layout.label(text=f"0 = {low:.2f}, 0.5 = {(low + high) / 2:.2f}, 1 = {high:.2f} (log10)")
+        layout.label(text=f"0.01 along = {(high - low) / 100:.3g} decades")
 
 
 def _draw_look(layout, props):
@@ -568,6 +587,12 @@ def _draw_look(layout, props):
         elif name == "tf_camera_fade_decades":
             row.enabled = props.tf_camera_fade
         row.prop(props, name)
+        if name == "auto_exposure" and props.auto_exposure:
+            from . import yt_idv_renderer
+
+            gain = yt_idv_renderer.exposure_gain(props.dataset_uuid)
+            if gain is not None:
+                col.label(text=f"Exposure: x{gain:.3g} on the transfer function")
     box.prop(props, "rescale_colormap")
     row = box.row(align=True)
     row.enabled = not props.rescale_colormap

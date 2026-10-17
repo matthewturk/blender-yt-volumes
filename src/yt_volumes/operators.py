@@ -14,6 +14,7 @@ produce this frame's depth and composite a volume render made from it.
 """
 
 import contextlib
+import dataclasses
 import math
 import os
 import shutil
@@ -806,7 +807,8 @@ def render_current_frame(context):
                 frame_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
             )
             with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
-                write_render_result(result, result_path)
+                # the compositor reads volume layers as linear
+                write_render_result(dataclasses.replace(result, rgba=compositor_build.display_to_linear(result.rgba)), result_path)
             volume_layers.append((obj.name, result_path))
 
         # --- Pass 2: compositor-only, writes the real output ---------------

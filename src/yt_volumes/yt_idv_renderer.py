@@ -118,6 +118,11 @@ _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max,
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
 _gn_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture for the GN mode
 _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
+_exposure_gains = {}  # dataset_id -> the gain auto exposure last chose
+
+AUTO_EXPOSURE_TARGET = 0.9  # where auto exposure puts the brightest 0.1% of pixels
+AUTO_EXPOSURE_CLIP = 0.005  # the share of pixels it lets clip
+AUTO_EXPOSURE_STEPS = 4  # re-renders at most per frame
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
@@ -1152,13 +1157,19 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     # Deep in a zoom the far plane cuts large bricks, and the clipped parts of their
     # faces never start rays (seams); clamping depth draws every face whole.
     GL.glEnable(GL.GL_DEPTH_CLAMP)
-    try:
+
+    def run():
         image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
+        image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
+        return _center_crop(_to_row_order(image, request.depth.row_order), height, width)
+
+    try:
+        if custom_params.get("yt_idv_auto_exposure"):
+            image = _auto_exposed(scene, dataset_id, run)
+        else:
+            image = run()
     finally:
         GL.glDisable(GL.GL_DEPTH_CLAMP)
-    image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
-    image = _to_row_order(image, request.depth.row_order)
-    image = _center_crop(image, height, width)
 
     result = RenderResult(
         rgba=np.ascontiguousarray(image),
@@ -1169,6 +1180,61 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     _render_result_cache[(dataset_id, render_size)] = result
     _record_render_signature(dataset_id, signed_request, render_size, render_mode)
     return result
+
+
+def _auto_exposed(scene, dataset_id, run):
+    """Render with the transfer function tables' emission scaled until the
+    brightest 0.1% of pixels sit near AUTO_EXPOSURE_TARGET with at most
+    AUTO_EXPOSURE_CLIP clipped. Starts from the gain the last render chose, so
+    an animation's exposure moves smoothly.
+    """
+    tables = [
+        (component, np.array(component.transfer_function.data))
+        for component in scene.components
+        if getattr(component, "render_method", None) == "transfer_function"
+        and np.asarray(component.transfer_function.data).dtype == np.float32
+    ]
+    if not tables:
+        return run()
+    gain = _exposure_gains.get(dataset_id, 1.0)
+    try:
+        for step in range(AUTO_EXPOSURE_STEPS + 1):
+            for component, table in tables:
+                # emission only: scaling opacity too makes the image darker past a point, as front layers turn opaque
+                exposed = table.copy()
+                exposed[..., :3] *= gain
+                component.transfer_function.data = exposed
+            image = run()
+            factor = _exposure_factor(image)
+            if factor == 1.0 or step == AUTO_EXPOSURE_STEPS:
+                break
+            gain *= factor
+    finally:
+        # the tables are cached and reused, unscaled
+        for component, table in tables:
+            component.transfer_function.data = table
+    _exposure_gains[dataset_id] = gain
+    return image
+
+
+def _exposure_factor(image):
+    """How much to scale the transfer function so `image`'s brightest 0.1%
+    lands near AUTO_EXPOSURE_TARGET without clipping more than
+    AUTO_EXPOSURE_CLIP; 1 when within 10%.
+    """
+    brightness = np.asarray(image)[..., :3].max(axis=-1)
+    if (brightness >= 0.995).mean() > AUTO_EXPOSURE_CLIP:
+        return 0.5
+    peak = float(np.percentile(brightness, 99.9))
+    if peak <= 0.0:
+        return 4.0
+    factor = float(np.clip(AUTO_EXPOSURE_TARGET / peak, 0.25, 4.0))
+    return 1.0 if abs(math.log(factor)) < math.log(1.1) else factor
+
+
+def exposure_gain(dataset_id):
+    """The gain auto exposure last chose for a dataset, or None."""
+    return _exposure_gains.get(dataset_id)
 
 
 def _apply_samples_per_cell(component, custom_params):

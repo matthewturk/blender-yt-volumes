@@ -1069,7 +1069,7 @@ def test_gn_transfer_function_mode_samples_the_starter_nodes(clean_scene_with_pr
 
     rgba = np.asarray(operators._yt_idv_custom_params(obj)["yt_idv_gn_tf_rgba"])
 
-    assert rgba.shape == (256, 4)
+    assert rgba.shape == (transfer_function_nodes.NBINS, 4)
     # The ramp's sRGB stops come back sRGB-encoded; opacity is the curve's 0 -> 0.8.
     assert rgba[0] == pytest.approx([0.001, 0.0, 0.014, 0.0], abs=2e-3)
     assert rgba[-1] == pytest.approx([0.988, 0.998, 0.645, 0.8], abs=2e-3)

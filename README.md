@@ -354,6 +354,14 @@ two-shot dive into DeeplyNestedZoom authored by
 
 ### yt transfer functions
 
+**Auto Exposure** (yt Layers, yt Transfer Function, Geometry Nodes Transfer
+Function) scales the transfer function's brightness, not its opacity, until the
+brightest 0.1% of pixels sit near white with at most 0.5% clipped: up to four
+re-renders, starting from the last render's exposure, so animations change
+smoothly. The panel shows the gain. Opacity stays with Ray Length or Opacity
+Scale; scaling it too would darken the image past a point, as front layers turn
+opaque.
+
 **yt Layers** (`YT_IDV_TRANSFER_FUNCTION`) is `add_layers` without writing a
 file: the panel's Layers, Layer Width (`w`), Alpha First/Last (spaced
 geometrically, as `alpha=np.geomspace(first, last, N)`) and Colormap build

@@ -242,7 +242,7 @@ def test_a_geometry_nodes_transfer_function_goes_to_the_viewer(scene, tmp_path):
     config = viewer_link.viewer_config(scene, volume, 640, 360, str(tmp_path / "pose.json"), str(tmp_path / "camera.json"))
 
     assert config["renderer_mode"] in viewer.CONFIGURE
-    assert np.asarray(json.loads(json.dumps(config))["custom_params"]["yt_idv_gn_tf_rgba"]).shape == (256, 4)
+    assert np.asarray(json.loads(json.dumps(config))["custom_params"]["yt_idv_gn_tf_rgba"]).shape == (transfer_function_nodes.NBINS, 4)
 
 
 def test_the_viewer_takes_blenders_zoom_and_keeps_its_camera(tmp_path):

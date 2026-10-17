@@ -1727,6 +1727,35 @@ def test_yt_transfer_function_opacity_is_per_data_length_at_any_zoom(monkeypatch
     assert lengths == [pytest.approx(0.03 * 1e4)]  # model units are 1e4 times longer
 
 
+def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping():
+    image = np.zeros((100, 100, 4), dtype=np.float32)
+    image[:10, :10, 0] = 0.45  # 1% of pixels at 0.45
+    assert yir._exposure_factor(image) == pytest.approx(2.0)
+    image[:10, :10, 0] = 0.88
+    assert yir._exposure_factor(image) == 1.0  # within 10% of the target
+    image[:10, :10, 0] = 1.0  # 1% clipped
+    assert yir._exposure_factor(image) == 0.5
+    assert yir._exposure_factor(np.zeros((4, 4, 4))) == 4.0
+
+
+def test_auto_exposure_converges_and_leaves_the_cached_tables_unscaled(monkeypatch):
+    monkeypatch.setattr(yir, "_exposure_gains", {})
+    table = np.full((8, 1, 4), 0.1, dtype=np.float32)
+    component = types.SimpleNamespace(render_method="transfer_function", transfer_function=types.SimpleNamespace(data=table))
+    scene = types.SimpleNamespace(components=[component])
+
+    def run():  # the image's brightest pixel follows the table, as emission would
+        image = np.zeros((10, 10, 4), dtype=np.float32)
+        image[:5, :1, 0] = min(float(component.transfer_function.data.max()) * 3.0, 1.0)  # 5% of pixels
+        return image
+
+    image = yir._auto_exposed(scene, "ds", run)
+
+    assert float(image[..., 0].max()) == pytest.approx(yir.AUTO_EXPOSURE_TARGET, rel=0.1)
+    assert yir.exposure_gain("ds") == pytest.approx(3.0, rel=0.1)
+    np.testing.assert_array_equal(component.transfer_function.data, table)  # unscaled again
+
+
 def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
     # Projection adds up alpha per brick crossed; a float target kept it above 1 (blown-out, blocky
     # renders), and an 8-bit one rounds away faint transfer-function emission (bands, lost gas).
