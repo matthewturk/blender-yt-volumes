@@ -27,13 +27,10 @@ from yt_volumes import properties, render_series, render_volume, transfer_functi
 # deep in the voids, so the gas fades out well above the cut, to the densest
 # cell, since yt_idv drops samples above the range (holes in the cores).
 PERCENTILES = (30.0, 100.0)
-OPACITY_SCALE = 6.0
-# Color ramp stops (position, sRGB): black through the voids, so filament edges
-# fade in rather than start at a sharp silhouette.
-COLOR_STOPS = (
-    (0.0, (0.0, 0.0, 0.0)), (0.12, (0.0, 0.0, 0.0)), (0.25, (0.03, 0.08, 0.25)),
-    (0.4, (0.15, 0.45, 0.9)), (0.6, (0.6, 0.85, 1.0)), (0.8, (1.0, 1.0, 1.0)),
-)
+OPACITY_SCALE = 6.0  # how see-through the gas is; Auto Exposure sets the brightness
+# Color ramp stops (position, sRGB); color is weighted by the opacity curve,
+# so the voids, transparent, stay dark.
+COLOR_STOPS = ((0.0, (0.1, 0.35, 0.85)), (0.4, (0.3, 0.75, 1.0)), (0.8, (1.0, 1.0, 1.0)))
 OPACITY_POINTS = ((0.0, 0.0), (0.15, 0.0), (0.4, 0.15), (0.7, 0.4), (1.0, 0.4))
 
 
@@ -152,14 +149,15 @@ def halo_nodes(material):
 
 
 def style_transfer_function(volume):
-    """Filaments only, soft-edged: dark through the voids, a cool ramp rising
-    through the filament densities, flat over the halo cores.
+    """Filaments only, soft-edged: clear voids, a cool ramp rising through the
+    filament densities, flat over the halo cores.
     """
     props = volume.volume_override
     props.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
     props.gn_tf_fit_range = True
     props.gn_tf_percentile_low, props.gn_tf_percentile_high = PERCENTILES
     props.gn_tf_opacity_scale = OPACITY_SCALE
+    props.auto_exposure = True
     props.samples_per_cell = 8.0
     transfer_function_nodes.add_transfer_function_modifier(volume)
     ramp, curve = transfer_function_nodes.find_nodes(volume)

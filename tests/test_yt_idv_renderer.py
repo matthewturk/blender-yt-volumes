@@ -1151,12 +1151,12 @@ def test_build_threshold_fog_transfer_function_data_with_curve_and_color_overrid
     )
 
     assert data.shape == (4, 1, 4)
-    assert data.dtype == np.dtype("u1")
+    assert data.dtype == np.dtype("f4")
     # alpha: curve resampled to 4 bins (0, 1/3, 2/3, 1) * alpha_max=0.5
-    assert list(data[:, 0, 3]) == pytest.approx([0, 42, 85, 127], abs=1)
-    # color: red -> blue; color_rgba's own alpha column is ignored
-    assert int(data[0, 0, 0]) == 255 and int(data[0, 0, 2]) == 0
-    assert int(data[-1, 0, 0]) == 0 and int(data[-1, 0, 2]) == 255
+    assert list(data[:, 0, 3]) == pytest.approx([0.0, 1 / 6, 1 / 3, 0.5], abs=1e-6)
+    # color: red -> blue, weighted by alpha; color_rgba's own alpha column is ignored
+    assert data[1, 0, :3] == pytest.approx([2 / 3 / 6, 0.0, 1 / 3 / 6], abs=1e-6)
+    assert data[-1, 0, :3] == pytest.approx([0.0, 0.0, 0.5], abs=1e-6)
 
 
 def test_build_threshold_fog_transfer_function_data_alpha_curve_only_keeps_named_color_path(monkeypatch):
@@ -1622,7 +1622,7 @@ def _gn_component(monkeypatch):
     """A fake component whose float32 table texture already exists (making one needs GL)."""
     component = _FakeComponent()
     component.transfer_function.data = np.zeros((256, 1, 4), dtype="f4")
-    monkeypatch.setitem(yir._gn_tf_textures, id(component), component.transfer_function)
+    monkeypatch.setitem(yir._float_tf_textures, id(component), component.transfer_function)
     return component
 
 

@@ -108,9 +108,10 @@ attributes works.
 
 The transfer function's x runs linearly in log10 of the value. With **Fit to
 Data** (on by default) it spans the data between the **Low %** and **High %**
-percentiles by volume (1 and 100); off, TF Value Min/Max set it in yt_idv's
-normalized units. **Opacity Scale** multiplies emission and opacity per box
-width of path: thin or small structures need it large. After a render the
+percentiles by volume (1 and 100); off, TF Min/Max set it in log10 of the
+field in its own units. The ramp's color is weighted by the opacity curve, as in
+yt, so what is transparent doesn't glow. **Opacity Scale** multiplies emission
+and opacity per box width of path: thin or small structures need it large. After a render the
 starter group's points also carry the data's distribution, for viewer node
 groups to plot: `yt_tf_volume_fraction` and `yt_tf_mass_fraction` (each
 point's share of the volume and the mass) and `yt_tf_log10_value` (log10 of
@@ -354,8 +355,8 @@ two-shot dive into DeeplyNestedZoom authored by
 
 ### yt transfer functions
 
-**Auto Exposure** (yt Layers, yt Transfer Function, Geometry Nodes Transfer
-Function) scales the transfer function's brightness, not its opacity, until the
+**Auto Exposure** (on by default for yt Layers, yt Transfer Function, Geometry
+Nodes Transfer Function and Threshold Fog) scales the transfer function's brightness, not its opacity, until the
 brightest 0.1% of pixels sit near white with at most 0.5% clipped: up to four
 re-renders, starting from the last render's exposure, so animations change
 smoothly. The panel shows the gain. Opacity stays with Ray Length or Opacity

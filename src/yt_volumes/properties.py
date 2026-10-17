@@ -293,7 +293,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "brightest structure sits near white with little clipping. Each render starts from the last "
             "one's exposure, so animations change smoothly"
         ),
-        default=False,
+        default=True,
     )
 
     # yt transfer function (YT_IDV_YT_TRANSFER_FUNCTION)
@@ -527,7 +527,7 @@ _MODE_SETTINGS = {
         "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
         "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure",
     ),
-    "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power"),
+    "YT_IDV_THRESHOLD_FOG": ("fog_value_min", "fog_value_max", "fog_colormap", "fog_alpha_max", "fog_ramp_power", "auto_exposure"),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("mip_alpha_colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "yt_tf_sample_factor", "auto_exposure"),
     "YT_IDV_GN_TRANSFER_FUNCTION": (

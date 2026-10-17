@@ -26,36 +26,27 @@ scripted version would take as input.
 - **Leave Limit Zoom Depth on** (2x). Otherwise rays run through the rest of
   the box behind the target and the sparse far side hazes the view.
 
-## Exposure: Ray Length has to follow the zoom
+## Exposure
 
-Opacity is per data length, so Ray Length is the exposure. As the view shrinks,
-the right Ray Length falls by several decades, and not at a fixed rate: it
-depends on how much gas surrounds the camera. It isn't monotonic in brightness
-either: past a point, a shorter Ray Length makes the front shells opaque and the
-image darker.
+Turn on **Auto Exposure**: each frame's brightness is scaled until its brightest
+0.1% of pixels sit near white with little clipping, starting from the previous
+frame's, so it changes smoothly. Ray Length then only sets opacity, how
+see-through the shells are; one value can serve the whole zoom (4e-4 did for
+DD0087).
 
-Calibrate it rather than guess:
-
-1. Render every 25th frame at low resolution (640x360 is plenty) at a ladder of
-   Ray Lengths, half a decade apart, around a rough guess
-   (`2e-3 * 10**(-0.56 * level)` for DD0087).
-2. For each probe frame, keep the settings that clip at most ~0.5% of pixels,
-   and pick the one with the most core contrast: the 99.9th percentile of
-   brightness over the median. Picking on mean brightness lets the fog set the
-   exposure and dims the core.
-3. Fit a smooth curve through the picks (log10 of the multiplier against zoom
-   level) and keyframe Ray Length from it every few frames. Per-frame picks jump
-   by up to 300x between neighbors and would flicker.
-4. Render every 25th frame with the curve and check clipping before the full
-   render; nudge the whole curve brighter or darker if there's headroom.
-
-Each probe frame takes ~1 s once the scene is loaded, so a full ladder is a few
-minutes. Recalibrate whenever the layers, alpha, ramp or fade change.
+Without it, Ray Length is also the exposure, and has to be calibrated by zoom
+level: render every 25th frame at a ladder of Ray Lengths, keep the ones that
+clip at most ~0.5% of pixels, pick the one with the most core contrast (the
+99.9th percentile of brightness over the median), and keyframe a smooth curve
+through the picks. Brightness isn't monotonic in Ray Length: past a point, a
+shorter one makes the front shells opaque and the image darker.
 
 ## Checklist and costs
 
 - Render with yt_idv compositing front to back (the draw-order fix): without it,
-  thick zoomed views composite as seen from behind.
+  thick zoomed views composite as seen from behind. Auto Exposure also needs
+  yt_idv's transfer-function pass to keep its premultiplied color (the
+  passthrough_alpha blend fix); otherwise brightness can't exceed alpha.
 - `render_volume` sets the zoom target and level from `[zoom]` every frame, so
   give the level as a curve there (`level = [[1, 0.0], [250, 4.2]]`), not only as
   keyframes.
@@ -75,9 +66,10 @@ level = [[1, 0.0], [250, 4.2]]
 [movie]
 layers = { log_range = [-26.5, -15.0], count = 24, alpha_first = 0.002, brightness_ramp = 300 }
 fade = { decades = 1.0 }
-exposure = { probe_every = 25, clip_max = 0.5, guess = "2e-3 * 10**(-0.56 * level)" }
+exposure = "auto"
+ray_length = 4e-4
 fps = 24
 ```
 
-`zoom_movie` would probe, calibrate and smooth the Ray Length curve, write it to
-a report (so it can be inspected or pinned), render, and encode the MP4.
+`zoom_movie` would render with those settings, record the exposure each frame
+chose (so it can be inspected or pinned), and encode the MP4.

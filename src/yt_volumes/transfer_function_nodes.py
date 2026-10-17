@@ -89,7 +89,7 @@ def build_node_group(name=MODIFIER_NAME, nbins=NBINS):
     points = curve.mapping.curves[0].points
     points[0].location = (0.0, 0.0)
     points[1].location = (1.0, 0.8)
-    points.new(0.6, 0.0)  # transparent over the low 60%, so the box doesn't fill with fog
+    points.new(0.3, 0.0)  # transparent over the sparsest 30%, so the voids stay clear
     curve.mapping.update()
 
     store_color = nodes.new("GeometryNodeStoreNamedAttribute")

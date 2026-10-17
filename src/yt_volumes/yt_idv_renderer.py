@@ -116,7 +116,7 @@ _render_result_cache = {}  # (dataset_id, render_size) -> last RenderResult
 _depth_textures = {}  # (id(component), shape) -> its external depth-clip Texture2D
 _fog_transfer_function_cache = {}  # (colormap, value_min, value_max, alpha_max, ramp_power) -> (256, 1, 4) uint8 RGBA texture data
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
-_gn_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture for the GN mode
+_float_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture
 _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
 _exposure_gains = {}  # dataset_id -> the gain auto exposure last chose
 
@@ -738,7 +738,7 @@ def _build_threshold_fog_transfer_function_data(
     """Threshold-fog LUT: transparent below `value_min` (enforced by the shader's
     `tf_min` cutoff), alpha ramping up above it.
 
-    Returns `(nbins, 1, 4)` uint8 RGBA for `TransferFunctionTexture.data`.
+    Returns `(nbins, 1, 4)` float32 RGBA, color weighted by alpha as in yt.
 
     `alpha_curve` (floats in [0, 1], scaled by `alpha_max`) and `color_rgba`
     (`(n, 3)` or `(n, 4)` in [0, 1]; any alpha column is ignored) optionally
@@ -759,8 +759,8 @@ def _build_threshold_fog_transfer_function_data(
     else:
         alpha = _threshold_fog_alpha_ramp(nbins, alpha_max, ramp_power)
 
-    rgba = np.concatenate([rgb, alpha[:, None]], axis=1)
-    return np.clip(rgba * 255.0, 0, 255).astype("u1").reshape(nbins, 1, 4)
+    rgba = np.concatenate([rgb * alpha[:, None], alpha[:, None]], axis=1)
+    return rgba.astype("f4").reshape(nbins, 1, 4)
 
 
 def _get_threshold_fog_transfer_function_data(
@@ -1173,7 +1173,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
 
     result = RenderResult(
         rgba=np.ascontiguousarray(image),
-        alpha_mode="PREMULTIPLIED",  # approximation
+        alpha_mode="PREMULTIPLIED",
         color_space="LINEAR",
         cmap_range=_component_cmap_range(scene),
     )
@@ -1189,10 +1189,9 @@ def _auto_exposed(scene, dataset_id, run):
     an animation's exposure moves smoothly.
     """
     tables = [
-        (component, np.array(component.transfer_function.data))
+        (component, np.array(component.transfer_function.data, dtype=np.float32))
         for component in scene.components
         if getattr(component, "render_method", None) == "transfer_function"
-        and np.asarray(component.transfer_function.data).dtype == np.float32
     ]
     if not tables:
         return run()
@@ -1469,13 +1468,12 @@ def _configure_threshold_fog(component, custom_params):
     ramp_power = custom_params.get("yt_idv_fog_ramp_power", TF_FOG_RAMP_POWER)
     alpha_curve = custom_params.get("yt_idv_alpha_curve")
     color_rgba = custom_params.get("yt_idv_color_image_rgba")
-    _apply_transfer_function_settings(
-        component, value_min, value_max,
-        _get_threshold_fog_transfer_function_data(
-            value_min, value_max, colormap, alpha_max, ramp_power,
-            alpha_curve=alpha_curve, color_rgba=color_rgba,
-        ),
+    data = _get_threshold_fog_transfer_function_data(
+        value_min, value_max, colormap, alpha_max, ramp_power,
+        alpha_curve=alpha_curve, color_rgba=color_rgba,
     )
+    _use_float_table(component, data)
+    _apply_transfer_function_settings(component, value_min, value_max, data)
 
 
 def yt_idv_threshold_fog_renderer(request: RenderRequest) -> RenderResult:
@@ -1614,7 +1612,9 @@ def _configure_gn_transfer_function(component, custom_params):
     component.render_method = "transfer_function"
     # Per box width of path at any zoom, as unzoomed.
     scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0)) / _zoom_factor(component.data)
-    data = (np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0) * scale).astype("f4").reshape(len(rgba), 1, 4)
+    data = np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0)
+    data[:, :3] *= data[:, 3:]  # color weighted by opacity, as in yt
+    data = (data * scale).astype("f4").reshape(len(rgba), 1, 4)
     value_min, value_max = (
         _normalized(component.data, 10.0 ** float(custom_params.get(f"yt_idv_gn_tf_value_{end}", default)))
         for end, default in (("min", -28.0), ("max", -10.0))
@@ -1634,15 +1634,22 @@ def _configure_gn_transfer_function(component, custom_params):
             "units": getattr(component.data, "field_units", None) or "",
             "points": _point_distribution(component.data, distribution, value_min, value_max, len(rgba)),
         }
-    # The default table is 8-bit, which clamps to 1; a texture's storage is fixed by
-    # its first upload, so each component keeps one float32 table, updated in place.
-    texture = _gn_tf_textures.get(id(component))
+    _use_float_table(component, data)
+    _apply_transfer_function_settings(component, value_min, value_max, data)
+
+
+def _use_float_table(component, data):
+    """Give the component its float32 transfer function table for `data`'s
+    shape. The default table is 8-bit, which clamps to 1 and quantizes; a
+    texture's storage is fixed by its first upload, so it is kept and
+    updated in place.
+    """
+    texture = _float_tf_textures.get(id(component))
     if texture is None or texture.data.shape != data.shape:
         from yt_idv.opengl_support import TransferFunctionTexture
 
-        texture = _gn_tf_textures[id(component)] = TransferFunctionTexture(data=data)
+        texture = _float_tf_textures[id(component)] = TransferFunctionTexture(data=data)
     component.transfer_function = texture
-    _apply_transfer_function_settings(component, value_min, value_max, data)
 
 
 def yt_idv_gn_transfer_function_renderer(request: RenderRequest) -> RenderResult:
