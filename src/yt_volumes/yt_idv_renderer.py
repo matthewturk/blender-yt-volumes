@@ -88,8 +88,8 @@ TF_LOG_MIN = -28.0
 TF_LOG_MAX = -20.0
 TF_N_LAYERS = 8
 TF_COLORMAP = "arbre"
-SAMPLES_PER_CELL = 4.0  # Samples per Cell 0 means this, or for the yt modes:
-YT_SAMPLES_PER_CELL = 16.0  # thin yt layers need finer steps
+SAMPLES_PER_CELL = 4.0  # Samples per Cell's default
+YT_SAMPLES_PER_CELL = 16.0  # and the yt modes': thin yt layers need finer steps
 
 # --- Max intensity with value-driven alpha ------------------------------------
 # The ramp is a fraction of the per-view auto cmap_min/cmap_max range, so it
@@ -1181,9 +1181,7 @@ def exposure_gain(dataset_id):
 
 
 def _apply_samples_per_cell(component, custom_params):
-    """Set the component's ray sampling from `yt_idv_samples_per_cell`; 0
-    means SAMPLES_PER_CELL.
-    """
+    """Set the component's ray sampling from `yt_idv_samples_per_cell`."""
     if not hasattr(component, "sample_factor"):
         return
     samples = float(custom_params.get("yt_idv_samples_per_cell") or SAMPLES_PER_CELL)
@@ -1644,8 +1642,6 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
-    if not custom_params.get("yt_idv_samples_per_cell"):
-        _apply_samples_per_cell(component, {"yt_idv_samples_per_cell": YT_SAMPLES_PER_CELL})
     # A zoom stretches model units, along which yt_idv integrates; keep opacity per data length.
     ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _zoom_factor(component.data)
     per_frame = key is None

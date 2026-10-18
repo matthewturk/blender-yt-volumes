@@ -27,7 +27,7 @@ def test_to_custom_params_includes_fixed_and_extra_fields(clean_scene):
     assert params["yt_idv_tf_n_layers"] == 7
     assert params["renderer_mode"] == "YT_IDV_MAX_INTENSITY"
     assert params["field_name"] == "density"
-    assert params["yt_idv_samples_per_cell"] == 0.0  # the mode's default
+    assert params["yt_idv_samples_per_cell"] == 4.0
     # dataset identity is tracked separately by build_dataset_params().
     assert "dataset_path" not in params
     assert "dataset_kind" not in params
@@ -96,3 +96,15 @@ def test_a_saved_transfer_function_evaluates_without_the_add_on(clean_scene, tmp
         assert rgba[-1] == pytest.approx([0.988, 0.998, 0.645, 0.8], abs=2e-3)
     finally:
         properties.register()  # the fixture unregisters
+
+
+def test_choosing_a_yt_mode_sets_finer_sampling_unless_set_by_hand(clean_scene):
+    props = bpy.data.objects.new("V", None).volume_override
+    assert props.samples_per_cell == 4.0
+    props.renderer_mode = "YT_IDV_TRANSFER_FUNCTION"
+    assert props.samples_per_cell == 16.0
+    props.renderer_mode = "YT_IDV_PROJECTION"
+    assert props.samples_per_cell == 4.0
+    props.samples_per_cell = 8.0
+    props.renderer_mode = "YT_IDV_YT_TRANSFER_FUNCTION"
+    assert props.samples_per_cell == 8.0

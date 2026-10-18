@@ -36,9 +36,22 @@ LOOK_SETTINGS = (
 ALPHA_CURVE_NODE_NAME = "AlphaCurve"
 
 
-def _forget_colormap_range(self, context):
+_YT_MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION")
+
+
+def _renderer_mode_changed(self, context):
     # A range fitted in one mode (e.g. Projection's large sums) is wrong for another.
     self.colormap_range_set = False
+    # Thin yt layers need finer steps; a value set by hand is kept.
+    defaults = (_yt_idv_renderer().SAMPLES_PER_CELL, _yt_idv_renderer().YT_SAMPLES_PER_CELL)
+    if self.samples_per_cell in defaults:
+        self.samples_per_cell = defaults[self.renderer_mode in _YT_MODES]
+
+
+def _yt_idv_renderer():
+    from . import yt_idv_renderer
+
+    return yt_idv_renderer
 
 
 def _ensure_alpha_curve(self, context):
@@ -129,7 +142,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             ("SAMPLE_CONSTANT", "Debug: Depth x Constant", "No yt_idv: clipped path length through the box, for fast pipeline tests", "NONE", 6),
         ],
         default="YT_IDV_MAX_INTENSITY",
-        update=_forget_colormap_range,
+        update=_renderer_mode_changed,
     )
     backend: bpy.props.EnumProperty(
         name="Backend",
@@ -143,10 +156,11 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     samples_per_cell: bpy.props.FloatProperty(
         name="Samples per Cell",
         description=(
-            "Ray samples per cell width; 0 uses the mode's default (16 for the yt modes, else 4). "
-            "Too few shows as wood grain and chevrons where cells are large on screen, as in deep zooms"
+            "Ray samples per cell width; switching mode sets 16 for the yt modes and 4 for the others, "
+            "unless changed by hand. Too few shows as wood grain and chevrons where cells are large on "
+            "screen, as in deep zooms"
         ),
-        default=0.0, min=0.0, soft_max=32.0,
+        default=4.0, min=0.1, soft_max=32.0,
     )
     colormap: bpy.props.StringProperty(
         name="Colormap",

@@ -1513,8 +1513,8 @@ def test_samples_per_cell_sets_cartesian_and_spherical_sample_factor():
     assert cartesian.sample_factor == 10.0
     assert spherical.sample_factor == pytest.approx(-1.0)  # a tenth of the element's width
     assert not hasattr(annotation, "sample_factor")
-    yir._apply_samples_per_cell(cartesian, {"yt_idv_samples_per_cell": 0.0})
-    assert cartesian.sample_factor == yir.SAMPLES_PER_CELL  # 0: the default
+    yir._apply_samples_per_cell(cartesian, {})
+    assert cartesian.sample_factor == yir.SAMPLES_PER_CELL  # unset: the default
 
 
 def _gn_component(monkeypatch):
