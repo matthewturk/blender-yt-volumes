@@ -1611,7 +1611,7 @@ def test_yt_transfer_function_reattaches_its_table_after_another_mode_swapped_it
     assert (component.tf_min, component.tf_max) == (0.1, 0.9)
 
 
-def test_yt_transfer_function_opacity_is_per_data_length_at_any_zoom(monkeypatch):
+def test_yt_transfer_function_opacity_is_per_view_or_per_data_length(monkeypatch):
     import yt_idv.tf_conversion as tfc
 
     component = _FakeComponent()
@@ -1621,9 +1621,12 @@ def test_yt_transfer_function_opacity_is_per_data_length_at_any_zoom(monkeypatch
     monkeypatch.setattr(tfc, "apply_converted_transfer_function", lambda c, converted: None)
     monkeypatch.setitem(yir._yt_tf_applied, id(component), None)
 
+    yir._apply_yt_transfer_function(component, {"yt_idv_yt_tf_ray_length": 0.03, "yt_idv_opacity_per_view": False}, None, lambda: None)
+    monkeypatch.setitem(yir._yt_tf_applied, id(component), None)
     yir._apply_yt_transfer_function(component, {"yt_idv_yt_tf_ray_length": 0.03}, None, lambda: None)
 
-    assert lengths == [pytest.approx(0.03 * 1e4)]  # model units are 1e4 times longer
+    # per data length, undoing model units 1e4 times longer; then per view, as set
+    assert lengths == [pytest.approx(0.03 * 1e4), pytest.approx(0.03)]
 
 
 def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping():

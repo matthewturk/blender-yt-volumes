@@ -31,8 +31,9 @@ scripted version would take as input.
 Turn on **Auto Exposure**: each frame's brightness is scaled until its brightest
 0.1% of pixels sit near white with little clipping, starting from the previous
 frame's, so it changes smoothly. Ray Length then only sets opacity, how
-see-through the shells are; one value can serve the whole zoom (4e-4 did for
-DD0087).
+see-through the shells are. With **Opacity Per View** (the default) it applies
+per width of the view, so one value gives the same look at every zoom; off, it
+is per length of data, and deep zooms need far smaller values.
 
 Without it, Ray Length is also the exposure, and has to be calibrated by zoom
 level: render every 25th frame at a ladder of Ray Lengths, keep the ones that

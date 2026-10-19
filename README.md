@@ -111,7 +111,10 @@ Data** (on by default) it spans the data between the **Low %** and **High %**
 percentiles by volume (10 and 100); off, Min/Max (log10) set it in the field's
 own units. yt Layers uses the same range settings. The ramp's color is weighted by the opacity curve, as in
 yt, so what is transparent doesn't glow. **Opacity Scale** multiplies emission
-and opacity per box width of path: thin or small structures need it large. After a render the
+and opacity per box width of path: thin or small structures need it large.
+While zoomed, **Opacity Per View** (on by default, also for the yt modes' Ray
+Length) keeps that per width of the view, as a yt camera does, so a zoomed-in
+look matches the unzoomed one; off, it stays per length of data. After a render the
 starter group's points also carry the data's distribution, for viewer node
 groups to plot: `yt_tf_volume_fraction` and `yt_tf_mass_fraction` (each
 point's share of the volume and the mass) and `yt_tf_log10_value` (log10 of

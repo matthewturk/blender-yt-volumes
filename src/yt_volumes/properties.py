@@ -30,7 +30,7 @@ LOOK_SETTINGS = (
     "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_brightness_ramp",
     "tf_camera_fade", "tf_camera_fade_decades", "auto_exposure",
     "mip_alpha_max", "mip_alpha_ramp_power",
-    "yt_tf", "yt_tf_ray_length", "gn_tf_opacity_scale",
+    "yt_tf", "yt_tf_ray_length", "gn_tf_opacity_scale", "opacity_per_view",
     "alpha_source", "color_source",
 )
 ALPHA_CURVE_NODE_NAME = "AlphaCurve"
@@ -261,6 +261,15 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=0.15, min=0.01, max=10.0,
     )
 
+    opacity_per_view: bpy.props.BoolProperty(
+        name="Opacity Per View",
+        description=(
+            "While zoomed, Ray Length and Opacity Scale apply per unit of the view, as for a yt camera, so a "
+            "zoomed-in look matches the unzoomed one. Off, they apply per length of data, and deep zooms "
+            "need far smaller Ray Lengths"
+        ),
+        default=True,
+    )
     auto_exposure: bpy.props.BoolProperty(
         name="Auto Exposure",
         description=(
@@ -468,11 +477,12 @@ _MODE_SETTINGS = {
     "YT_IDV_PROJECTION": ("colormap",),
     "YT_IDV_TRANSFER_FUNCTION": (
         "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "colormap", "tf_brightness_ramp",
-        "tf_camera_fade", "tf_camera_fade_decades", *_TF_RANGE, "yt_tf_ray_length", "auto_exposure",
+        "tf_camera_fade", "tf_camera_fade_decades", *_TF_RANGE, "yt_tf_ray_length", "opacity_per_view",
+        "auto_exposure",
     ),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
-    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "auto_exposure"),
-    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", *_TF_RANGE, "auto_exposure"),
+    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "opacity_per_view", "auto_exposure"),
+    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", "opacity_per_view", *_TF_RANGE, "auto_exposure"),
 }
 # Modes that color with a colormap over a fitted range (Rescale Colormap, Colormap Range).
 _COLORMAP_RANGE_MODES = ("YT_IDV_MAX_INTENSITY", "YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_PROJECTION")

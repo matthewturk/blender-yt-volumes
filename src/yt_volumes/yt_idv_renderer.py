@@ -407,6 +407,15 @@ def _zoom_factor(collection):
     return 1.0 if base is None else base[1] / collection.applied_scale_ratio
 
 
+def _opacity_zoom(collection, custom_params):
+    """What divides transfer-function opacity under a zoom. yt_idv integrates
+    along model units, which a zoom keeps about the size of the view: per view
+    (`yt_idv_opacity_per_view`, the default) that is left alone, as a yt camera
+    does; otherwise it is undone, keeping opacity per length of data.
+    """
+    return 1.0 if custom_params.get("yt_idv_opacity_per_view", True) else _zoom_factor(collection)
+
+
 def _base_transform(collection):
     """The `(offset, ratio)` that maps the collection into the volume cube,
     recorded the first time a zoom changes it.
@@ -1524,8 +1533,7 @@ def _configure_gn_transfer_function(component, custom_params):
     if rgba is None:
         raise ValueError("the Geometry Nodes transfer function wasn't sampled (no yt_idv_gn_tf_rgba)")
     component.render_method = "transfer_function"
-    # Per box width of path at any zoom, as unzoomed.
-    scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0)) / _zoom_factor(component.data)
+    scale = float(custom_params.get("yt_idv_gn_tf_opacity_scale", 1.0)) / _opacity_zoom(component.data, custom_params)
     data = np.clip(np.asarray(rgba, dtype=np.float64), 0.0, 1.0)
     data[:, :3] *= data[:, 3:]  # color weighted by opacity, as in yt
     data = (data * scale).astype("f4").reshape(len(rgba), 1, 4)
@@ -1642,8 +1650,7 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
-    # A zoom stretches model units, along which yt_idv integrates; keep opacity per data length.
-    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _zoom_factor(component.data)
+    ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _opacity_zoom(component.data, custom_params)
     per_frame = key is None
     key = (id(component.data), key, ray_length)
     applied = _yt_tf_applied.get(id(component))
