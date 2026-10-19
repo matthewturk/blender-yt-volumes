@@ -602,6 +602,7 @@ class render_session:
         scene.render.use_persistent_data = self._saved["use_persistent_data"]
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
+        compositor_build.restore_passthrough(scene)
         return False  # never swallow exceptions
 
 
@@ -691,10 +692,22 @@ def load_message(pending):
     return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
 
 
+_in_pipeline = False  # True while render_current_frame runs, for handlers.render_pre
+
+
 def render_current_frame(context):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
     """
+    global _in_pipeline
+    _in_pipeline = True
+    try:
+        _render_current_frame(context)
+    finally:
+        _in_pipeline = False
+
+
+def _render_current_frame(context):
     scene = context.scene
     if scene.camera is None:
         raise RuntimeError("Scene has no active camera")
@@ -827,6 +840,7 @@ def render_current_frame(context):
             scene.render.compositor_device = prev_compositor_device
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
+            compositor_build.restore_passthrough(scene)
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 
@@ -929,10 +943,12 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
 
 
 def draw_render_menu(self, context):
+    # First in the menu: Blender's own Render Image/Animation don't run the pipeline.
     self.layout.operator(VOLUMEOVERRIDE_OT_render.bl_idname, text="Render (Volume Override)")
     self.layout.operator(
         VOLUMEOVERRIDE_OT_render.bl_idname, text="Render Animation (Volume Override)",
     ).animation = True
+    self.layout.separator()
 
 
 class VOLUMEOVERRIDE_OT_reset_change_tracking(bpy.types.Operator):
@@ -960,7 +976,7 @@ CLASSES = (
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
-    bpy.types.TOPBAR_MT_render.append(draw_render_menu)
+    bpy.types.TOPBAR_MT_render.prepend(draw_render_menu)
     change_tracking.reset()  # fresh registration -- see change_tracking.reset()'s docstring
 
 

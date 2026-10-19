@@ -467,6 +467,34 @@ def test_pass1_and_pass2_graphs_share_exactly_one_final_output(clean_scene, tmp_
         assert link.from_node.name == cb._node_name("Over", "0", "A")
 
 
+def test_restore_passthrough_outputs_the_scenes_own_render(clean_scene, tmp_path):
+    # Regression: the last frame's pass-2 graph stayed, so Blender's own Render
+    # Animation composited that frame's (deleted) EXRs over every frame.
+    scene = clean_scene
+    bpy.context.view_layer.use_pass_z = True
+    output_type = "NodeGroupOutput" if cb._is_group_api(scene) else "CompositorNodeComposite"
+    tree = cb.ensure_compositor_tree(scene)
+    frame_dir = tmp_path / "frame1"
+    frame_dir.mkdir()
+    cb.build_pass1_capture_graph(scene, str(frame_dir), 1)
+    cb.build_or_update_graph(scene, _build_solid_volume_image(tmp_path, "beauty", green=0.1),
+                             [("A", _build_solid_volume_image(tmp_path, "vol", green=0.2))])
+
+    cb.restore_passthrough(scene)
+
+    assert tree.nodes.get(cb._node_name("Beauty")) is None and tree.nodes.get(cb._node_name("Vol", "A")) is None
+    (output,) = [n for n in tree.nodes if n.bl_idname == output_type]
+    (link,) = [l for l in tree.links if l.to_node == output]
+    assert link.from_node.name == cb._node_name("Pass1RLayers")
+    assert tree.nodes[cb._node_name("Pass1BeautyOut")].mute  # a plain render writes no EXRs
+    # the next pipeline frame rebuilds pass 2 as usual
+    cb.build_or_update_graph(scene, _build_solid_volume_image(tmp_path, "beauty2", green=0.1),
+                             [("A", _build_solid_volume_image(tmp_path, "vol2", green=0.2))])
+    (output,) = [n for n in tree.nodes if n.bl_idname == output_type]
+    (link,) = [l for l in tree.links if l.to_node == output]
+    assert link.from_node.name == cb._node_name("Over", "0", "A")
+
+
 def test_build_pass1_capture_graph_removes_obsolete_pass1_output_node(clean_scene, tmp_path):
     # Trees from older versions (e.g. saved .blends) still have this node.
     scene = clean_scene

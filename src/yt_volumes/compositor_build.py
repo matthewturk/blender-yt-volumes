@@ -274,6 +274,24 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     return tree
 
 
+def restore_passthrough(scene):
+    """After the pipeline: wire the scene's own render straight to the output
+    and drop the pass-2 nodes, whose EXRs are deleted after each frame but
+    whose images stay loaded, so a plain Blender render (e.g. Render >
+    Render Animation) doesn't composite the last volume frame over every frame.
+    """
+    tree = scene.compositing_node_group if _is_group_api(scene) else scene.node_tree
+    if tree is None:
+        return
+    _clear_managed_nodes(tree, exclude_prefix=_PASS1_NODE_PREFIX)
+    if _VOLUME_ORDER_KEY in tree:
+        del tree[_VOLUME_ORDER_KEY]
+    render_layers = tree.nodes.get(_node_name("Pass1RLayers"))
+    if render_layers is not None:
+        _link_final_output(scene, tree, render_layers.outputs["Image"])
+    _mute_pass1_file_outputs(tree)
+
+
 def _mute_pass1_file_outputs(tree):
     """Mute pass 1's File Output nodes so pass 2's render doesn't rewrite
     their EXRs. Muting doesn't invalidate the persistent-data cache.

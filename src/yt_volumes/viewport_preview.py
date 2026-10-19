@@ -4,8 +4,8 @@ viewport's own view.
 Volumes set to Show in Viewport (Volume Override panel) are drawn. A
 POST_VIEW handler notices when a viewport's view or the scene changed and
 reads its depth buffer; a timer re-renders the volumes once things settle,
-clipped against that depth as F12 clips against the Z pass; a POST_PIXEL
-handler draws the latest image. Renders share F12's render context and loaded
+clipped against that depth as F12 clips against the Z pass; a second
+POST_VIEW handler draws the latest image, under the gizmos. Renders share F12's render context and loaded
 data (see `yt_idv_renderer._use_render_size`).
 """
 
@@ -153,21 +153,39 @@ def _capture():
         bpy.app.timers.register(_render_pending, first_interval=SETTLE)
 
 
-def _draw():
-    """POST_PIXEL: draw the viewport's latest image."""
+def _state():
     context = bpy.context
     if context.region_data is None or not shown_volumes(context.scene):
+        return None
+    return _regions.get(context.region.as_pointer())
+
+
+def _draw_image():
+    """POST_VIEW, after `_capture`: draw the viewport's latest image over the
+    scene, before the gizmos and the viewport's text, which then stay visible.
+    """
+    state = _state()
+    if state is None or state["texture"] is None:
         return
-    state = _regions.get(context.region.as_pointer())
+    import gpu
+    from gpu_extras.presets import draw_texture_2d
+    from mathutils import Matrix
+
+    gpu.state.blend_set("ALPHA_PREMULT")
+    gpu.state.depth_test_set("NONE")
+    gpu.state.depth_mask_set(False)
+    with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+        gpu.matrix.load_identity()
+        gpu.matrix.load_projection_matrix(Matrix.Identity(4))
+        draw_texture_2d(state["texture"], (-1.0, -1.0), 2.0, 2.0)  # the whole region, in clip space
+    gpu.state.blend_set("NONE")
+
+
+def _draw():
+    """POST_PIXEL: the preview's error, if any."""
+    state = _state()
     if state is None:
         return
-    if state["texture"] is not None:
-        import gpu
-        from gpu_extras.presets import draw_texture_2d
-
-        gpu.state.blend_set("ALPHA_PREMULT")
-        draw_texture_2d(state["texture"], (0, 0), context.region.width, context.region.height)
-        gpu.state.blend_set("NONE")
     message = state["error"] or (state.get("depth_error") and f"no occlusion: {state['depth_error']}")
     if message:
         import blf
@@ -278,6 +296,7 @@ def register():
     )
     _draw_handles[:] = [
         bpy.types.SpaceView3D.draw_handler_add(_capture, (), "WINDOW", "POST_VIEW"),
+        bpy.types.SpaceView3D.draw_handler_add(_draw_image, (), "WINDOW", "POST_VIEW"),
         bpy.types.SpaceView3D.draw_handler_add(_draw, (), "WINDOW", "POST_PIXEL"),
     ]
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
