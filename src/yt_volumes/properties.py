@@ -28,7 +28,7 @@ LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
     "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_brightness_ramp",
-    "tf_camera_fade", "tf_camera_fade_decades", "auto_exposure",
+    "tf_camera_fade", "tf_camera_fade_decades", "tf_opaque", "tf_opaque_above", "tf_opaque_edge", "auto_exposure",
     "mip_alpha_max", "mip_alpha_ramp_power",
     "yt_tf", "yt_tf_ray_length", "gn_tf_opacity_scale", "opacity_per_view",
     "alpha_source", "color_source",
@@ -247,6 +247,21 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         name="Fade Decades",
         description="How many decades sparser than the field the camera has reached a layer is when it has faded out completely",
         default=1.0, min=0.01, soft_max=10.0,
+    )
+    tf_opaque: bpy.props.BoolProperty(
+        name="Opaque End",
+        description="Make the field above Opaque Above fully opaque, in the colormap's color there, after the layers; Fade Around Camera doesn't fade it",
+        default=False,
+    )
+    tf_opaque_above: bpy.props.FloatProperty(
+        name="Opaque Above (log10)",
+        description="log10 of the field from which the transfer function is fully opaque",
+        default=-12.0,
+    )
+    tf_opaque_edge: bpy.props.FloatProperty(
+        name="Opaque Edge",
+        description="Decades below Opaque Above over which opacity rises, geometrically, from Alpha Last to solid; 0 for a hard edge",
+        default=1.0, min=0.0, soft_max=4.0,
     )
 
     # Maximum intensity with value-driven alpha (YT_IDV_MAX_INTENSITY_ALPHA)
@@ -495,8 +510,8 @@ _MODE_SETTINGS = {
     "YT_IDV_PROJECTION": ("colormap",),
     "YT_IDV_TRANSFER_FUNCTION": (
         "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "colormap", "tf_brightness_ramp",
-        "tf_camera_fade", "tf_camera_fade_decades", *_TF_RANGE, "yt_tf_ray_length", "opacity_per_view",
-        "auto_exposure",
+        "tf_camera_fade", "tf_camera_fade_decades", "tf_opaque", "tf_opaque_above", "tf_opaque_edge",
+        *_TF_RANGE, "yt_tf_ray_length", "opacity_per_view", "auto_exposure",
     ),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "opacity_per_view", "auto_exposure"),
@@ -572,6 +587,8 @@ def _draw_look(layout, props):
             row.enabled = props.tf_fit_range
         elif name == "tf_camera_fade_decades":
             row.enabled = props.tf_camera_fade
+        elif name in ("tf_opaque_above", "tf_opaque_edge"):
+            row.enabled = props.tf_opaque
         row.prop(props, name)
         if name == "auto_exposure" and props.auto_exposure:
             from . import yt_idv_renderer

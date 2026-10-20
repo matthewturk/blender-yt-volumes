@@ -106,6 +106,7 @@ def _for_display(tf):
     edges[-1] = len(tf.funcs[0].x)
     for source, target in zip(tf.funcs, shown.funcs):
         target.y[:] = np.maximum.reduceat(source.y, np.minimum(edges[:-1], len(source.y) - 1))
+    shown.funcs[3].y = np.minimum(shown.funcs[3].y, 1.0)  # an opaque end's opacity is far above 1
     brightest = max(float(channel.y.max()) for channel in shown.funcs[:3])
     if brightest > 1.0:
         for channel in shown.funcs[:3]:

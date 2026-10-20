@@ -1016,7 +1016,7 @@ def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     })
 
     (key, make), = applied
-    assert key[1:4] == ((-28.0, -22.0), 4, 0.01) and key[-2:] == ("viridis", 1.0)
+    assert key[1:4] == ((-28.0, -22.0), 4, 0.01) and key[-3:] == ("viridis", 1.0, None)
     tf = make()
     assert tf.grey_opacity and tuple(tf.x_bounds) == (-28.0, -22.0)
     # four peaks, alpha rising geometrically from 0.1 to 1
@@ -1024,6 +1024,31 @@ def test_configure_transfer_function_builds_yt_add_layers(monkeypatch):
     peaks = np.nonzero((alpha[1:-1] > alpha[:-2]) & (alpha[1:-1] >= alpha[2:]))[0] + 1
     assert len(peaks) == 4
     np.testing.assert_allclose(alpha[peaks], np.geomspace(0.1, 1.0, 4), rtol=0.02)
+
+
+def test_layers_can_end_fully_opaque():
+    from matplotlib import colormaps
+
+    params = {
+        "yt_idv_tf_n_layers": 4, "yt_idv_colormap": "arbre", "yt_idv_tf_alpha_first": 0.01, "yt_idv_tf_alpha_last": 0.05,
+        "yt_idv_tf_opaque": True, "yt_idv_tf_opaque_above": -23.0, "yt_idv_tf_opaque_edge": 0.5,
+        "yt_idv_tf_camera_fade": True,
+    }
+    bounds = (-28.0, -22.0)
+    settings = yir._layers_settings(bounds, params, camera_value=1e-22)  # past every layer: all faded
+
+    tf = yir.layers_transfer_function(bounds, *settings)
+
+    x, alpha = tf.funcs[3].x, tf.funcs[3].y
+    assert alpha[x >= -23.0].min() == pytest.approx(yir.OPAQUE_OPACITY)  # solid, though the layers have faded
+    edge = (x > -23.5) & (x < -23.0)
+    # a geometric rise from Alpha Last to solid, evenly in log opacity
+    expected = 0.05 * (yir.OPAQUE_OPACITY / 0.05) ** ((x[edge] + 23.5) / 0.5)
+    np.testing.assert_allclose(alpha[edge], expected, rtol=1e-6)
+    assert alpha[x < -23.5].max() == 0.0
+    top = np.argmax(x >= -22.5)
+    expected = colormaps["arbre"]((x[top] - bounds[0]) / (bounds[1] - bounds[0]))[:3]
+    np.testing.assert_allclose([c.y[top] for c in tf.funcs[:3]], expected, rtol=1e-6)
 
 
 def test_configure_max_intensity_alpha_custom_params_override_module_constants(monkeypatch):
@@ -1667,6 +1692,28 @@ def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping()
     image[:] = 0.0
     image[0, 0, 0] = 0.3  # one lit pixel, under 0.1% of the frame
     assert yir._exposure_factor(image) == pytest.approx(3.0)
+
+
+def test_auto_exposure_leaves_the_opaque_ends_color_alone(monkeypatch):
+    monkeypatch.setattr(yir, "_exposure_gains", {"d": 8.0})
+    table = np.full((4, 1, 4), 0.2, dtype=np.float32)
+    table[:2, 0, 3] = 1.0  # layers, at Alpha Last
+    table[3, 0, 3] = 1e4  # the opaque end's bin
+    seen = []
+    component = types.SimpleNamespace(render_method="transfer_function", transfer_function=types.SimpleNamespace(data=table))
+    scene = types.SimpleNamespace(components=[component])
+
+    def run():
+        seen.append(component.transfer_function.data.copy())
+        return np.full((4, 4, 4), 0.9, dtype=np.float32)  # on target: no further steps
+
+    table[2, 0, 3] = 1e2  # halfway up the opaque end's rise, in log opacity
+
+    yir._auto_exposed(scene, "d", run, solid_ratio=1e4 / 1.0)
+
+    np.testing.assert_allclose(seen[0][:2, 0, :3], 0.2 * 8.0)  # the layers take the gain
+    np.testing.assert_allclose(seen[0][2, 0, :3], 0.2 * 8.0**0.5, rtol=1e-5)  # half of it, in log
+    np.testing.assert_allclose(seen[0][3, 0, :3], 0.2)  # the solid end keeps its color
 
 
 def test_auto_exposure_gain_stays_bounded(monkeypatch):

@@ -396,6 +396,15 @@ from percentiles of the data by volume (default 10% to 100%; the panel shows
 the range it found); off, it uses Min and Max (log10). It shares Ray Length
 with the mode below, and is converted the same way.
 
+**Opaque End** adds a solid end after the layers: from **Opaque Above** (log10)
+up the field is opaque, in the colormap's color there, its opacity rising
+geometrically from Alpha Last over **Opaque Edge** decades below, so dense gas
+turns solid gradually. Fade Around Camera leaves it alone, and Auto Exposure's
+gain fades out along the rise, so the solid end keeps its own color. It needs a
+yt_idv whose transfer-function shader integrates each step exactly
+(`yt_idv-exact-tf-step.diff`); otherwise its first sample overshoots to white.
+The plot shows opacity only up to 1, so the rise looks like a step there.
+
 `render.mode = "YT_IDV_YT_TRANSFER_FUNCTION"` renders with a transfer function
 you build in yt, a `ColorTransferFunction` with grey opacity over log10 of
 the field. It is converted with yt_idv's `tf_conversion` (yt-project/yt_idv#288),

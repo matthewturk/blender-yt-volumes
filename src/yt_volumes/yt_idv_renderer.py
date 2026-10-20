@@ -1148,7 +1148,10 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     try:
         if custom_params.get("yt_idv_auto_exposure"):
             # a stereo pair's second eye keeps the first's exposure
-            image = _auto_exposed(scene, dataset_id, run, adapt=request.frame.view_index == 0)
+            solid_ratio = None
+            if custom_params.get("yt_idv_tf_opaque"):
+                solid_ratio = OPAQUE_OPACITY / max(float(custom_params.get("yt_idv_tf_alpha_last", 1.0)), 1e-6)
+            image = _auto_exposed(scene, dataset_id, run, adapt=request.frame.view_index == 0, solid_ratio=solid_ratio)
         else:
             image = run()
     finally:
@@ -1165,11 +1168,13 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     return result
 
 
-def _auto_exposed(scene, dataset_id, run, adapt=True):
+def _auto_exposed(scene, dataset_id, run, adapt=True, solid_ratio=None):
     """Render with the transfer function tables' emission scaled until the
     brightest 0.1% of pixels sit near AUTO_EXPOSURE_TARGET with at most
     AUTO_EXPOSURE_CLIP clipped. Starts from the gain the last render chose, so
-    an animation's exposure moves smoothly.
+    an animation's exposure moves smoothly. With an opaque end whose opacity
+    rises `solid_ratio`-fold to the table's peak, the gain fades out along that
+    rise, so the solid end keeps its own color.
     """
     tables = [
         (component, np.array(component.transfer_function.data, dtype=np.float32))
@@ -1184,7 +1189,7 @@ def _auto_exposed(scene, dataset_id, run, adapt=True):
             for component, table in tables:
                 # emission only: scaling opacity too makes the image darker past a point, as front layers turn opaque
                 exposed = table.copy()
-                exposed[..., :3] *= gain
+                exposed[..., :3] *= _exposure_scale(table[..., 3:4], gain, solid_ratio)
                 component.transfer_function.data = exposed
             image = run()
             factor = _exposure_factor(image) if adapt else 1.0
@@ -1197,6 +1202,18 @@ def _auto_exposed(scene, dataset_id, run, adapt=True):
             component.transfer_function.data = table
     _exposure_gains[dataset_id] = gain
     return image
+
+
+def _exposure_scale(alpha, gain, solid_ratio=None):
+    """Per-bin gain: `gain`, fading (evenly in log opacity) to 1 over the
+    opaque end's rise of `solid_ratio` to the peak opacity.
+    """
+    if not solid_ratio or solid_ratio <= 1.0:
+        return gain
+    peak = float(alpha.max())
+    with np.errstate(divide="ignore"):
+        rise = np.clip(np.log(np.maximum(alpha, 1e-30) * solid_ratio / peak) / np.log(solid_ratio), 0.0, 1.0)
+    return gain ** (1.0 - rise)
 
 
 def _exposure_factor(image):
@@ -1306,7 +1323,7 @@ def _configure_transfer_function(component, custom_params):
 
 
 def _layers_settings(bounds, custom_params, camera_value=None):
-    """`(n_layers, width, alpha, colormap, ramp)` for `layers_transfer_function`
+    """`(n_layers, width, alpha, colormap, ramp, opaque)` for `layers_transfer_function`
     from the `yt_idv_tf_*` custom_params; `camera_value` is the field the
     camera has reached, for Fade Around Camera.
     """
@@ -1317,17 +1334,50 @@ def _layers_settings(bounds, custom_params, camera_value=None):
     if get("yt_idv_tf_camera_fade"):
         alpha = alpha * _camera_fade(_layer_values(bounds, n_layers), camera_value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
     colormap = get("yt_idv_colormap") or TF_COLORMAP
-    return n_layers, width, tuple(float(a) for a in alpha), colormap, float(get("yt_idv_tf_brightness_ramp", 1.0))
+    opaque = None
+    if get("yt_idv_tf_opaque"):
+        opaque = (float(get("yt_idv_tf_opaque_above", 0.0)), float(get("yt_idv_tf_opaque_edge", 0.0)), float(get("yt_idv_tf_alpha_last", 1.0)))
+    return n_layers, width, tuple(float(a) for a in alpha), colormap, float(get("yt_idv_tf_brightness_ramp", 1.0)), opaque
 
 
-def layers_transfer_function(bounds, n_layers, width, alpha, colormap, ramp):
-    """yt Layers' ColorTransferFunction over log10 `bounds`."""
+def layers_transfer_function(bounds, n_layers, width, alpha, colormap, ramp, opaque=None):
+    """yt Layers' ColorTransferFunction over log10 `bounds`; `opaque`
+    `(above, edge, start)` makes it fully opaque from `above` up, rising from
+    opacity `start` over `edge` decades below it.
+    """
     import yt
 
     tf = yt.ColorTransferFunction(bounds, nbins=8192, grey_opacity=True)
     tf.add_layers(n_layers, w=width, alpha=alpha, colormap=colormap)
+    if opaque is not None:
+        _add_opaque_end(tf, colormap, *opaque)
     _ramp_brightness(tf, ramp)
     return tf
+
+
+OPAQUE_OPACITY = 1e4  # yt opacity of the opaque end: solid within a tiny fraction of a ray length
+
+
+def _add_opaque_end(tf, colormap, above, edge, start=1.0):
+    """Make `tf` opaque from log10 `above` up, its opacity rising
+    geometrically from `start` (the densest layer's) over `edge` decades below
+    it, so the end turns solid gradually. Colored as yt colors layers there
+    (the colormap over the TF's range); yt weights color by opacity, so a ray
+    stopped there shows that color, given a yt_idv that integrates each step
+    exactly.
+    """
+    from matplotlib import colormaps
+
+    x = tf.funcs[3].x
+    low, high = tf.x_bounds
+    solid = x >= above - edge
+    fraction = np.clip((x[solid] - (above - edge)) / edge, 0.0, 1.0) if edge > 0 else np.ones(solid.sum())
+    start = min(max(start, 1e-6), OPAQUE_OPACITY)
+    opacity = start * (OPAQUE_OPACITY / start) ** fraction
+    colors = colormaps[colormap](np.clip((x[solid] - low) / (high - low), 0.0, 1.0))
+    for channel, color in zip(tf.funcs[:3], colors.T):
+        channel.y[solid] = np.maximum(channel.y[solid], color)
+    tf.funcs[3].y[solid] = np.maximum(tf.funcs[3].y[solid], opacity)
 
 
 def _layer_values(bounds, n_layers):
