@@ -1237,3 +1237,46 @@ def test_a_stereo_render_renders_each_eye_and_composites_it(addon_enabled, monke
         image = bpy.data.images.load(str(tmp_path / f"out_{suffix}.png"))
         pixel = np.array(image.pixels[:4])
         assert pixel[channel] > 0.9 and pixel[2 - channel] < 0.1, suffix
+
+
+def test_a_plain_render_warns_once_per_render(addon_enabled, monkeypatch, tmp_path, capsys):
+    from yt_volumes import handlers
+
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 8
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.frame_start, scene.frame_end = 1, 3
+    scene.render.filepath = str(tmp_path / "plain_")
+    _add_camera(scene, "PERSP", lens=50.0)
+    _flagged_cube()
+    popups = []
+    monkeypatch.setattr(handlers, "_interactive", lambda: True)
+    monkeypatch.setattr(bpy.app.timers, "register", lambda fn, **kw: popups.append(fn))
+
+    bpy.ops.render.render(animation=True)  # Blender's own, not the pipeline
+    first = capsys.readouterr().out.count("leaves the yt_idv volumes out")
+    bpy.ops.render.render()
+
+    assert first == 1  # not once per frame
+    assert capsys.readouterr().out.count("leaves the yt_idv volumes out") == 1
+    assert popups == [handlers._show_plain_render_warning] * 2
+
+
+@pytest.mark.parametrize("output, expected", [("out_", "out_0005.png"), ("frame_###_x", "frame_005_x.png")])
+def test_volume_override_renders_are_named_by_frame(addon_enabled, monkeypatch, tmp_path, output, expected):
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 8
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    _flagged_cube()
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    scene.render.filepath = str(tmp_path / output)
+    scene.frame_set(5)
+
+    operators._render_numbered_frame(bpy.context)  # what F12 and each animation frame run
+
+    assert (tmp_path / expected).exists()
+    assert scene.render.filepath == str(tmp_path / output)

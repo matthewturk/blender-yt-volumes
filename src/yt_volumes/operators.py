@@ -928,6 +928,20 @@ def _show_render_result(context):
         _log(f"could not show Render Result ({exc}) -- output was still written to disk/Render Result")
 
 
+def _render_numbered_frame(context):
+    """`render_current_frame` writing to Blender's numbered path for the
+    frame, as Render Animation names its files.
+    """
+    render = context.scene.render
+    saved = render.filepath
+    # the pipeline saves with write_still, which uses the output path as is
+    render.filepath = os.path.splitext(render.frame_path())[0] if render.use_file_extension else render.frame_path()
+    try:
+        render_current_frame(context)
+    finally:
+        render.filepath = saved
+
+
 class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     """Render with the scene's engine plus yt_idv volumes, depth-clipped and composited."""
 
@@ -956,7 +970,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
 
         if not self.animation:
             try:
-                render_current_frame(context)
+                _render_numbered_frame(context)
             except Exception as exc:
                 self.report({"ERROR"}, f"Volume override render failed: {exc}")
                 return {"CANCELLED"}
@@ -964,7 +978,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
             return {"FINISHED"}
 
         scene = context.scene
-        self._frame_iter = iter(range(scene.frame_start, scene.frame_end + 1))
+        self._frame_iter = iter(range(scene.frame_start, scene.frame_end + 1, scene.frame_step))
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.01, window=context.window)
         wm.modal_handler_add(self)
@@ -990,7 +1004,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
 
         context.scene.frame_set(frame)
         try:
-            render_current_frame(context)
+            _render_numbered_frame(context)
         except Exception as exc:
             self._finish(context)
             self.report({"ERROR"}, f"Volume override render failed at frame {frame}: {exc}")

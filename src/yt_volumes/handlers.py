@@ -2,7 +2,7 @@
 
 1. A `render_cancel` handler restoring `hide_render` on flagged objects, as
    a backstop for renders started outside our operator, and a `render_pre`
-   one warning that such renders leave the volumes out.
+   one warning, with a popup in the UI, that such renders leave the volumes out.
 
 2. F12 / Ctrl+F12 bound to `render.volume_override`: Blender can't override
    an operator, so the default `render.render` keymap items are disabled
@@ -16,6 +16,9 @@ from . import properties
 
 _disabled_default_keymap_items = []  # [(keymap_name, keymap_item_id)]
 _addon_keymap_items = []  # [(keymap, keymap_item)]
+_warned = [False]  # this render already warned (render_pre runs once per frame)
+PLAIN_RENDER_TITLE = "This render leaves the yt_idv volumes out"
+PLAIN_RENDER_HINT = "Use Render (Volume Override), Render Animation (Volume Override), F12 or Ctrl+F12"
 
 
 @persistent
@@ -33,19 +36,48 @@ def _warn_plain_render(scene, *_args):
         obj.volume_override.renderer_mode in operators.YT_IDV_RENDERER_MODES for obj in properties.flagged_objects(scene)
     ):
         return
-    print(
-        "yt_volumes: this render leaves the yt_idv volumes out; use Render > Render (Volume Override), "
-        "Render Animation (Volume Override), F12 or Ctrl+F12",
-        flush=True,
-    )
+    if _warned[0]:
+        return
+    _warned[0] = True
+    print(f"yt_volumes: {PLAIN_RENDER_TITLE}. {PLAIN_RENDER_HINT}.", flush=True)
+    if _interactive() and not bpy.app.timers.is_registered(_show_plain_render_warning):
+        # render handlers can run off the main thread; timers run on it
+        bpy.app.timers.register(_show_plain_render_warning, first_interval=0.0)
+
+
+def _interactive():
+    return not bpy.app.background
+
+
+def _show_plain_render_warning():
+    wm = bpy.context.window_manager
+    if not wm.windows:
+        return None
+
+    def draw(menu, context):
+        menu.layout.label(text=PLAIN_RENDER_HINT)
+
+    with bpy.context.temp_override(window=wm.windows[0]):
+        wm.popup_menu(draw, title=PLAIN_RENDER_TITLE, icon="ERROR")
+    return None
+
+
+@persistent
+def _render_done(*_args):
+    _warned[0] = False
 
 
 def register_handlers():
     bpy.app.handlers.render_cancel.append(_restore_all_flagged_visibility)
     bpy.app.handlers.render_pre.append(_warn_plain_render)
+    bpy.app.handlers.render_complete.append(_render_done)
+    bpy.app.handlers.render_cancel.append(_render_done)
 
 
 def unregister_handlers():
+    for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
+        if _render_done in handlers:
+            handlers.remove(_render_done)
     if _restore_all_flagged_visibility in bpy.app.handlers.render_cancel:
         bpy.app.handlers.render_cancel.remove(_restore_all_flagged_visibility)
     if _warn_plain_render in bpy.app.handlers.render_pre:
