@@ -525,6 +525,9 @@ def _draw_gn_transfer_function(layout, obj):
 _TF_PLOT_MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION", "YT_IDV_GN_TRANSFER_FUNCTION")
 
 
+TF_PLOT_SCALE = 18.0  # icon size in UI units; the plot keeps its aspect inside it
+
+
 def _draw_tf_plot(layout, obj):
     from . import tf_plot
 
@@ -533,12 +536,12 @@ def _draw_tf_plot(layout, obj):
     layout.prop(obj.volume_override, "show_tf_plot")
     if not obj.volume_override.show_tf_plot:
         return
-    texture = tf_plot.texture(obj)
+    icon = tf_plot.icon(obj)
     message = tf_plot.error(obj)
     if message:
         layout.label(text=message, icon="ERROR")
-    elif texture is not None:
-        layout.template_preview(texture, show_buttons=False)
+    elif icon:
+        layout.template_icon(icon_value=icon, scale=TF_PLOT_SCALE)
     else:
         layout.label(text="Plotting the transfer function...")
 

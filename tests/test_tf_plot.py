@@ -16,6 +16,7 @@ def volume():
     bpy.context.scene.collection.objects.link(obj)
     obj.volume_override.is_volume_override = True
     yield obj
+    tf_plot.unregister()
     properties.unregister()
 
 
@@ -34,19 +35,20 @@ def test_yt_layers_plot_is_the_rendered_transfer_function(volume):
     assert len(peaks) == 5
 
 
-def test_plot_draws_into_an_image_and_texture(volume):
+def test_plot_draws_into_a_preview_icon(volume):
     props = volume.volume_override
     props.renderer_mode = "YT_IDV_TRANSFER_FUNCTION"
     props.tf_fit_range = False
 
     assert tf_plot.plot(volume) is None
 
-    image = bpy.data.images[tf_plot.image_name(volume)]
-    pixels = np.empty(len(image.pixels), dtype=np.float32)
-    image.pixels.foreach_get(pixels)
-    pixels = pixels.reshape(tf_plot.HEIGHT, tf_plot.WIDTH, 4)
-    assert pixels[..., :3].std() > 0.05  # a picture, not a blank
-    assert bpy.data.textures[tf_plot.image_name(volume)].image == image
+    preview = tf_plot._preview(volume)
+    assert tuple(preview.image_size) == (tf_plot.WIDTH, tf_plot.HEIGHT)
+    pixels = np.empty(tf_plot.WIDTH * tf_plot.HEIGHT * 4, dtype=np.float32)
+    preview.image_pixels_float.foreach_get(pixels)
+    assert pixels.reshape(-1, 4)[:, :3].std() > 0.05  # a picture, not a blank
+    assert tf_plot.icon(volume) == preview.icon_id
+    assert not bpy.data.images and not bpy.data.textures
 
 
 def test_display_resampling_keeps_thin_layers(volume):

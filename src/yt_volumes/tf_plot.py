@@ -1,5 +1,5 @@
 """yt's own picture of a volume's transfer function (`ColorTransferFunction.show`),
-in an image the Volume Override panel shows and redraws when the look changes.
+in a preview icon the Volume Override panel shows and redraws when the look changes.
 
 Needs yt and matplotlib; without them the option isn't offered.
 """
@@ -10,20 +10,37 @@ import inspect
 import bpy
 import numpy as np
 
-WIDTH, HEIGHT = 480, 260  # pixels of the plot image
+WIDTH, HEIGHT = 480, 360  # pixels of the plot image
 PLOT_BINS = 512  # yt's show() draws an nbins x nbins image, so tables are resampled first
 DEBOUNCE = 0.2  # seconds after a change before replotting
 
-_shown = {}  # object name -> signature of the plot in its image, or an error message
+_shown = {}  # object name -> signature of the plot in its icon, or an error message
 _pending = set()  # object names with a replot scheduled
+_previews = None  # bpy.utils.previews collection; not saved in the .blend
 
 
 def available():
     return all(importlib.util.find_spec(name) is not None for name in ("yt", "matplotlib"))
 
 
-def image_name(obj):
-    return f"yt TF {obj.name}"
+def _preview(obj, create=False):
+    global _previews
+    import bpy.utils.previews
+
+    if _previews is None:
+        if not create:
+            return None
+        _previews = bpy.utils.previews.new()
+    name = obj.name
+    return _previews.get(name) or (_previews.new(name) if create else None)
+
+
+def unregister():
+    global _previews
+    if _previews is not None:
+        bpy.utils.previews.remove(_previews)
+    _previews = None
+    _shown.clear()
 
 
 def transfer_function(obj):
@@ -101,28 +118,15 @@ def render(tf):
         pyplot.close(figure)
 
 
-def _image(obj):
-    name = image_name(obj)
-    image = bpy.data.images.get(name)
-    if image is None or tuple(image.size) != (WIDTH, HEIGHT):
-        if image is not None:
-            bpy.data.images.remove(image)
-        image = bpy.data.images.new(name, WIDTH, HEIGHT, alpha=True)
-    texture = bpy.data.textures.get(name) or bpy.data.textures.new(name, "IMAGE")
-    texture.image = image
-    return image, texture
-
-
 def plot(obj):
-    """Draw `obj`'s transfer function into its image; None, or why not."""
+    """Draw `obj`'s transfer function into its preview icon; None, or why not."""
     tf = transfer_function(obj)
     if tf is None:
         return "no transfer function to show (set the yt Transfer Function)"
     pixels = render(tf)
-    image, texture = _image(obj)
-    image.pixels.foreach_set(pixels[::-1].ravel())  # Blender stores the bottom row first
-    image.update()
-    texture.update_tag()
+    preview = _preview(obj, create=True)
+    preview.image_size = (WIDTH, HEIGHT)
+    preview.image_pixels_float.foreach_set(pixels[::-1].ravel())  # bottom row first
     return None
 
 
@@ -144,15 +148,16 @@ def _signature(obj):
     return repr((look, fitted, table))
 
 
-def texture(obj):
-    """The texture showing `obj`'s plot, scheduling a replot if the look
-    changed since the last one (panels can't change data while drawing).
+def icon(obj):
+    """The icon id of `obj`'s plot (0 before the first one), scheduling a
+    replot if the look changed since the last one.
     """
     signature = _signature(obj)
     if _shown.get(obj.name, (None,))[0] != signature and obj.name not in _pending:
         _pending.add(obj.name)
         bpy.app.timers.register(lambda name=obj.name, sig=signature: _replot(name, sig), first_interval=DEBOUNCE)
-    return bpy.data.textures.get(image_name(obj))
+    preview = _preview(obj)
+    return preview.icon_id if preview is not None else 0
 
 
 def error(obj):
