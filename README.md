@@ -365,6 +365,13 @@ smoothly. The panel shows the gain. Opacity stays with Ray Length or Opacity
 Scale; scaling it too would darken the image past a point, as front layers turn
 opaque.
 
+**Show Transfer Function** (offered when yt and matplotlib are installed) draws
+the mode's transfer function in the panel with yt's `ColorTransferFunction.show`:
+color across the value range, under the opacity curve. It redraws a moment after
+the look changes. yt Layers and the Geometry Nodes mode plot over the range Fit
+to Data found at the last render, or Min/Max before one. Fade Around Camera
+depends on the view and isn't shown.
+
 **yt Layers** (`YT_IDV_TRANSFER_FUNCTION`) is `add_layers` without writing a
 file: the panel's Layers, Layer Width (`w`), Alpha First/Last (spaced
 geometrically, as `alpha=np.geomspace(first, last, N)`) and Colormap build

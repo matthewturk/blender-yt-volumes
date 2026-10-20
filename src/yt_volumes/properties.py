@@ -261,6 +261,11 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=0.15, min=0.01, max=10.0,
     )
 
+    show_tf_plot: bpy.props.BoolProperty(
+        name="Show Transfer Function",
+        description="Plot the transfer function as yt does (ColorTransferFunction.show): color over the value range, with the opacity curve; redrawn when the look changes",
+        default=False,
+    )
     opacity_per_view: bpy.props.BoolProperty(
         name="Opacity Per View",
         description=(
@@ -517,6 +522,27 @@ def _draw_gn_transfer_function(layout, obj):
         layout.label(text=f"0.01 along = {(high - low) / 100:.3g} decades")
 
 
+_TF_PLOT_MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION", "YT_IDV_GN_TRANSFER_FUNCTION")
+
+
+def _draw_tf_plot(layout, obj):
+    from . import tf_plot
+
+    if not tf_plot.available():
+        return
+    layout.prop(obj.volume_override, "show_tf_plot")
+    if not obj.volume_override.show_tf_plot:
+        return
+    texture = tf_plot.texture(obj)
+    message = tf_plot.error(obj)
+    if message:
+        layout.label(text=message, icon="ERROR")
+    elif texture is not None:
+        layout.template_preview(texture, show_buttons=False)
+    else:
+        layout.label(text="Plotting the transfer function...")
+
+
 def _draw_look(layout, props):
     layout.prop(props, "renderer_mode")
     if props.renderer_mode == "SAMPLE_CONSTANT":
@@ -558,6 +584,8 @@ def _draw_look(layout, props):
         sub.prop(props, "color_source", expand=True)
         if props.color_source == "IMAGE":
             sub.prop(props, "color_image")
+    if props.renderer_mode in _TF_PLOT_MODES:
+        _draw_tf_plot(box, props.id_data)
     if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
         _draw_gn_transfer_function(box.box(), props.id_data)
     if props.renderer_mode == "YT_IDV_TRANSFER_FUNCTION":

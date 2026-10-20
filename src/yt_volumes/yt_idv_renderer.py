@@ -1265,31 +1265,38 @@ def _configure_transfer_function(component, custom_params):
     """yt's `ColorTransferFunction.add_layers` from the `yt_idv_tf_*`
     custom_params, converted as for the yt Transfer Function mode.
     """
-    get = custom_params.get
     bounds = _tf_bounds(component.data, custom_params)
     component.data._yt_volumes_layer_bounds = bounds
+    context = custom_params.get("_context", {})
+    settings = _layers_settings(bounds, custom_params, context.get("approach_value", context.get("value")))
+    _apply_yt_transfer_function(
+        component, custom_params, ("layers", bounds, *settings), lambda: layers_transfer_function(bounds, *settings),
+    )
+
+
+def _layers_settings(bounds, custom_params, camera_value=None):
+    """`(n_layers, width, alpha, colormap, ramp)` for `layers_transfer_function`
+    from the `yt_idv_tf_*` custom_params; `camera_value` is the field the
+    camera has reached, for Fade Around Camera.
+    """
+    get = custom_params.get
     n_layers = int(get("yt_idv_tf_n_layers", TF_N_LAYERS))
     width = float(get("yt_idv_tf_layer_width", 0.0)) or None  # 0: yt's default
-    alpha = tuple(np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers))
+    alpha = np.geomspace(float(get("yt_idv_tf_alpha_first", 1.0)), float(get("yt_idv_tf_alpha_last", 1.0)), n_layers)
     if get("yt_idv_tf_camera_fade"):
-        context = get("_context", {})
-        value = context.get("approach_value", context.get("value"))
-        fade = _camera_fade(_layer_values(bounds, n_layers), value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
-        alpha = tuple(float(a) for a in np.asarray(alpha) * fade)
+        alpha = alpha * _camera_fade(_layer_values(bounds, n_layers), camera_value, float(get("yt_idv_tf_camera_fade_decades", 1.0)))
     colormap = get("yt_idv_colormap") or TF_COLORMAP
-    ramp = float(get("yt_idv_tf_brightness_ramp", 1.0))
+    return n_layers, width, tuple(float(a) for a in alpha), colormap, float(get("yt_idv_tf_brightness_ramp", 1.0))
 
-    def make():
-        import yt
 
-        tf = yt.ColorTransferFunction(bounds, nbins=8192, grey_opacity=True)
-        tf.add_layers(n_layers, w=width, alpha=alpha, colormap=colormap)
-        _ramp_brightness(tf, ramp)
-        return tf
+def layers_transfer_function(bounds, n_layers, width, alpha, colormap, ramp):
+    """yt Layers' ColorTransferFunction over log10 `bounds`."""
+    import yt
 
-    _apply_yt_transfer_function(
-        component, custom_params, ("layers", bounds, n_layers, width, alpha, colormap, ramp), make,
-    )
+    tf = yt.ColorTransferFunction(bounds, nbins=8192, grey_opacity=True)
+    tf.add_layers(n_layers, w=width, alpha=alpha, colormap=colormap)
+    _ramp_brightness(tf, ramp)
+    return tf
 
 
 def _layer_values(bounds, n_layers):
