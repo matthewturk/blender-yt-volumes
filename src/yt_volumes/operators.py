@@ -508,7 +508,7 @@ _DEPTH_IMAGE_NAME = "vo_depth_tmp"
 
 
 def read_depth_buffer(scene, path):
-    """Read `path` (this frame's Z-pass EXR) into a DepthBuffer, in meters.
+    """Read `path` (this frame's Z-pass EXR) into a DepthBuffer, in Blender units.
 
     Reuses one Image datablock: load()+remove() every frame invalidates
     Cycles' persistent-data cache.
@@ -541,11 +541,11 @@ def read_depth_buffer(scene, path):
     data = buf.reshape(h, w, channels)
     data = data[..., 0]  # single-channel Z; ignore any padding channels
 
-    scale_length = scene.unit_settings.scale_length
+    # Z is in Blender units, like matrix_world; Unit Scale changes neither.
     return external_render.DepthBuffer(
-        data=data * scale_length,
+        data=data,
         depth_convention=DEPTH_CONVENTION,
-        no_hit_value=DEPTH_NO_HIT_VALUE * scale_length,
+        no_hit_value=DEPTH_NO_HIT_VALUE,
         row_order=DEPTH_ROW_ORDER,
         units="meters",
     )

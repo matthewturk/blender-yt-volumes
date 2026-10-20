@@ -969,9 +969,8 @@ def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path
 
     assert img_after_second is not None
     assert img_after_second.as_pointer() == pointer_after_first
-    scale_length = scene.unit_settings.scale_length
-    assert np.allclose(depth_a.data, 1.5 * scale_length, atol=1e-4)
-    assert np.allclose(depth_b.data, 3.0 * scale_length, atol=1e-4)
+    assert np.allclose(depth_a.data, 1.5, atol=1e-4)
+    assert np.allclose(depth_b.data, 3.0, atol=1e-4)
 
 
 def test_every_yt_idv_renderer_mode_gets_the_cpu_compositor():
@@ -1018,6 +1017,7 @@ def test_eevee_and_cycles_hand_the_renderer_the_same_depth(addon_enabled, monkey
     scene.camera.location = (0.0, 0.0, 10.0)
     bpy.ops.mesh.primitive_plane_add(size=6, location=(3.0, 0.0, 0.0))  # right half of the frame
     monkeypatch.setattr(operators, "_gpu_backend", lambda: "VULKAN")
+    scene.unit_settings.scale_length = 0.01  # Z stays in Blender units, like the matrices
 
     cycles = _depth_seen_by_renderer(scene, "CYCLES", monkeypatch, tmp_path)
     eevee = _depth_seen_by_renderer(scene, "BLENDER_EEVEE", monkeypatch, tmp_path)
@@ -1027,7 +1027,7 @@ def test_eevee_and_cycles_hand_the_renderer_the_same_depth(addon_enabled, monkey
     assert hit.any() and not hit.all()
     np.testing.assert_array_equal(eevee.data < 1e9, hit)
     np.testing.assert_allclose(eevee.data[hit], cycles.data[hit], rtol=1e-4)
-    np.testing.assert_allclose(cycles.data[hit], 10.0 * scene.unit_settings.scale_length, rtol=1e-4)
+    np.testing.assert_allclose(cycles.data[hit], 10.0, rtol=1e-4)
     assert (eevee.data[~hit] == cycles.data[~hit]).all()
 
 

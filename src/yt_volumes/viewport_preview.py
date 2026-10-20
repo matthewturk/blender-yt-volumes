@@ -55,18 +55,17 @@ def camera_params(view_matrix, window_matrix, width, height, clip_start, clip_en
     )
 
 
-def planar_depth(window_depth, window_matrix, scale_length=1.0):
+def planar_depth(window_depth, window_matrix):
     """The viewport's window-space depths (0..1, bottom row first) as F12's Z
-    pass holds them: planar distance in scene units times `scale_length`, with
-    the far plane (nothing drawn) as no hit.
+    pass holds them: planar distance in Blender units, with the far plane
+    (nothing drawn) as no hit.
     """
     depth = np.asarray(window_depth, dtype=np.float64)
     projection = np.asarray(window_matrix, dtype=np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
         # Inverts z_ndc = (P22 z + P23) / -z for the eye-space z, with z_ndc = 2 d - 1.
         distance = projection[2, 3] / ((2.0 * depth - 1.0) + projection[2, 2])
-    no_hit = operators.DEPTH_NO_HIT_VALUE * scale_length
-    return np.where(depth >= 1.0, no_hit, distance * scale_length).astype(np.float32)
+    return np.where(depth >= 1.0, operators.DEPTH_NO_HIT_VALUE, distance).astype(np.float32)
 
 
 def _resample(depth, width, height):
@@ -90,15 +89,14 @@ def render_view(scene, camera, depth=None):
     (planar, as `planar_depth`, any size) clips them, else nothing does.
     """
     width, height = camera.resolution_x, camera.resolution_y
-    scale_length = scene.unit_settings.scale_length
     if depth is None:
-        data = np.full((height, width), operators.DEPTH_NO_HIT_VALUE * scale_length, dtype="f4")
+        data = np.full((height, width), operators.DEPTH_NO_HIT_VALUE, dtype="f4")
     else:
         data = _resample(np.asarray(depth, dtype="f4"), width, height)
     depth = external_render.DepthBuffer(
         data=data,
         depth_convention=operators.DEPTH_CONVENTION,
-        no_hit_value=operators.DEPTH_NO_HIT_VALUE * scale_length,
+        no_hit_value=operators.DEPTH_NO_HIT_VALUE,
         row_order=operators.DEPTH_ROW_ORDER,
         units="meters",
     )
@@ -147,7 +145,7 @@ def _capture():
         except (TypeError, ValueError):  # a Buffer without the buffer protocol: slower
             window_depth = np.array(buffer.to_list(), dtype=np.float32)
         window_depth = window_depth.reshape(region.height, region.width)
-        state["depth"] = planar_depth(window_depth, rv3d.window_matrix, scene.unit_settings.scale_length)
+        state["depth"] = planar_depth(window_depth, rv3d.window_matrix)
     except Exception as exc:  # then the volume is drawn unclipped
         state["depth"], state["depth_error"] = None, str(exc)[:200]
     _last_change[0] = time.monotonic()

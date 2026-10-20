@@ -92,11 +92,12 @@ def test_window_depth_converts_to_planar_distance(scene):
     window_depth = 0.5 * ((projection[2, 2] * z + projection[2, 3]) / -z + 1.0)
     window_depth[1, 2] = 1.0  # nothing drawn here: the far plane
 
-    planar = viewport_preview.planar_depth(window_depth, projection, scale_length=2.0)
+    scene.unit_settings.scale_length = 2.0  # changes neither depth nor matrix_world
+    planar = viewport_preview.planar_depth(window_depth, projection)
 
-    np.testing.assert_allclose(planar[0], 2.0 * distances[0], rtol=1e-4)
-    np.testing.assert_allclose(planar[1, :2], 2.0 * distances[1, :2], rtol=1e-3)
-    assert planar[1, 2] == pytest.approx(operators.DEPTH_NO_HIT_VALUE * 2.0)
+    np.testing.assert_allclose(planar[0], distances[0], rtol=1e-4)
+    np.testing.assert_allclose(planar[1, :2], distances[1, :2], rtol=1e-3)
+    assert planar[1, 2] == pytest.approx(operators.DEPTH_NO_HIT_VALUE)
 
 
 def _loaded(obj, source):
