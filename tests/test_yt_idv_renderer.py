@@ -818,6 +818,32 @@ def test_set_external_depth_clip_reuses_existing_texture_instead_of_leaking_gpu_
     assert component.external_depth_texture is first_texture
 
 
+def test_a_new_depth_clip_size_frees_the_old_texture(monkeypatch):
+    released = []
+
+    class FakeTexture2D:
+        def __init__(self, data):
+            self.data = data
+
+        def release(self):
+            released.append(self)
+
+    fake_module = types.ModuleType("yt_idv.opengl_support")
+    fake_module.Texture2D = FakeTexture2D
+    monkeypatch.setitem(sys.modules, "yt_idv.opengl_support", fake_module)
+    monkeypatch.setattr(yir, "_depth_textures", {})
+    component = types.SimpleNamespace(use_external_depth_clip=False, external_depth_texture=None)
+    scene = types.SimpleNamespace(components=[component])
+
+    yir.set_external_depth_clip(scene, np.zeros((8, 8), dtype="f4"))  # F12's size
+    full = component.external_depth_texture
+    yir.set_external_depth_clip(scene, np.zeros((4, 4), dtype="f4"))  # a viewport's
+    yir.set_external_depth_clip(scene, np.zeros((8, 8), dtype="f4"))
+
+    assert released[0] is full and len(released) == 2
+    assert len(yir._depth_textures) == 1
+
+
 def test_fix_yt_idv_axis_order_passes_through_already_correct_shape():
     image = np.zeros((100, 200, 4), dtype=np.float32)
     fixed = yir._fix_yt_idv_axis_order(image, expected_height=100, expected_width=200)

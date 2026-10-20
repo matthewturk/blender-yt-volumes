@@ -689,6 +689,9 @@ def set_external_depth_clip(scene, depth=None):
         if existing is not None:
             existing.data = texture_data
         else:
+            # keep one size per component: the viewport preview's sizes would otherwise pile up
+            for other in [k for k in _depth_textures if k[0] == id(component)]:
+                _depth_textures.pop(other).release()
             existing = _depth_textures[key] = Texture2D(data=texture_data)
         component.external_depth_texture = existing
         component.use_external_depth_clip = True

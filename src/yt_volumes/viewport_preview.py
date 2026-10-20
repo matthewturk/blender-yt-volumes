@@ -216,6 +216,8 @@ def _render_pending():
     waited = time.monotonic() - _last_change[0]
     if waited < SETTLE:
         return SETTLE - waited
+    if operators._active_render_session is not None or operators._in_pipeline:
+        return 0.5  # wait out a Volume Override render rather than render between its frames
     scene = bpy.context.scene
     if _hide_unconfirmed(scene):
         return None

@@ -160,3 +160,13 @@ def test_changing_frames_rerenders_the_preview(scene, tmp_path):
         assert viewport_preview._generation[0] > before
     finally:
         viewport_preview.unregister()
+
+
+def test_the_preview_waits_out_a_volume_override_render(scene, monkeypatch):
+    rendered = []
+    monkeypatch.setattr(viewport_preview, "render_view", lambda *a, **k: rendered.append(a))
+    monkeypatch.setattr(viewport_preview, "_last_change", [0.0])
+    monkeypatch.setattr(operators, "_active_render_session", object())
+
+    assert viewport_preview._render_pending() == pytest.approx(0.5)  # try again later
+    assert rendered == []
