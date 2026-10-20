@@ -365,3 +365,70 @@ def test_anchor_at_densest_point_needs_loaded_data(scene, volume):
     with pytest.raises(RuntimeError, match="render the flagged volume once"):
         bpy.ops.deep_zoom.anchor_densest()
     assert len(scene.deep_zoom.shots) == 0
+
+
+# --- points ---------------------------------------------------------------------
+
+from deep_zoom import points  # noqa: E402
+
+
+def _anchored(scene, anchor=ANCHOR):
+    authoring.add_shot(scene, shot_space.format_anchor(anchor), 1)
+
+
+def test_points_follow_the_zoom_in_float64(scene):
+    _anchored(scene)
+    unitary = ANCHOR + np.array([[3e-12, -1e-12, 2e-12], [0.0, 0.0, 0.0], [1e-3, 0.0, 0.0]])
+    scene.deep_zoom.zoom = 0.0
+    scene.deep_zoom.keyframe_insert("zoom", frame=1)
+    scene.deep_zoom.zoom = 11.0
+    scene.deep_zoom.keyframe_insert("zoom", frame=11)
+    obj = points.create_points(scene, unitary, point_names=["a", "b", "c"])
+
+    scene.frame_set(11)
+
+    coords = np.empty(9, dtype=np.float32)
+    obj.data.vertices.foreach_get("co", coords)
+    # float64 holds ANCHOR + 1e-12 only to ~2e-5 of the offset
+    np.testing.assert_allclose(coords.reshape(3, 3)[:2], [[0.6, -0.2, 0.4], [0.0, 0.0, 0.0]], rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(points.world_positions(obj)[0], [0.6, -0.2, 0.4], rtol=1e-4)
+    scale = np.empty(3, dtype=np.float32)
+    obj.data.attributes[points.SCALE_ATTRIBUTE].data.foreach_get("value", scale)
+    assert scale[0] == pytest.approx(2e11, rel=1e-6)
+    assert [g.name for g in obj.vertex_groups] == ["a", "b", "c"]
+
+
+def test_a_constraint_follows_a_named_point(scene):
+    _anchored(scene)
+    obj = points.create_points(scene, ANCHOR + np.array([[0.0, 0.0, 0.0], [2e-9, 0.0, 0.0]]), point_names=["core", "clump"])
+    follower = bpy.data.objects.new("Follower", None)
+    scene.collection.objects.link(follower)
+    constraint = follower.constraints.new("COPY_LOCATION")
+    constraint.target, constraint.subtarget = obj, "clump"
+    scene.deep_zoom.zoom = 9.0
+    scene.deep_zoom.keyframe_insert("zoom", frame=5)
+
+    scene.frame_set(5)
+    bpy.context.view_layer.update()
+
+    np.testing.assert_allclose(follower.matrix_world.translation, [4.0, 0.0, 0.0], rtol=1e-5)  # 2e-9 * 1e9 * 2
+
+
+def test_points_hide_without_an_anchored_shot(scene):
+    obj = points.create_points(scene, [[0.5, 0.5, 0.5]])
+    assert obj.hide_viewport and obj.hide_render
+    authoring.add_shot(scene, "max", 1)
+    points.update_points(scene)
+    assert obj.hide_viewport
+    scene.deep_zoom.shots[0].anchor = "0.5, 0.5, 0.5"
+    assert not obj.hide_viewport
+
+
+@pytest.mark.parametrize("text", ["x,y,z,mass\n0.1,0.2,0.3,5\n0.4,0.5,0.6,7\n", "0.1 0.2 0.3 5\n0.4 0.5 0.6 7\n"])
+def test_points_files_give_positions_and_extra_columns(tmp_path, text):
+    path = tmp_path / "halos.csv"
+    path.write_text(text)
+    unitary, attributes = points.read_points_file(str(path))
+    np.testing.assert_array_equal(unitary, [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+    assert list(attributes) == ["mass" if text.startswith("x") else "column_3"]
+    np.testing.assert_array_equal(next(iter(attributes.values())), [5.0, 7.0])

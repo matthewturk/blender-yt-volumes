@@ -19,7 +19,7 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
-from . import grid_structure, shot_space
+from . import grid_structure, points, shot_space
 
 GRID_MAP_NAME = "DeepZoomGridMap"
 _grid_cache = {}  # absolute path -> grid_structure dict
@@ -31,6 +31,7 @@ def _settings(scene):
 
 def _redraw(self, context):
     update_grid_map(context.scene)
+    points.update_points(context.scene)
 
 
 class DeepZoomShot(bpy.types.PropertyGroup):
@@ -492,6 +493,7 @@ def update_grid_map(scene):
 def _on_frame_change(scene, depsgraph=None):
     if _settings(scene).enabled:
         update_grid_map(scene)
+    points.update_points(scene)
 
 
 # --- export ----------------------------------------------------------------------
@@ -870,6 +872,13 @@ class DEEPZOOM_PT_panel(bpy.types.Panel):
             box.operator(DEEPZOOM_OT_check_path.bl_idname, icon="MARKER_HLT")
 
         col.separator()
+        col.label(text="Points")
+        for obj in (o for o in scene.objects if points.is_points(o)):
+            col.label(text=f"{obj.name}: {len(obj.data.vertices)} points" + (" (hidden: no anchored shot)" if obj.hide_viewport else ""),
+                      icon="POINTCLOUD_DATA")
+        col.operator(points.DEEPZOOM_OT_add_points.bl_idname, icon="IMPORT")
+
+        col.separator()
         col.operator(DEEPZOOM_OT_export_path.bl_idname, icon="EXPORT")
 
 
@@ -887,6 +896,7 @@ CLASSES = (
     DEEPZOOM_OT_reanchor_focus,
     DEEPZOOM_OT_rescale,
     DEEPZOOM_OT_export_path,
+    points.DEEPZOOM_OT_add_points,
     DEEPZOOM_UL_shots,
     DEEPZOOM_PT_panel,
 )

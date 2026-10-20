@@ -73,6 +73,24 @@ It needs nothing beyond what Blender ships (numpy).
    unitary float64, plus the shots and lens, as JSON. That's the exact path,
    independent of Blender's precision, for any renderer to consume.
 
+## Points of interest
+
+*Add Points from File* reads unitary x, y, z (float64) from a `.npy` array or a
+CSV/whitespace text file (an optional header names the columns) into a mesh
+whose vertices Deep Zoom moves into shot space every frame. The positions are
+computed from float64 copies kept on the object, so they stay exact at any
+depth; the points hide while no shot with explicit anchor coordinates plays.
+Extra columns become float point attributes, and every point carries
+`world_per_unitary`, the current scale, for sizing things by it. To use them:
+
+- **Geometry Nodes:** Object Info on the points object, then Sample Index by
+  the point's row, or instance on its points directly.
+- **Constraints:** each point has a vertex group named after it (`point_<row>`
+  by default), so Copy Location, Child Of or Damped Track can target one point.
+- **Python:** `points.world_positions(obj)` gives the float64 shot-space
+  positions; `points.create_points(scene, unitary, point_names=...)` makes a
+  points object from an array.
+
 ## Rendering
 
 yt-volumes renders flagged volumes in shot space whenever this
@@ -88,3 +106,4 @@ volume's registration in float64. Headless, list the extension in the config:
 - `grid_structure.py`: the `.npz` exporter (needs yt) and the `.npz`/`.zip` loader (numpy).
 - `authoring.py`: shots, the grid map, dive, re-anchor and rescale cuts, the
   path check, export, and the UI.
+- `points.py`: points of interest that follow the zoom.
