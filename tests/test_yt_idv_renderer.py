@@ -1684,10 +1684,9 @@ def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping()
     image = np.zeros((100, 100, 4), dtype=np.float32)
     image[:10, :10, 0] = 0.45  # 1% of pixels at 0.45
     assert yir._exposure_factor(image) == pytest.approx(2.0)
-    image[:10, :10, 0] = 0.88
-    assert yir._exposure_factor(image) == 1.0  # within 10% of the target
-    image[:10, :10, 0] = 1.0  # 1% clipped
-    assert yir._exposure_factor(image) == 0.5
+    image[:10, :10, 0] = 3.0  # unclamped: far over
+    assert yir._exposure_factor(image) == pytest.approx(0.3)  # exact, in one go
+    assert yir._exposure_factor(np.zeros((0, 4))) == 1.0  # nothing to measure
     assert yir._exposure_factor(np.zeros((4, 4, 4))) == 1.0  # nothing visible: leave the gain alone
     image[:] = 0.0
     image[0, 0, 0] = 0.3  # one lit pixel, under 0.1% of the frame
@@ -1714,6 +1713,25 @@ def test_auto_exposure_leaves_the_opaque_ends_color_alone(monkeypatch):
     np.testing.assert_allclose(seen[0][:2, 0, :3], 0.2 * 8.0)  # the layers take the gain
     np.testing.assert_allclose(seen[0][2, 0, :3], 0.2 * 8.0**0.5, rtol=1e-5)  # half of it, in log
     np.testing.assert_allclose(seen[0][3, 0, :3], 0.2)  # the solid end keeps its color
+
+
+def test_auto_exposure_ignores_pixels_the_solid_end_covers(monkeypatch):
+    monkeypatch.setattr(yir, "_exposure_gains", {"d": 1.0})
+    table = np.full((2, 1, 4), 0.2, dtype=np.float32)
+    table[1, 0, 3] = 1e4
+    component = types.SimpleNamespace(render_method="transfer_function", transfer_function=types.SimpleNamespace(data=table))
+    scene = types.SimpleNamespace(components=[component])
+
+    def run():  # a white, solid core over half the frame; layers that follow the gain
+        image = np.zeros((10, 10, 4), dtype=np.float32)
+        image[:5, :, :] = 1.0
+        image[5:, :, 0] = min(0.3 * float(component.transfer_function.data[0, 0, 0]) / 0.2, 1.0)
+        image[5:, :, 3] = 0.3
+        return image
+
+    yir._auto_exposed(scene, "d", run, solid_ratio=1e4)
+
+    assert yir.exposure_gain("d") == pytest.approx(3.0, rel=0.1)  # exposed for the layers, not held down by the core
 
 
 def test_auto_exposure_gain_stays_bounded(monkeypatch):
@@ -1773,7 +1791,7 @@ def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
 
     monkeypatch.setattr(GL, "glViewport", lambda *args: None)
     monkeypatch.setattr(ogl, "Framebuffer", FakeFramebuffer)
-    monkeypatch.setattr(yir, "_unorm16_texture", lambda size: ("RGBA16", size))
+    monkeypatch.setattr(yir, "_float_texture", lambda size: ("RGBA16", size))
     scene = FakeScene()
 
     yir._use_render_size(scene, 64)

@@ -358,10 +358,11 @@ two-shot dive into DeeplyNestedZoom authored by
 ### yt transfer functions
 
 **Auto Exposure** (on by default for yt Layers, yt Transfer Function, Geometry
-Nodes Transfer Function) scales the transfer function's brightness, not its opacity, until the
-brightest 0.1% of pixels sit near white with at most 0.5% clipped: up to four
-re-renders, starting from the last render's exposure, so animations change
-smoothly. The panel shows the gain. Opacity stays with Ray Length or Opacity
+Nodes Transfer Function) scales the transfer function's brightness, not its
+opacity, so the brightest 0.1% of pixels sit near white. It costs no extra
+render: yt_idv renders into a float framebuffer at the last render's gain, and
+since the image is linear in that gain, the image itself is rescaled exactly
+and the new gain kept for the next frame. The panel shows the gain. Opacity stays with Ray Length or Opacity
 Scale; scaling it too would darken the image past a point, as front layers turn
 opaque.
 
@@ -400,7 +401,9 @@ with the mode below, and is converted the same way.
 up the field is opaque, in the colormap's color there, its opacity rising
 geometrically from Alpha Last over **Opaque Edge** decades below, so dense gas
 turns solid gradually. Fade Around Camera leaves it alone, and Auto Exposure's
-gain fades out along the rise, so the solid end keeps its own color. It needs a
+gain fades out along the rise and is measured only where the end hasn't made
+the image half opaque, so the solid end keeps its own color and the layers
+around it stay exposed as without it. It needs a
 yt_idv whose transfer-function shader integrates each step exactly
 (`yt_idv-exact-tf-step.diff`); otherwise its first sample overshoots to white.
 The plot shows opacity only up to 1, so the rise looks like a step there.

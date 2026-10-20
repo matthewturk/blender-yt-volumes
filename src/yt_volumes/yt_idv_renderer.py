@@ -116,8 +116,6 @@ _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer func
 _exposure_gains = {}  # dataset_id -> the gain auto exposure last chose
 
 AUTO_EXPOSURE_TARGET = 0.9  # where auto exposure puts the brightest 0.1% of pixels
-AUTO_EXPOSURE_CLIP = 0.005  # the share of pixels it lets clip
-AUTO_EXPOSURE_STEPS = 4  # re-renders at most per frame
 AUTO_EXPOSURE_GAINS = (1e-4, 1e4)  # bounds on the gain, which carries over between frames
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
@@ -184,28 +182,15 @@ def _get_render_context(backend):
     return rc
 
 
-def _unorm16_texture(size):
-    """A `size` x `size` RGBA texture stored as GL_RGBA16: clamped to [0, 1] on
-    every write, as projection's summed color and alpha need, without 8-bit's
-    rounding of faint linear values (bands, lost gas).
+def _float_texture(size):
+    """A `size` x `size` float32 RGBA texture for the scene's framebuffer:
+    unclamped, so auto exposure can rescale a rendered image exactly; the
+    image is clipped to [0, 1] after (the same as clamping every write, for
+    projection's sums of non-negative samples).
     """
-    import traitlets
-    from OpenGL import GL
     from yt_idv.opengl_support import Texture2D
 
-    class Unorm16Texture(Texture2D):
-        @traitlets.observe("data")
-        def _set_data(self, change):
-            data = change["new"]
-            with self.bind():
-                GL.glTexStorage2D(GL.GL_TEXTURE_2D, 1, GL.GL_RGBA16, data.shape[0], data.shape[1])
-                for name, value in (
-                    (GL.GL_TEXTURE_WRAP_S, self.boundary_x), (GL.GL_TEXTURE_WRAP_T, self.boundary_y),
-                    (GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST), (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
-                ):
-                    GL.glTexParameteri(GL.GL_TEXTURE_2D, name, value)
-
-    return Unorm16Texture(data=np.zeros((size, size, 4), "u1"), boundary_x="repeat", boundary_y="repeat")
+    return Texture2D(data=np.zeros((size, size, 4), "f4"), boundary_x="repeat", boundary_y="repeat")
 
 
 def _use_render_size(scene, size):
@@ -225,7 +210,7 @@ def _use_render_size(scene, size):
 
     GL.glViewport(0, 0, size, size)
     if getattr(scene.fb, "_yt_volumes_size", None) != size:
-        old, scene.fb = scene.fb, sized(_unorm16_texture(size))
+        old, scene.fb = scene.fb, sized(_float_texture(size))
         if old is not None:
             old.release()
     for element in scene:
@@ -1141,7 +1126,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     GL.glEnable(GL.GL_DEPTH_CLAMP)
 
     def run():
-        image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
+        image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), unclamped
         image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
         return _to_row_order(_center_crop(image, height, width, offset), request.depth.row_order)
 
@@ -1156,6 +1141,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
             image = run()
     finally:
         GL.glDisable(GL.GL_DEPTH_CLAMP)
+    image = np.clip(image, 0.0, 1.0)
 
     result = RenderResult(
         rgba=np.ascontiguousarray(image),
@@ -1169,12 +1155,14 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
 
 
 def _auto_exposed(scene, dataset_id, run, adapt=True, solid_ratio=None):
-    """Render with the transfer function tables' emission scaled until the
-    brightest 0.1% of pixels sit near AUTO_EXPOSURE_TARGET with at most
-    AUTO_EXPOSURE_CLIP clipped. Starts from the gain the last render chose, so
-    an animation's exposure moves smoothly. With an opaque end whose opacity
-    rises `solid_ratio`-fold to the table's peak, the gain fades out along that
-    rise, so the solid end keeps its own color.
+    """Render once with the transfer function tables' emission scaled by the
+    gain the last render chose, then scale the (unclamped) image so its
+    brightest 0.1% sits at AUTO_EXPOSURE_TARGET, and keep that gain for the
+    next render. Exact: the image is
+    linear in the emission. With an opaque end whose opacity rises
+    `solid_ratio`-fold to the table's peak, the gain fades out along that
+    rise and the solid pixels aren't rescaled, so the solid end keeps its own
+    color; `adapt=False` (a stereo pair's second eye) keeps the gain.
     """
     tables = [
         (component, np.array(component.transfer_function.data, dtype=np.float32))
@@ -1185,21 +1173,30 @@ def _auto_exposed(scene, dataset_id, run, adapt=True, solid_ratio=None):
         return run()
     gain = float(np.clip(_exposure_gains.get(dataset_id, 1.0), *AUTO_EXPOSURE_GAINS))
     try:
-        for step in range(AUTO_EXPOSURE_STEPS + 1):
-            for component, table in tables:
-                # emission only: scaling opacity too makes the image darker past a point, as front layers turn opaque
-                exposed = table.copy()
-                exposed[..., :3] *= _exposure_scale(table[..., 3:4], gain, solid_ratio)
-                component.transfer_function.data = exposed
-            image = run()
-            factor = _exposure_factor(image) if adapt else 1.0
-            if factor == 1.0 or step == AUTO_EXPOSURE_STEPS:
-                break
-            gain = float(np.clip(gain * factor, *AUTO_EXPOSURE_GAINS))
+        for component, table in tables:
+            # emission only: scaling opacity too makes the image darker past a point, as front layers turn opaque
+            exposed = table.copy()
+            exposed[..., :3] *= _exposure_scale(table[..., 3:4], gain, solid_ratio)
+            component.transfer_function.data = exposed
+        image = run()
     finally:
         # the tables are cached and reused, unscaled
         for component, table in tables:
             component.transfer_function.data = table
+    if adapt:
+        alpha = image[..., 3]
+        # the gain can't change the solid end, so judge by what it hasn't covered
+        measured = image[alpha < SOLID_ALPHA] if solid_ratio else image
+        factor = float(np.clip(_exposure_factor(measured), *(np.array(AUTO_EXPOSURE_GAINS) / gain)))
+        if factor != 1.0:
+            image = image.copy()
+            if solid_ratio:
+                # fade the rescaling out toward the solid pixels: no seam at SOLID_ALPHA
+                covered = np.clip((alpha - SOLID_ALPHA) / (1.0 - SOLID_ALPHA), 0.0, 1.0)[..., None]
+                image[..., :3] *= factor ** (1.0 - covered)
+            else:
+                image[..., :3] *= factor
+            gain *= factor
     _exposure_gains[dataset_id] = gain
     return image
 
@@ -1217,19 +1214,14 @@ def _exposure_scale(alpha, gain, solid_ratio=None):
 
 
 def _exposure_factor(image):
-    """How much to scale the transfer function so `image`'s brightest 0.1%
-    lands near AUTO_EXPOSURE_TARGET without clipping more than
-    AUTO_EXPOSURE_CLIP; 1 when within 10%, or when nothing is visible.
+    """The factor that puts the unclamped `image`'s brightest 0.1% at
+    AUTO_EXPOSURE_TARGET (so at most 0.1% clips); 1 when nothing is visible.
     """
-    brightness = np.asarray(image)[..., :3].max(axis=-1)
-    if (brightness >= 0.995).mean() > AUTO_EXPOSURE_CLIP:
-        return 0.5
+    brightness = np.asarray(image)[..., :3].max(axis=-1).ravel()
     if not (brightness > 0.0).any():
-        return 1.0  # brightening an empty frame only winds the gain up for the next one
-    # a volume covering under 0.1% of the frame: aim its brightest pixel instead
-    peak = float(np.percentile(brightness, 99.9)) or float(brightness.max())
-    factor = float(np.clip(AUTO_EXPOSURE_TARGET / peak, 0.25, 4.0))
-    return 1.0 if abs(math.log(factor)) < math.log(1.1) else factor
+        return 1.0  # nothing to expose; leave the gain for the next frame
+    peak = float(np.percentile(brightness, 99.9)) or float(brightness.max())  # tiny volumes: their brightest pixel
+    return AUTO_EXPOSURE_TARGET / peak
 
 
 def exposure_gain(dataset_id):
@@ -1356,6 +1348,7 @@ def layers_transfer_function(bounds, n_layers, width, alpha, colormap, ramp, opa
 
 
 OPAQUE_OPACITY = 1e4  # yt opacity of the opaque end: solid within a tiny fraction of a ray length
+SOLID_ALPHA = 0.5  # pixels at least this opaque are taken to show the opaque end, not just layers
 
 
 def _add_opaque_end(tf, colormap, above, edge, start=1.0):
