@@ -1637,7 +1637,24 @@ def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping()
     assert yir._exposure_factor(image) == 1.0  # within 10% of the target
     image[:10, :10, 0] = 1.0  # 1% clipped
     assert yir._exposure_factor(image) == 0.5
-    assert yir._exposure_factor(np.zeros((4, 4, 4))) == 4.0
+    assert yir._exposure_factor(np.zeros((4, 4, 4))) == 1.0  # nothing visible: leave the gain alone
+    image[:] = 0.0
+    image[0, 0, 0] = 0.3  # one lit pixel, under 0.1% of the frame
+    assert yir._exposure_factor(image) == pytest.approx(3.0)
+
+
+def test_auto_exposure_gain_stays_bounded(monkeypatch):
+    monkeypatch.setattr(yir, "_exposure_gains", {"d": 6.12e44})  # a gain an older version wound up
+    table = np.full((8, 1, 4), 0.1, dtype=np.float32)
+    component = types.SimpleNamespace(render_method="transfer_function", transfer_function=types.SimpleNamespace(data=table))
+    scene = types.SimpleNamespace(components=[component])
+    dim = lambda: np.full((8, 8, 4), 1e-9, dtype=np.float32)  # never bright enough
+
+    for _ in range(20):
+        yir._auto_exposed(scene, "d", dim)
+        assert yir.AUTO_EXPOSURE_GAINS[0] <= yir.exposure_gain("d") <= yir.AUTO_EXPOSURE_GAINS[1]
+    yir._auto_exposed(scene, "d", lambda: np.zeros((8, 8, 4), dtype=np.float32))
+    assert yir.exposure_gain("d") == yir.AUTO_EXPOSURE_GAINS[1]  # an empty frame doesn't move it
 
 
 def test_auto_exposure_converges_and_leaves_the_cached_tables_unscaled(monkeypatch):

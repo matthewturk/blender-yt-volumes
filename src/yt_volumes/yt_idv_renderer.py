@@ -118,6 +118,7 @@ _exposure_gains = {}  # dataset_id -> the gain auto exposure last chose
 AUTO_EXPOSURE_TARGET = 0.9  # where auto exposure puts the brightest 0.1% of pixels
 AUTO_EXPOSURE_CLIP = 0.005  # the share of pixels it lets clip
 AUTO_EXPOSURE_STEPS = 4  # re-renders at most per frame
+AUTO_EXPOSURE_GAINS = (1e-4, 1e4)  # bounds on the gain, which carries over between frames
 _mip_alpha_colormap_cache = {}  # (colormap, alpha_max, ramp_power) -> (256, 4) float32 RGBA colormap data
 
 
@@ -1174,7 +1175,7 @@ def _auto_exposed(scene, dataset_id, run, adapt=True):
     ]
     if not tables:
         return run()
-    gain = _exposure_gains.get(dataset_id, 1.0)
+    gain = float(np.clip(_exposure_gains.get(dataset_id, 1.0), *AUTO_EXPOSURE_GAINS))
     try:
         for step in range(AUTO_EXPOSURE_STEPS + 1):
             for component, table in tables:
@@ -1186,7 +1187,7 @@ def _auto_exposed(scene, dataset_id, run, adapt=True):
             factor = _exposure_factor(image) if adapt else 1.0
             if factor == 1.0 or step == AUTO_EXPOSURE_STEPS:
                 break
-            gain *= factor
+            gain = float(np.clip(gain * factor, *AUTO_EXPOSURE_GAINS))
     finally:
         # the tables are cached and reused, unscaled
         for component, table in tables:
@@ -1198,14 +1199,15 @@ def _auto_exposed(scene, dataset_id, run, adapt=True):
 def _exposure_factor(image):
     """How much to scale the transfer function so `image`'s brightest 0.1%
     lands near AUTO_EXPOSURE_TARGET without clipping more than
-    AUTO_EXPOSURE_CLIP; 1 when within 10%.
+    AUTO_EXPOSURE_CLIP; 1 when within 10%, or when nothing is visible.
     """
     brightness = np.asarray(image)[..., :3].max(axis=-1)
     if (brightness >= 0.995).mean() > AUTO_EXPOSURE_CLIP:
         return 0.5
-    peak = float(np.percentile(brightness, 99.9))
-    if peak <= 0.0:
-        return 4.0
+    if not (brightness > 0.0).any():
+        return 1.0  # brightening an empty frame only winds the gain up for the next one
+    # a volume covering under 0.1% of the frame: aim its brightest pixel instead
+    peak = float(np.percentile(brightness, 99.9)) or float(brightness.max())
     factor = float(np.clip(AUTO_EXPOSURE_TARGET / peak, 0.25, 4.0))
     return 1.0 if abs(math.log(factor)) < math.log(1.1) else factor
 
