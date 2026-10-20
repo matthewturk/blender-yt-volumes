@@ -142,3 +142,14 @@ def test_only_confirmed_loads_happen_in_the_viewport(scene, monkeypatch):
         bpy.utils.unregister_class(viewport_preview.VOLUMEOVERRIDE_OT_toggle_viewport)
     assert saved_on.volume_override.show_in_viewport
     assert not viewport_preview._hide_unconfirmed(scene)  # confirmed: it stays on
+
+
+def test_changing_frames_rerenders_the_preview(scene):
+    viewport_preview.register()
+    try:
+        _flag(scene, "Shown", (0, 0, 0))
+        before = viewport_preview._generation[0]
+        scene.frame_set(scene.frame_current + 1)  # runs frame_change_post, not depsgraph_update_post
+        assert viewport_preview._generation[0] > before
+    finally:
+        viewport_preview.unregister()

@@ -255,6 +255,13 @@ def _on_depsgraph_update(scene, depsgraph):
         _redraw_viewports()
 
 
+def _on_frame_change(scene, depsgraph):
+    # Frame changes don't run depsgraph_update_post; the zoom, the look or the dataset frame may have moved.
+    if shown_volumes(scene):
+        _generation[0] += 1
+        _redraw_viewports()
+
+
 class VOLUMEOVERRIDE_OT_toggle_viewport(bpy.types.Operator):
     """Draw this volume over the 3D viewport with yt_idv, occluded by the scene"""
 
@@ -300,11 +307,14 @@ def register():
         bpy.types.SpaceView3D.draw_handler_add(_draw, (), "WINDOW", "POST_PIXEL"),
     ]
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    bpy.app.handlers.frame_change_post.append(_on_frame_change)
 
 
 def unregister():
     if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
+    if _on_frame_change in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(_on_frame_change)
     for handle in _draw_handles:
         bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")
     _draw_handles.clear()
