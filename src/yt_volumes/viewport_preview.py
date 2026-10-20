@@ -13,6 +13,7 @@ import time
 
 import bpy
 import numpy as np
+from bpy.app.handlers import persistent
 
 from . import external_render, operators, properties
 
@@ -249,6 +250,8 @@ def _redraw_viewports():
                 area.tag_redraw()
 
 
+# Handlers without @persistent are dropped when a .blend file loads.
+@persistent
 def _on_depsgraph_update(scene, depsgraph):
     # Anything may change the image now: a volume's look, its nodes, or geometry in front of it.
     if len(depsgraph.updates) and shown_volumes(scene):
@@ -256,6 +259,7 @@ def _on_depsgraph_update(scene, depsgraph):
         _redraw_viewports()
 
 
+@persistent
 def _on_frame_change(scene, depsgraph):
     # Frame changes don't run depsgraph_update_post; the zoom, the look or the dataset frame may have moved.
     if shown_volumes(scene):

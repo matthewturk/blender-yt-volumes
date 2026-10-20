@@ -10,6 +10,7 @@
 """
 
 import bpy
+from bpy.app.handlers import persistent
 
 from . import properties
 
@@ -17,12 +18,14 @@ _disabled_default_keymap_items = []  # [(keymap_name, keymap_item_id)]
 _addon_keymap_items = []  # [(keymap, keymap_item)]
 
 
+@persistent
 def _restore_all_flagged_visibility(*_args):
     for scene in bpy.data.scenes:
         for obj in properties.flagged_objects(scene):
             obj.hide_render = False
 
 
+@persistent
 def _warn_plain_render(scene, *_args):
     from . import operators
 

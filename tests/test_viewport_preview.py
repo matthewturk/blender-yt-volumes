@@ -147,9 +147,12 @@ def test_only_confirmed_loads_happen_in_the_viewport(scene, monkeypatch):
     assert not viewport_preview._hide_unconfirmed(scene)  # confirmed: it stays on
 
 
-def test_changing_frames_rerenders_the_preview(scene):
+def test_changing_frames_rerenders_the_preview(scene, tmp_path):
     viewport_preview.register()
     try:
+        bpy.ops.wm.save_as_mainfile(filepath=str(tmp_path / "saved.blend"))
+        bpy.ops.wm.open_mainfile(filepath=str(tmp_path / "saved.blend"))  # drops handlers that aren't persistent
+        scene = bpy.context.scene
         _flag(scene, "Shown", (0, 0, 0))
         before = viewport_preview._generation[0]
         scene.frame_set(scene.frame_current + 1)  # runs frame_change_post, not depsgraph_update_post
