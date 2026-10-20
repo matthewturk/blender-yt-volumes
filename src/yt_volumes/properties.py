@@ -370,6 +370,14 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         ),
         default="",
     )
+    data_units: bpy.props.StringProperty(
+        name="Data Units",
+        description=(
+            "Lengths to convert to scene units, comma-separated yt units (e.g. 'kpc, pc, Mpc/h, kpccm'); "
+            "read them from the object's yt_units custom properties, e.g. in a driver"
+        ),
+        default="kpc",
+    )
     # A string so the target keeps float64 precision; FloatVectorProperty is float32.
     zoom_target: bpy.props.StringProperty(
         name="Zoom Target",
@@ -676,6 +684,7 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         sub = row.row(align=True)
         sub.enabled = props.zoom_limit_depth
         sub.prop(props, "zoom_depth", text="")
+        _draw_units(col, obj)
         if props.dataset_uuid:
             row = col.row()
             row.enabled = False
@@ -748,6 +757,21 @@ def unregister():
     del bpy.types.Object.volume_override
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
+
+
+def _draw_units(layout, obj):
+    row = layout.row(align=True)
+    row.prop(obj.volume_override, "data_units")
+    row.operator("volume_override.read_units", text="", icon="FILE_REFRESH")
+    group = obj.get("yt_units", {})
+    for unit in (u.strip() for u in obj.volume_override.data_units.split(",") if u.strip()):
+        value = group.get(f"scene_per_{unit}")
+        if value:
+            layout.label(text=f"1 {unit} = {value:.4g} scene units")
+        elif "registry" in group:
+            layout.label(text=f"{unit}: not a length this dataset's units know", icon="ERROR")
+        else:
+            layout.label(text=f"{unit}: not known yet (render, or Read Units)")
 
 
 def flagged_objects(scene):

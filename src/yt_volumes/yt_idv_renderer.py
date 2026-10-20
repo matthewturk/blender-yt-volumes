@@ -302,10 +302,12 @@ def _default_volume_provider(ctx: VolumeSetupContext) -> VolumeSetupResult:
     elif path.endswith(".zip") or ctx.dataset.dataset_kind == "yt_idv_scene":
         from yt_idv.scene_graph import SceneGraph
 
+        from . import units
+
         scene = SceneGraph.load(path)
         scale_scene_to_subset(scene)
         # the renderer reads only ds.domain_center, in unitary units
-        ds = types.SimpleNamespace(domain_center=np.full(3, 0.5))
+        ds = types.SimpleNamespace(domain_center=np.full(3, 0.5), unit_registry_json=units.scene_file_units(path))
     else:
         import yt
 
@@ -1545,6 +1547,21 @@ def layer_bounds(dataset_id):
     cached = _volume_scene_cache.get(dataset_id)
     collections = [] if cached is None else _block_collections(cached[0])
     return getattr(collections[0], "_yt_volumes_layer_bounds", None) if collections else None
+
+
+def dataset_units(dataset_id):
+    """`(unit registry JSON, volume cube width in unitary)` of a loaded
+    dataset, either None if unknown.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    if cached is None:
+        return None, None
+    scene, ds = cached[0], cached[1]
+    registry = getattr(ds, "unit_registry_json", None)
+    if registry is None and hasattr(ds, "unit_registry"):
+        registry = ds.unit_registry.to_json()
+    collections = _block_collections(scene)
+    return registry, (_base_transform(collections[0])[1] if collections else None)
 
 
 def gn_tf_fit(dataset_id):

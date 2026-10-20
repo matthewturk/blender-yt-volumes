@@ -15,7 +15,7 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
-from . import external_render, operators, properties
+from . import external_render, operators, properties, units
 
 SETTLE = 0.15  # seconds without changes before a viewport re-renders
 
@@ -110,6 +110,7 @@ def render_view(scene, camera, depth=None):
             camera=camera, depth=depth, volume=operators.build_volume_params(obj), frame=frame,
         )
         layer = operators.RENDERER_MODES[obj.volume_override.renderer_mode](request).rgba
+        units.record(obj, request.volume.dataset.dataset_id, scene)
         image = layer + image * (1.0 - layer[..., 3:4])
     return image
 

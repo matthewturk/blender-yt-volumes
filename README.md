@@ -415,6 +415,26 @@ planes are bounded to 1e-3 and 1e3 times the camera's distance to the target:
 yt_idv rebuilds rays from the inverse projection in float32, and a domain-wide
 far plane there bands transfer-function renders.
 
+### Scene units per data unit
+
+Each volume keeps `obj["yt_units"]` current, for drivers, Geometry Nodes inputs
+and scripts:
+
+- `scene_per_unitary`: scene units per unitary length now, following the
+  volume's transform and box, its Zoom Level, or Deep Zoom's zoom and World Scale.
+- for each of the panel's **Data Units** (comma-separated yt units, e.g.
+  `kpc, pc, Mpc/h, kpccm`): `unitary_in_<unit>` and `scene_per_<unit>`.
+
+A driver reads them with a Single Property variable, e.g.
+`["yt_units"]["scene_per_kpc"]`, which needs no Python auto-run. The data side
+is yt's unit registry, recorded when the dataset loads (F12 or the viewport
+preview) and saved in the .blend; **Read Units** (the button beside Data Units)
+reads it from the dataset's header without loading its data. A yt_idv scene file
+carries it as a `dataset` entry in scene.json (`yt_idv-dataset-units.diff` adds
+that to yt_idv's `save_scene` and `export_block_scene`); for scenes saved
+without it, `units.add_units_to_scene_file(path, ds)` appends a `dataset.json`
+member without rewriting the archive.
+
 ### Stereoscopic renders
 
 With Output Properties > Stereoscopy on in Stereo 3D mode, each eye is

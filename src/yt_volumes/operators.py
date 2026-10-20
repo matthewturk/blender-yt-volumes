@@ -24,7 +24,7 @@ import time
 import bpy
 import mathutils
 
-from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, yt_idv_renderer
+from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -868,6 +868,8 @@ def _render_current_frame(context):
                     )
                 with loading, step(f"render_volume for {obj.name!r}"):
                     result = render_fn(request)
+                if props.renderer_mode in YT_IDV_RENDERER_MODES:
+                    units.record(obj, request.volume.dataset.dataset_id, scene)
                 assert result.alpha_mode == "PREMULTIPLIED"
                 assert result.color_space == "LINEAR"
                 if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
