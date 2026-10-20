@@ -870,70 +870,17 @@ def test_sweep_stale_frame_dirs_only_removes_frame_prefixed_directories(tmp_path
     )
 
 
-def test_write_render_result_reuses_the_same_image_datablock_across_calls(tmp_path):
-    # Regression (perf): images.new() + remove() per call invalidated
-    # Cycles' persistent-data cache.
+def _write_exr(path, value, shape=(2, 2)):
     import numpy as np
 
-    from yt_volumes import external_render
+    from yt_volumes import compositor_build
 
-    path_a = str(tmp_path / "a.exr")
-    path_b = str(tmp_path / "b.exr")
-    result_a = external_render.RenderResult(
-        rgba=np.full((2, 2, 4), 0.25, dtype="float32"),
-        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-    )
-    result_b = external_render.RenderResult(
-        rgba=np.full((2, 2, 4), 0.75, dtype="float32"),
-        alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-    )
-
-    operators.write_render_result(result_a, path_a)
-    img_after_first = bpy.data.images.get(operators._RESULT_IMAGE_NAME)
-    assert img_after_first is not None
-    pointer_after_first = img_after_first.as_pointer()
-
-    operators.write_render_result(result_b, path_b)
-    img_after_second = bpy.data.images.get(operators._RESULT_IMAGE_NAME)
-
-    assert img_after_second is not None
-    assert img_after_second.as_pointer() == pointer_after_first
-    assert os.path.exists(path_a)
-    assert os.path.exists(path_b)
-
-    reread_a = operators.read_depth_buffer(bpy.context.scene, path_a)
-    reread_b = operators.read_depth_buffer(bpy.context.scene, path_b)
-    assert np.allclose(reread_a.data, 0.25, atol=1e-5)
-    assert np.allclose(reread_b.data, 0.75, atol=1e-5)
-
-
-def test_write_render_result_reuses_datablock_after_previous_file_is_deleted(tmp_path):
-    # Regression: Image.save() left the datablock backed by the (since
-    # deleted) file, reading back as (0, 0), so reuse never held per-frame.
-    import numpy as np
-
-    from yt_volumes import external_render
-
-    def result(value):
-        return external_render.RenderResult(
-            rgba=np.full((3, 4, 4), value, dtype="float32"),
-            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-        )
-
-    path_a = str(tmp_path / "a.exr")
-    operators.write_render_result(result(0.25), path_a)
-    img = bpy.data.images[operators._RESULT_IMAGE_NAME]
-    pointer_after_first = img.as_pointer()
-    assert img.source == "GENERATED"
-    os.remove(path_a)
-    img.buffers_free()
-
-    path_b = str(tmp_path / "b.exr")
-    operators.write_render_result(result(0.75), path_b)
-    img = bpy.data.images[operators._RESULT_IMAGE_NAME]
-    assert img.as_pointer() == pointer_after_first
-    assert tuple(img.size) == (4, 3)
-    assert np.allclose(operators.read_depth_buffer(bpy.context.scene, path_b).data, 0.75, atol=1e-5)
+    img = bpy.data.images.new("test_exr", width=shape[1], height=shape[0], alpha=True, float_buffer=True)
+    compositor_build.set_linear_colorspace(img)  # the default tag bakes an sRGB encode into the file; set before the pixels
+    img.pixels.foreach_set(np.full(shape[0] * shape[1] * 4, value, dtype="float32"))
+    img.filepath_raw, img.file_format, img.use_half_precision = path, "OPEN_EXR", False
+    img.save()
+    bpy.data.images.remove(img)
 
 
 def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path):
@@ -943,20 +890,8 @@ def test_read_depth_buffer_reuses_the_same_image_datablock_across_calls(tmp_path
 
     path_a = str(tmp_path / "depth_a.exr")
     path_b = str(tmp_path / "depth_b.exr")
-    operators.write_render_result(
-        external_render.RenderResult(
-            rgba=np.full((2, 2, 4), 1.5, dtype="float32"),
-            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-        ),
-        path_a,
-    )
-    operators.write_render_result(
-        external_render.RenderResult(
-            rgba=np.full((2, 2, 4), 3.0, dtype="float32"),
-            alpha_mode="PREMULTIPLIED", color_space="LINEAR",
-        ),
-        path_b,
-    )
+    _write_exr(path_a, 1.5)
+    _write_exr(path_b, 3.0)
 
     scene = bpy.context.scene
     depth_a = operators.read_depth_buffer(scene, path_a)

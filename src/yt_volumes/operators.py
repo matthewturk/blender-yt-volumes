@@ -551,48 +551,6 @@ def read_depth_buffer(scene, path):
     )
 
 
-_RESULT_IMAGE_NAME = "vo_result_tmp"
-_EXR_WRITER_SCENE_NAME = "__VolumeOverrideExrWriter"
-
-
-def _exr_writer_scene():
-    """Never-rendered Scene holding 32-bit EXR `image_settings` for
-    `Image.save_render(..., scene=)`.
-    """
-    scene = bpy.data.scenes.get(_EXR_WRITER_SCENE_NAME)
-    if scene is None:
-        scene = bpy.data.scenes.new(_EXR_WRITER_SCENE_NAME)
-    settings = scene.render.image_settings
-    if settings.file_format != "OPEN_EXR":
-        settings.file_format = "OPEN_EXR"
-    if settings.color_depth != "32":
-        settings.color_depth = "32"
-    return scene
-
-
-def write_render_result(result, path):
-    """Write a RenderResult.rgba (H, W, 4) float32 array to a full-float EXR.
-
-    `result.rgba` must use the DepthBuffer's row order (BOTTOM_LEFT_ORIGIN).
-
-    Reuses one Image datablock (recreated only on resolution change), for
-    the same persistent-data cache reason as `read_depth_buffer`. Uses
-    `save_render()`, not `save()`: `save()` makes Cycles' next render
-    re-sync all objects and rebuild the light tree, and flips the image to
-    a FILE source that breaks reuse.
-    """
-    h, w = result.rgba.shape[:2]
-    img = bpy.data.images.get(_RESULT_IMAGE_NAME)
-    if img is not None and (img.size[0], img.size[1]) != (w, h):
-        bpy.data.images.remove(img)
-        img = None
-    if img is None:
-        img = bpy.data.images.new(_RESULT_IMAGE_NAME, width=w, height=h, alpha=True, float_buffer=True)
-    compositor_build.set_linear_colorspace(img)
-    img.pixels.foreach_set(result.rgba.astype("float32").ravel())
-    img.save_render(path, scene=_exr_writer_scene())
-
-
 # --- Per-frame pipeline ------------------------------------------------------
 
 def _with_suffix(path, suffix):
@@ -879,13 +837,8 @@ def _render_current_frame(context):
                 if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                     props.colormap_range = result.cmap_range
                     props.colormap_range_set = True
-                result_path = os.path.join(
-                    frame_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}{suffix}.exr",
-                )
-                with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
-                    # the compositor reads volume layers as linear
-                    write_render_result(dataclasses.replace(result, rgba=compositor_build.display_to_linear(result.rgba)), result_path)
-                volume_layers.append((obj.name, result_path))
+                # handed to the compositor in memory, read as linear
+                volume_layers.append((obj.name, compositor_build.display_to_linear(result.rgba)))
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between

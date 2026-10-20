@@ -142,11 +142,36 @@ def _load_fresh_image(path, node_label, colorspace_fn=set_linear_colorspace):
     return img
 
 
-def _make_image_node(tree, name, path, colorspace_fn=set_linear_colorspace):
+def _volume_image(name, rgba):
+    """The generated float Image `name` holding `rgba` (rows bottom first,
+    linear, premultiplied), reused across frames; the compositor reads it
+    directly, with no file in between.
+    """
+    h, w = rgba.shape[:2]
+    img = bpy.data.images.get(name)
+    if img is not None and (img.source != "GENERATED" or tuple(img.size) != (w, h)):
+        bpy.data.images.remove(img)
+        img = None
+    if img is None:
+        img = bpy.data.images.new(name, width=w, height=h, alpha=True, float_buffer=True)
+        set_linear_colorspace(img)
+    img.pixels.foreach_set(np.ascontiguousarray(rgba, dtype=np.float32).ravel())
+    img.update()
+    return img
+
+
+def _layer_image(source, name):
+    """A layer's Image: `source` is an EXR path or an (H, W, 4) array."""
+    if isinstance(source, str):
+        return _load_fresh_image(source, name, set_linear_colorspace)
+    return _volume_image(name, source)
+
+
+def _make_image_node(tree, name, source):
     node = tree.nodes.new("CompositorNodeImage")
     node.name = name
     node.label = name
-    node.image = _load_fresh_image(path, name, colorspace_fn)
+    node.image = _layer_image(source, name)
     return node
 
 
@@ -222,8 +247,9 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     """Build the pass-2 graph, or update the existing Image nodes in place if
     the same ordered volume layers are already built.
 
-    `volume_layers`: list of (object_name, exr_path), ordered farthest from
-    the camera first. Pass `[]` to wire beauty straight to the output.
+    `volume_layers`: list of (object_name, source), ordered farthest from the
+    camera first; a source is an EXR path or an (H, W, 4) linear premultiplied
+    array, rows bottom first. Pass `[]` to wire beauty straight to the output.
 
     Creating/deleting nodes invalidates Cycles' persistent-data cache, so a
     rebuild only happens when the layer names or their order change. The
@@ -256,11 +282,11 @@ def build_or_update_views_graph(scene, views):
         # Cycles' persistent-data cache, so only assign when it differs.
         # bpy returns a fresh wrapper per access, so compare `.as_pointer()`.
         for view, (beauty_exr_path, volume_layers) in views.items():
-            for node_name, path in [(name("Beauty", view=view), beauty_exr_path)] + [
-                (name("Vol", obj_name, view=view), exr_path) for obj_name, exr_path in volume_layers
+            for node_name, source in [(name("Beauty", view=view), beauty_exr_path)] + [
+                (name("Vol", obj_name, view=view), layer) for obj_name, layer in volume_layers
             ]:
                 node = tree.nodes[node_name]
-                img = _load_fresh_image(path, node_name, set_linear_colorspace)
+                img = _layer_image(source, node_name)
                 if node.image is None or node.image.as_pointer() != img.as_pointer():
                     node.image = img
         _mute_pass1_file_outputs(tree)
@@ -272,8 +298,8 @@ def build_or_update_views_graph(scene, views):
     for view, (beauty_exr_path, volume_layers) in views.items():
         beauty_node = _make_image_node(tree, name("Beauty", view=view), beauty_exr_path)
         current_output = _color_output_socket(beauty_node)
-        for i, (obj_name, exr_path) in enumerate(volume_layers):
-            vol_node = _make_image_node(tree, name("Vol", obj_name, view=view), exr_path, set_linear_colorspace)
+        for i, (obj_name, layer) in enumerate(volume_layers):
+            vol_node = _make_image_node(tree, name("Vol", obj_name, view=view), layer)
             alpha_over = _make_alpha_over(
                 tree, name("Over", str(i), obj_name, view=view),
                 current_output, _color_output_socket(vol_node),

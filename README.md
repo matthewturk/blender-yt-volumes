@@ -868,9 +868,10 @@ is the real-depth-clip redo, but only for a single still frame.
 3. Builds one `RenderRequest` per flagged object (camera intrinsics +
    extrinsics, the depth buffer, that object's transform/bbox/custom_params,
    frame number) and calls the renderer for that object's `renderer_mode`.
-   Each `RenderResult.rgba` is written to its own full-float EXR.
+   Each `RenderResult.rgba` goes into its own float Image datablock, reused
+   every frame, which the compositor reads directly (no file).
 4. Rebuilds the compositor (`compositor_build.build_or_update_graph`) as
-   `Image(beauty EXR) -> chained Alpha Over per volume (farthest first) ->
+   `Image(beauty EXR) -> chained Alpha Over per volume image (farthest first) ->
    Composite`, then runs **Pass 2** with the same engine and
    `write_still=True`. The graph has no Render Layers node, so nothing is
    rendered again; this pass produces the saved output file.
@@ -897,7 +898,8 @@ handlers alone for exactly this reason):
 - **Pass 1** (Cycles or EEVEE): produces the Z pass; its own compositor
   output is discarded, we only want the two EXRs it writes to disk.
 - **Pass 2** (same engine, essentially free): its compositor graph reads
-  *everything* from EXRs via Image nodes -- no Render Layers node -- so
+  everything through Image nodes (the beauty EXR and the volumes' in-memory
+  images) -- no Render Layers node -- so
   nothing is rendered again; the pass only makes Blender run the compositor
   and write the output file. It keeps pass 1's engine because switching
   engines in between invalidates Cycles' persistent-data cache.

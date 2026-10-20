@@ -217,7 +217,7 @@ def test_compositor_volume_layer_comes_out_as_rendered_over_black(clean_scene, t
     bpy.data.images.remove(src)
 
     tree = cb.ensure_compositor_tree(scene)
-    img_node = cb._make_image_node(tree, "Test_VolumeValue", exr_path, cb.set_linear_colorspace)
+    img_node = cb._make_image_node(tree, "Test_VolumeValue", exr_path)
     cb._link_final_output(scene, tree, cb._color_output_socket(img_node))
 
     bpy.ops.render.render(write_still=True)
@@ -585,3 +585,26 @@ def test_build_or_update_graph_rebuilds_when_order_changes(clean_scene, tmp_path
     assert tree.nodes.get(cb._node_name("Over", "0", "A")) is None
     assert tree.nodes.get(cb._node_name("Over", "0", "B")) is not None
     assert tree.nodes.get(cb._node_name("Over", "1", "A")) is not None
+
+
+def test_volume_layers_go_to_the_compositor_in_memory_reusing_one_image(clean_scene, tmp_path):
+    scene = clean_scene
+    beauty_path = _build_solid_volume_image(tmp_path, "beauty", green=0.1)
+    first = np.zeros((4, 6, 4), dtype=np.float32)
+    first[..., 0] = first[..., 3] = 0.5
+
+    tree = cb.build_or_update_graph(scene, beauty_path, [("A", first)])
+    node = tree.nodes[cb._node_name("Vol", "A")]
+    image = node.image
+    assert image.source == "GENERATED" and not image.filepath
+    pointer = image.as_pointer()
+
+    second = first.copy()
+    second[..., 0] = 0.25
+    tree = cb.build_or_update_graph(scene, beauty_path, [("A", second)])  # the next frame
+
+    image = tree.nodes[cb._node_name("Vol", "A")].image
+    assert image.as_pointer() == pointer  # reused: no new datablock per frame
+    pixels = np.empty(len(image.pixels), dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    np.testing.assert_allclose(pixels.reshape(4, 6, 4)[..., 0], 0.25)
