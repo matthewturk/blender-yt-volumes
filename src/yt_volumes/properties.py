@@ -10,7 +10,7 @@ to dispatch on; Blender doesn't interpret it.
 import bpy
 import numpy as np
 
-from . import transfer_function_nodes
+from . import tf_plot, transfer_function_nodes
 
 CUSTOM_PARAM_KEY_MAXLEN = 63
 
@@ -522,15 +522,10 @@ def _draw_gn_transfer_function(layout, obj):
         layout.label(text=f"0.01 along = {(high - low) / 100:.3g} decades")
 
 
-_TF_PLOT_MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION", "YT_IDV_GN_TRANSFER_FUNCTION")
-
-
 TF_PLOT_SCALE = 18.0  # icon size in UI units; the plot keeps its aspect inside it
 
 
 def _draw_tf_plot(layout, obj):
-    from . import tf_plot
-
     if not tf_plot.available():
         return
     layout.prop(obj.volume_override, "show_tf_plot")
@@ -587,7 +582,7 @@ def _draw_look(layout, props):
         sub.prop(props, "color_source", expand=True)
         if props.color_source == "IMAGE":
             sub.prop(props, "color_image")
-    if props.renderer_mode in _TF_PLOT_MODES:
+    if props.renderer_mode in tf_plot.MODES:
         _draw_tf_plot(box, props.id_data)
     if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
         _draw_gn_transfer_function(box.box(), props.id_data)

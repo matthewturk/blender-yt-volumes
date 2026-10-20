@@ -30,6 +30,7 @@ def register():
     grid_overlay.register()
     viewer_link.register()
     viewport_preview.register()
+    tf_plot.register()
 
 
 def unregister():

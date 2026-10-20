@@ -9,10 +9,12 @@ import inspect
 
 import bpy
 import numpy as np
+from bpy.app.handlers import persistent
 
 WIDTH, HEIGHT = 480, 360  # pixels of the plot image
 PLOT_BINS = 512  # yt's show() draws an nbins x nbins image, so tables are resampled first
 DEBOUNCE = 0.2  # seconds after a change before replotting
+MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION", "YT_IDV_GN_TRANSFER_FUNCTION")
 
 _shown = {}  # object name -> signature of the plot in its icon, or an error message
 _pending = set()  # object names with a replot scheduled
@@ -35,8 +37,16 @@ def _preview(obj, create=False):
     return _previews.get(name) or (_previews.new(name) if create else None)
 
 
+def register():
+    bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    bpy.app.handlers.frame_change_post.append(_on_depsgraph_update)  # keyframed look settings
+
+
 def unregister():
     global _previews
+    for handlers in (bpy.app.handlers.depsgraph_update_post, bpy.app.handlers.frame_change_post):
+        if _on_depsgraph_update in handlers:
+            handlers.remove(_on_depsgraph_update)
     if _previews is not None:
         bpy.utils.previews.remove(_previews)
     _previews = None
@@ -179,3 +189,12 @@ def _replot(name, signature):
             if area.type == "PROPERTIES":
                 area.tag_redraw()
     return None
+
+
+@persistent
+def _on_depsgraph_update(scene, depsgraph):
+    # Edits made outside the panel (e.g. the node editor) don't redraw it, so check here.
+    for obj in scene.objects:
+        props = getattr(obj, "volume_override", None)
+        if props is not None and props.is_volume_override and props.show_tf_plot and props.renderer_mode in MODES:
+            icon(obj)
