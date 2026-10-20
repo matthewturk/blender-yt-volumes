@@ -29,8 +29,10 @@ def _camera(scene, lens=35.0):
 
 
 @pytest.mark.parametrize("width, height", [(320, 180), (180, 320)])
-def test_a_viewports_matrices_give_the_cameras_view(scene, width, height):
+@pytest.mark.parametrize("shift", [(0.0, 0.0), (0.1, -0.05)])
+def test_a_viewports_matrices_give_the_cameras_view(scene, width, height, shift):
     camera = _camera(scene)
+    camera.data.shift_x, camera.data.shift_y = shift
     scene.render.resolution_x, scene.render.resolution_y = width, height
     window = camera.calc_matrix_camera(bpy.context.evaluated_depsgraph_get(), x=width, y=height)
 
@@ -40,6 +42,7 @@ def test_a_viewports_matrices_give_the_cameras_view(scene, width, height):
     expected = operators.build_camera_params(scene, camera)
     aspect = width / height
     assert yir._approx_vertical_fov_deg(params, aspect) == pytest.approx(yir._approx_vertical_fov_deg(expected, aspect), rel=1e-5)
+    assert yir._shift_offset(params, height, width) == yir._shift_offset(expected, height, width)
 
 
 def _flag(scene, name, location, mode="YT_IDV_MAX_INTENSITY"):

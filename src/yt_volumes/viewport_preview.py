@@ -38,8 +38,9 @@ def camera_params(view_matrix, window_matrix, width, height, clip_start, clip_en
         sensor_width_mm=2.0,
         sensor_height_mm=2.0,
         sensor_fit="HORIZONTAL",
-        shift_x=0.0,
-        shift_y=0.0,
+        # an off-center window (camera shift, or a pan in camera view) as a horizontally fitted shift
+        shift_x=float(window[0, 2]) / 2.0,
+        shift_y=float(window[1, 2]) * height / (2.0 * width),
         ortho_scale=None,
         clip_start=clip_start,
         clip_end=clip_end,

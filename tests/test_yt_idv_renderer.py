@@ -1694,3 +1694,30 @@ def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
     yir._use_render_size(scene, 32)
     assert first.released and scene.fb.fb_tex == ("RGBA16", 32)
     assert scene.components[0].fb._yt_volumes_size == 32
+
+
+@pytest.mark.parametrize("offset", [(0, 0), (7, 0), (-5, 3)])
+def test_a_shifted_crop_takes_back_the_padded_depth(offset):
+    depth = np.arange(6 * 10, dtype="f4").reshape(6, 10)
+    padded = yir._pad_to_square(depth, render_size=30, offset=offset)
+    np.testing.assert_array_equal(yir._center_crop(padded[..., None], 6, 10, offset)[..., 0], depth)
+
+
+def test_camera_shift_is_whole_pixels_along_the_sensor_fit():
+    camera = types.SimpleNamespace(sensor_fit="AUTO", shift_x=0.1, shift_y=-0.05)
+    assert yir._shift_offset(camera, height=100, width=200) == (20, -10)
+    assert yir._shift_offset(camera, height=200, width=100) == (20, -10)  # AUTO fits the longer side
+
+
+def test_auto_exposure_can_keep_the_last_gain(monkeypatch):
+    monkeypatch.setattr(yir, "_exposure_gains", {})
+    table = np.full((256, 1, 4), 0.5, dtype=np.float32)
+    component = types.SimpleNamespace(render_method="transfer_function", transfer_function=types.SimpleNamespace(data=table))
+    scene = types.SimpleNamespace(components=[component])
+    yir._exposure_gains["d"] = 3.0
+    dim = lambda: np.full((8, 8, 4), 0.01, dtype=np.float32)  # would raise the gain
+
+    yir._auto_exposed(scene, "d", dim, adapt=False)
+    assert yir._exposure_gains["d"] == 3.0
+    yir._auto_exposed(scene, "d", dim)
+    assert yir._exposure_gains["d"] > 3.0

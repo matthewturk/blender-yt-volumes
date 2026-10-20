@@ -22,6 +22,7 @@ import tempfile
 import time
 
 import bpy
+import mathutils
 
 from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, yt_idv_renderer
 
@@ -194,9 +195,57 @@ def _matrix_to_list(matrix):
     return [list(row) for row in matrix]
 
 
-def build_camera_params(scene, camera_obj):
+def render_views(scene):
+    """The views a render makes: `[None]` without Multi-View, else the enabled
+    stereo views' `(name, file_suffix)`, left first.
+    """
+    render = scene.render
+    if not render.use_multiview:
+        return [None]
+    if render.views_format != "STEREO_3D":
+        raise NotImplementedError("Multi-View renders are supported only in Stereo 3D mode")
+    views = [(v.name, v.file_suffix) for v in render.views if v.use and v.name in ("left", "right")]
+    return views or [None]
+
+
+def stereo_eye(camera_obj, view):
+    """`(matrix_world, shift_x)` of the `"left"`/`"right"` eye of `camera_obj`,
+    placed as Blender's stereo settings place it.
+    """
+    cam = camera_obj.data
+    stereo = cam.stereo
+    is_left = view == "left"
+    if (stereo.pivot == "LEFT" and is_left) or (stereo.pivot == "RIGHT" and not is_left):
+        return camera_obj.matrix_world.copy(), cam.shift_x
+    fac = 0.5 if stereo.pivot == "CENTER" else 1.0
+    side = -1.0 if is_left else 1.0
+    half = stereo.interocular_distance * fac
+    location, rotation, scale = camera_obj.matrix_world.decompose()
+    if stereo.convergence_mode == "TOE":
+        rotation = rotation @ mathutils.Quaternion((0.0, 1.0, 0.0), side * math.atan(half / stereo.convergence_distance))
+    location = location + camera_obj.matrix_world.to_quaternion() @ mathutils.Vector((side * half, 0.0, 0.0))
+    matrix = mathutils.Matrix.LocRotScale(location, rotation, scale)
+    shift_x = cam.shift_x
+    if stereo.convergence_mode == "OFFAXIS":
+        shift_x -= side * fac * (stereo.interocular_distance / cam.sensor_width) * (cam.lens / stereo.convergence_distance)
+    return matrix, shift_x
+
+
+def _shift_fit_pixels(cam, width, height):
+    """Pixels per unit of camera shift: the frame's size along the sensor fit."""
+    fit = cam.sensor_fit
+    if fit == "AUTO":
+        fit = "HORIZONTAL" if width >= height else "VERTICAL"
+    return width if fit == "HORIZONTAL" else height
+
+
+def build_camera_params(scene, camera_obj, view=None):
+    """Blender camera -> CameraParams; `view` (`"left"`/`"right"`) gives that stereo eye."""
     cam = camera_obj.data
     render = scene.render
+    matrix_world, shift_x = camera_obj.matrix_world, cam.shift_x
+    if view is not None:
+        matrix_world, shift_x = stereo_eye(camera_obj, view)
 
     projection_matrix = None
     if cam.type in ("PERSP", "ORTHO"):
@@ -206,18 +255,20 @@ def build_camera_params(scene, camera_obj):
             x=render.resolution_x, y=render.resolution_y,
             scale_x=render.pixel_aspect_x, scale_y=render.pixel_aspect_y,
         )
+        # calc_matrix_camera knows only the camera's own shift.
+        matrix[0][2] += 2.0 * (shift_x - cam.shift_x) * _shift_fit_pixels(cam, render.resolution_x, render.resolution_y) / render.resolution_x
         projection_matrix = _matrix_to_list(matrix)
 
     panorama = build_panorama_params(cam) if cam.type == "PANO" else None
 
     return external_render.CameraParams(
-        matrix_world=_matrix_to_list(camera_obj.matrix_world),
+        matrix_world=_matrix_to_list(matrix_world),
         projection=cam.type,  # "PERSP" | "ORTHO" | "PANO"
         lens_mm=cam.lens if cam.type == "PERSP" else None,
         sensor_width_mm=cam.sensor_width,
         sensor_height_mm=cam.sensor_height,
         sensor_fit=cam.sensor_fit,
-        shift_x=cam.shift_x,
+        shift_x=shift_x,
         shift_y=cam.shift_y,
         ortho_scale=cam.ortho_scale if cam.type == "ORTHO" else None,
         clip_start=cam.clip_start,
@@ -544,6 +595,11 @@ def write_render_result(result, path):
 
 # --- Per-frame pipeline ------------------------------------------------------
 
+def _with_suffix(path, suffix):
+    root, ext = os.path.splitext(path)
+    return f"{root}{suffix}{ext}"
+
+
 def _sorted_far_to_near(scene, flagged):
     cam_loc = scene.camera.matrix_world.translation
     def distance(obj):
@@ -782,53 +838,62 @@ def _render_current_frame(context):
             bpy.ops.render.render(write_still=False)
         log(f"pass1 wrote beauty exists={os.path.exists(beauty_path)} depth exists={os.path.exists(depth_path)}")
 
-        with step("read_depth_buffer"):
-            depth_buffer = read_depth_buffer(scene, depth_path)
-        camera_params = build_camera_params(scene, scene.camera)
+        # With Stereo 3D, pass 1 writes each eye's EXRs with the view's file suffix.
+        views = render_views(scene)
         frame_params = build_frame_params(scene)
+        view_layers = {}
+        for view_index, view in enumerate(views):
+            name, suffix = view or (None, "")
+            with step(f"read_depth_buffer{suffix}"):
+                depth_buffer = read_depth_buffer(scene, _with_suffix(depth_path, suffix))
+            camera_params = build_camera_params(scene, scene.camera, name)
+            frame_params = dataclasses.replace(frame_params, view_index=view_index)
 
-        volume_layers = []
-        for obj in _sorted_far_to_near(scene, flagged):
-            props = obj.volume_override
-            render_fn = RENDERER_MODES[props.renderer_mode]
-            log(f"{obj.name!r}: renderer_mode={props.renderer_mode!r}")
-            request = external_render.RenderRequest(
-                camera=camera_params,
-                depth=depth_buffer,
-                volume=build_volume_params(obj),
-                frame=frame_params,
-            )
-            loading = contextlib.nullcontext()
-            if props.renderer_mode in YT_IDV_RENDERER_MODES and yt_idv_renderer.needs_load(request):
-                source = os.path.basename(request.volume.dataset.dataset_path or "") or "the sample dataset"
-                loading = _loading_notice(
-                    context, f"Loading {source} for {obj.name!r}; Blender will be unresponsive for a while"
+            volume_layers = view_layers[name] = []
+            for obj in _sorted_far_to_near(scene, flagged):
+                props = obj.volume_override
+                render_fn = RENDERER_MODES[props.renderer_mode]
+                log(f"{obj.name!r}: renderer_mode={props.renderer_mode!r}")
+                request = external_render.RenderRequest(
+                    camera=camera_params,
+                    depth=depth_buffer,
+                    volume=build_volume_params(obj),
+                    frame=frame_params,
                 )
-            with loading, step(f"render_volume for {obj.name!r}"):
-                result = render_fn(request)
-            assert result.alpha_mode == "PREMULTIPLIED"
-            assert result.color_space == "LINEAR"
-            if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
-                fit = yt_idv_renderer.gn_tf_fit(request.volume.dataset.dataset_id)
-                if fit is not None:
-                    transfer_function_nodes.update_distribution(obj, fit["points"])
-            if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
-                props.colormap_range = result.cmap_range
-                props.colormap_range_set = True
-            result_path = os.path.join(
-                frame_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}.exr",
-            )
-            with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
-                # the compositor reads volume layers as linear
-                write_render_result(dataclasses.replace(result, rgba=compositor_build.display_to_linear(result.rgba)), result_path)
-            volume_layers.append((obj.name, result_path))
+                loading = contextlib.nullcontext()
+                if props.renderer_mode in YT_IDV_RENDERER_MODES and yt_idv_renderer.needs_load(request):
+                    source = os.path.basename(request.volume.dataset.dataset_path or "") or "the sample dataset"
+                    loading = _loading_notice(
+                        context, f"Loading {source} for {obj.name!r}; Blender will be unresponsive for a while"
+                    )
+                with loading, step(f"render_volume for {obj.name!r}"):
+                    result = render_fn(request)
+                assert result.alpha_mode == "PREMULTIPLIED"
+                assert result.color_space == "LINEAR"
+                if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
+                    fit = yt_idv_renderer.gn_tf_fit(request.volume.dataset.dataset_id)
+                    if fit is not None:
+                        transfer_function_nodes.update_distribution(obj, fit["points"])
+                if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
+                    props.colormap_range = result.cmap_range
+                    props.colormap_range_set = True
+                result_path = os.path.join(
+                    frame_dir, f"vo_result_{obj.name}_{scene.frame_current:04d}{suffix}.exr",
+                )
+                with step(f"write_render_result for {obj.name!r} -> {result_path!r}"):
+                    # the compositor reads volume layers as linear
+                    write_render_result(dataclasses.replace(result, rgba=compositor_build.display_to_linear(result.rgba)), result_path)
+                volume_layers.append((obj.name, result_path))
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between
         # invalidates Cycles' persistent-data cache. Nothing is path-traced,
         # since the graph has no Render Layers node.
         with step("pass2 build/update compositor graph"):
-            compositor_build.build_or_update_graph(scene, beauty_path, volume_layers)
+            compositor_build.build_or_update_views_graph(scene, {
+                name: (_with_suffix(beauty_path, suffix), view_layers[name])
+                for name, suffix in (view or (None, "") for view in views)
+            })
         with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
             bpy.ops.render.render(write_still=True)
         log(f"pass2 done; final output at {scene.render.frame_path()!r} "

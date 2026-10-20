@@ -163,6 +163,7 @@ class VolumeObjectParams:
 class FrameParams:
     frame_number: int
     scene_time_seconds: float
+    view_index: int = 0  # stereo: 0 for the first eye rendered, 1 for the second
 
 
 @dataclass

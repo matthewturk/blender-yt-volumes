@@ -229,12 +229,25 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     rebuild only happens when the layer names or their order change. The
     built order is stored on the tree under `_VOLUME_ORDER_KEY`.
     """
+    return build_or_update_views_graph(scene, {None: (beauty_exr_path, volume_layers)})
+
+
+def build_or_update_views_graph(scene, views):
+    """`build_or_update_graph` for each view of a Multi-View render:
+    `views` maps a view name (None without Multi-View) to `(beauty_exr_path,
+    volume_layers)`; a Switch View node picks each view's chain.
+    """
     tree = ensure_compositor_tree(scene)
 
-    expected_order = [obj_name for obj_name, _ in volume_layers]
-    beauty_node = tree.nodes.get(_node_name("Beauty"))
+    def name(*parts, view):
+        return _node_name(*parts, view) if view else _node_name(*parts)
+
+    expected_order = [
+        entry for view, (_, layers) in views.items()
+        for entry in ([f"{view}/"] if view else []) + [f"{view}/{obj}" if view else obj for obj, _ in layers]
+    ]
     topology_matches = (
-        beauty_node is not None
+        all(tree.nodes.get(name("Beauty", view=view)) is not None for view in views)
         and list(tree.get(_VOLUME_ORDER_KEY, [])) == expected_order
     )
 
@@ -242,31 +255,41 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
         # Reassigning `.image`, even to the same datablock, invalidates
         # Cycles' persistent-data cache, so only assign when it differs.
         # bpy returns a fresh wrapper per access, so compare `.as_pointer()`.
-        beauty_img = _load_fresh_image(beauty_exr_path, _node_name("Beauty"), set_linear_colorspace)
-        if beauty_node.image is None or beauty_node.image.as_pointer() != beauty_img.as_pointer():
-            beauty_node.image = beauty_img
-        for obj_name, exr_path in volume_layers:
-            vol_node = tree.nodes[_node_name("Vol", obj_name)]
-            vol_img = _load_fresh_image(exr_path, _node_name("Vol", obj_name), set_linear_colorspace)
-            if vol_node.image is None or vol_node.image.as_pointer() != vol_img.as_pointer():
-                vol_node.image = vol_img
+        for view, (beauty_exr_path, volume_layers) in views.items():
+            for node_name, path in [(name("Beauty", view=view), beauty_exr_path)] + [
+                (name("Vol", obj_name, view=view), exr_path) for obj_name, exr_path in volume_layers
+            ]:
+                node = tree.nodes[node_name]
+                img = _load_fresh_image(path, node_name, set_linear_colorspace)
+                if node.image is None or node.image.as_pointer() != img.as_pointer():
+                    node.image = img
         _mute_pass1_file_outputs(tree)
         return tree
 
     _clear_managed_nodes(tree, exclude_prefix=_PASS1_NODE_PREFIX)
 
-    beauty_node = _make_image_node(tree, _node_name("Beauty"), beauty_exr_path)
-    current_output = _color_output_socket(beauty_node)
+    outputs = {}
+    for view, (beauty_exr_path, volume_layers) in views.items():
+        beauty_node = _make_image_node(tree, name("Beauty", view=view), beauty_exr_path)
+        current_output = _color_output_socket(beauty_node)
+        for i, (obj_name, exr_path) in enumerate(volume_layers):
+            vol_node = _make_image_node(tree, name("Vol", obj_name, view=view), exr_path, set_linear_colorspace)
+            alpha_over = _make_alpha_over(
+                tree, name("Over", str(i), obj_name, view=view),
+                current_output, _color_output_socket(vol_node),
+            )
+            current_output = alpha_over.outputs.get("Image")
+        outputs[view] = current_output
 
-    for i, (obj_name, exr_path) in enumerate(volume_layers):
-        vol_node = _make_image_node(tree, _node_name("Vol", obj_name), exr_path, set_linear_colorspace)
-        alpha_over = _make_alpha_over(
-            tree, _node_name("Over", str(i), obj_name),
-            current_output, _color_output_socket(vol_node),
-        )
-        current_output = alpha_over.outputs.get("Image")
-
-    _link_final_output(scene, tree, current_output)
+    if list(outputs) == [None]:
+        final_output = outputs[None]
+    else:
+        switch = tree.nodes.new("CompositorNodeSwitchView")
+        switch.name = switch.label = _node_name("SwitchView")
+        for view, socket in outputs.items():
+            tree.links.new(socket, switch.inputs[view])
+        final_output = switch.outputs[0]
+    _link_final_output(scene, tree, final_output)
     tree[_VOLUME_ORDER_KEY] = expected_order
 
     _layout_nodes(tree)

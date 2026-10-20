@@ -1151,3 +1151,89 @@ def test_distribution_lands_on_the_transfer_function_points_and_is_packed(clean_
         np.testing.assert_allclose(values, points[key], rtol=1e-6, atol=1e-9)
     image = obj.modifiers[0].node_group.nodes[transfer_function_nodes.DISTRIBUTION_NODE_NAME].inputs["Image"].default_value
     assert image.packed_file is not None and image.file_format == "OPEN_EXR"
+
+
+def _stereo(scene, mode="OFFAXIS", pivot="CENTER"):
+    scene.render.use_multiview = True
+    scene.render.views_format = "STEREO_3D"
+    scene.render.image_settings.views_format = "INDIVIDUAL"
+    stereo = scene.camera.data.stereo
+    stereo.convergence_mode, stereo.pivot = mode, pivot
+    stereo.interocular_distance, stereo.convergence_distance = 0.4, 5.0
+
+
+def test_an_eyes_projection_is_blenders_with_the_eyes_shift(clean_scene):
+    scene = clean_scene
+    scene.render.resolution_x, scene.render.resolution_y = 320, 200
+    camera = _add_camera(scene, "PERSP", lens=40.0)
+    camera.data.shift_x = 0.03
+    _stereo(scene)
+
+    params = operators.build_camera_params(scene, camera, "left")
+    _, shift_x = operators.stereo_eye(camera, "left")
+    camera.data.shift_x = shift_x
+    bpy.context.view_layer.update()
+    expected = camera.calc_matrix_camera(bpy.context.evaluated_depsgraph_get(), x=320, y=200)
+
+    assert params.shift_x == pytest.approx(shift_x)
+    np.testing.assert_allclose(params.projection_matrix, np.array(expected), atol=1e-6)
+
+
+@pytest.mark.parametrize("mode", ["OFFAXIS", "PARALLEL", "TOE"])
+def test_eye_cameras_see_what_cycles_draws_in_each_eye(clean_scene, tmp_path, mode):
+    from yt_volumes import compositor_build
+
+    scene = clean_scene
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.render.resolution_x, scene.render.resolution_y = 160, 100
+    camera = _add_camera(scene, "PERSP", lens=50.0)
+    camera.location, camera.rotation_euler = (0.3, -6.0, 0.5), (1.52, 0.02, 0.1)
+    _stereo(scene, mode)
+    center = np.array([0.8, 0.5, -0.4])
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.12, location=center)
+    scene.view_layers[0].use_pass_z = True
+    _, depth_path = compositor_build.build_pass1_capture_graph(scene, str(tmp_path), scene.frame_current)
+    bpy.ops.render.render()
+
+    for view, suffix in operators.render_views(scene):
+        depth = operators.read_depth_buffer(scene, operators._with_suffix(depth_path, suffix)).data  # bottom row first
+        rows, cols = np.nonzero(depth < 1e9)
+        params = operators.build_camera_params(scene, camera, view)
+        clip = np.array(params.projection_matrix) @ np.linalg.inv(np.array(params.matrix_world)) @ np.append(center, 1.0)
+        x, y = (clip[:2] / clip[3] + 1.0) / 2.0 * (160, 100)
+        assert (cols + 0.5).mean() == pytest.approx(x, abs=0.5), view
+        assert (rows + 0.5).mean() == pytest.approx(y, abs=0.5), view
+
+
+def test_a_stereo_render_renders_each_eye_and_composites_it(addon_enabled, monkeypatch, tmp_path):
+    import dataclasses
+
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "Standard"
+    _add_camera(scene, "PERSP", lens=50.0)
+    _stereo(scene)
+    _flagged_cube()
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    scene.render.filepath = str(tmp_path / "out_")
+    seen = []
+
+    def fake_renderer(request):
+        seen.append((request.frame.view_index, request.camera.matrix_world[0][3]))
+        rgba = np.zeros(request.depth.data.shape + (4,), dtype="float32")
+        rgba[..., request.frame.view_index * 2] = rgba[..., 3] = 1.0  # left red, right blue
+        return dataclasses.replace(_fake_render_result(request), rgba=rgba)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+
+    operators.render_current_frame(bpy.context)
+
+    assert [index for index, _ in seen] == [0, 1]
+    assert seen[0][1] == pytest.approx(-0.2) and seen[1][1] == pytest.approx(0.2)
+    for suffix, channel in (("_L", 0), ("_R", 2)):
+        image = bpy.data.images.load(str(tmp_path / f"out_{suffix}.png"))
+        pixel = np.array(image.pixels[:4])
+        assert pixel[channel] > 0.9 and pixel[2 - channel] < 0.1, suffix

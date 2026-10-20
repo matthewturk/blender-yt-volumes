@@ -842,14 +842,15 @@ def _world_to_model(volume, model_frame=None):
 
 def _registered_camera_kwargs(
     camera, volume, ds, width, height, model_bounds=None, model_frame=None, frame_aspect=None,
-    zoom_depth=None,
+    zoom_depth=None, margin=1.0,
 ):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
     object bounding-box registration into yt_idv model space, for a `width` x
     `height` canvas covering a Blender frame of `frame_aspect` (default the
     canvas's).
 
-    `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
+    `margin` widens the field of view by that factor, for a canvas larger than
+    the frame. `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
     planes. `model_frame` is `apply_zoom`'s; see `_world_to_model`.
     """
     if camera.projection != "PERSP":
@@ -894,6 +895,8 @@ def _registered_camera_kwargs(
 
     aspect_ratio = width / height
     fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
+    if margin != 1.0:
+        fov_deg = math.degrees(2.0 * math.atan(margin * math.tan(math.radians(fov_deg) / 2.0)))
     planes = camera_planes(position, model_bounds, model_frame, zoom_depth)
 
     return {
@@ -1001,14 +1004,13 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=Non
     return np.ascontiguousarray(window_depth)
 
 
-def _pad_to_square(depth_2d, render_size, fill_value=1.0):
-    """Center a `(height, width)` array in a square canvas filled with
-    `fill_value`, using the same offsets as `_center_crop`.
+def _pad_to_square(depth_2d, render_size, fill_value=1.0, offset=(0, 0)):
+    """Place a top-down `(height, width)` array in a square canvas filled with
+    `fill_value`, where `_center_crop` with the same `offset` takes it from.
     """
     height, width = depth_2d.shape
     canvas = np.full((render_size, render_size), fill_value, dtype="f4")
-    y0 = (render_size - height) // 2
-    x0 = (render_size - width) // 2
+    y0, x0 = _crop_origin(render_size, height, width, offset)
     canvas[y0 : y0 + height, x0 : x0 + width] = depth_2d
     return canvas
 
@@ -1038,12 +1040,31 @@ def _to_row_order(image, row_order):
     raise ValueError(f"unknown row_order {row_order!r}")
 
 
-def _center_crop(image, expected_height, expected_width):
-    """Center-crop a square render to `(expected_height, expected_width, 4)`."""
-    size = image.shape[0]
-    y0 = (size - expected_height) // 2
-    x0 = (size - expected_width) // 2
+def _crop_origin(size, height, width, offset=(0, 0)):
+    """Top-left corner of the frame in a square canvas, `offset` = `(dx, dy)`
+    pixels right and up of center.
+    """
+    dx, dy = offset
+    return (size - height) // 2 - dy, (size - width) // 2 + dx
+
+
+def _center_crop(image, expected_height, expected_width, offset=(0, 0)):
+    """Crop a top-down square render to `(expected_height, expected_width, 4)`,
+    `offset` as `_crop_origin`'s.
+    """
+    y0, x0 = _crop_origin(image.shape[0], expected_height, expected_width, offset)
     return image[y0 : y0 + expected_height, x0 : x0 + expected_width, :]
+
+
+def _shift_offset(camera, height, width):
+    """Camera shift as whole pixels `(dx, dy)` of a `width` x `height` frame.
+    yt_idv's frustum is symmetric, so a shift is rendered as an off-center crop.
+    """
+    fit = camera.sensor_fit
+    if fit == "AUTO":
+        fit = "HORIZONTAL" if width >= height else "VERTICAL"
+    pixels = width if fit == "HORIZONTAL" else height
+    return round(camera.shift_x * pixels), round(camera.shift_y * pixels)
 
 
 def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderResult:
@@ -1055,7 +1076,8 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     nothing affecting the image changed.
     """
     height, width = request.depth.data.shape
-    render_size = max(height, width)
+    offset = _shift_offset(request.camera, height, width)
+    render_size = max(height, width) + 2 * max(map(abs, offset))
     dataset_id = request.volume.dataset.dataset_id
 
     rc, scene, ds, volume_changed = _get_volume_scene(request, render_size)
@@ -1098,11 +1120,12 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
             request.camera, request.volume, ds, render_size, render_size,
             model_bounds=_scene_model_bounds(scene), model_frame=model_frame,
             frame_aspect=width / height, zoom_depth=custom_params.get("yt_idv_zoom_depth"),
+            margin=render_size / max(height, width),
         )
     )
 
     window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera, model_frame)
-    set_external_depth_clip(scene, _pad_to_square(window_depth, render_size))
+    set_external_depth_clip(scene, _pad_to_square(window_depth, render_size, offset=offset))
 
     _use_render_size(scene, render_size)
     from OpenGL import GL
@@ -1114,11 +1137,12 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     def run():
         image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), [0, 1]
         image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
-        return _center_crop(_to_row_order(image, request.depth.row_order), height, width)
+        return _to_row_order(_center_crop(image, height, width, offset), request.depth.row_order)
 
     try:
         if custom_params.get("yt_idv_auto_exposure"):
-            image = _auto_exposed(scene, dataset_id, run)
+            # a stereo pair's second eye keeps the first's exposure
+            image = _auto_exposed(scene, dataset_id, run, adapt=request.frame.view_index == 0)
         else:
             image = run()
     finally:
@@ -1135,7 +1159,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     return result
 
 
-def _auto_exposed(scene, dataset_id, run):
+def _auto_exposed(scene, dataset_id, run, adapt=True):
     """Render with the transfer function tables' emission scaled until the
     brightest 0.1% of pixels sit near AUTO_EXPOSURE_TARGET with at most
     AUTO_EXPOSURE_CLIP clipped. Starts from the gain the last render chose, so
@@ -1157,7 +1181,7 @@ def _auto_exposed(scene, dataset_id, run):
                 exposed[..., :3] *= gain
                 component.transfer_function.data = exposed
             image = run()
-            factor = _exposure_factor(image)
+            factor = _exposure_factor(image) if adapt else 1.0
             if factor == 1.0 or step == AUTO_EXPOSURE_STEPS:
                 break
             gain *= factor

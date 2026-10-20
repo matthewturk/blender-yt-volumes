@@ -409,6 +409,18 @@ planes are bounded to 1e-3 and 1e3 times the camera's distance to the target:
 yt_idv rebuilds rays from the inverse projection in float32, and a domain-wide
 far plane there bands transfer-function renders.
 
+### Stereoscopic renders
+
+With Output Properties > Stereoscopy on in Stereo 3D mode, each eye is
+rendered separately: the volumes are rendered from that eye's camera, clipped
+against that eye's depth, and composited onto that eye's image, so the output is
+whatever Stereoscopy is set to write (individual images, anaglyph,
+side-by-side). The eye cameras follow the camera's Stereoscopy settings
+(interocular and convergence distance, Off-Axis, Parallel or Toe-in, pivot), and
+match where Cycles draws each eye to under a pixel. The second eye reuses the
+first eye's Auto Exposure, so the pair matches. Each eye costs a full volume
+render. Multi-View mode and panoramic stereo aren't supported.
+
 ### Spherical data
 
 For a dataset in yt's spherical geometry, flag an **Empty with Display Type
