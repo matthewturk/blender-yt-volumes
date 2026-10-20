@@ -378,6 +378,11 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         ),
         default="kpc",
     )
+    units_object: bpy.props.PointerProperty(
+        name="Units Object",
+        description="One-vertex mesh whose point attributes are this volume's yt_units, kept current for Geometry Nodes",
+        type=bpy.types.Object,
+    )
     # A string so the target keeps float64 precision; FloatVectorProperty is float32.
     zoom_target: bpy.props.StringProperty(
         name="Zoom Target",
@@ -763,6 +768,10 @@ def _draw_units(layout, obj):
     row = layout.row(align=True)
     row.prop(obj.volume_override, "data_units")
     row.operator("volume_override.read_units", text="", icon="FILE_REFRESH")
+    if obj.volume_override.units_object is None:
+        layout.operator("volume_override.add_units_object", icon="GEOMETRY_NODES")
+    else:
+        layout.prop(obj.volume_override, "units_object")
     group = obj.get("yt_units", {})
     for unit in (u.strip() for u in obj.volume_override.data_units.split(",") if u.strip()):
         value = group.get(f"scene_per_{unit}")

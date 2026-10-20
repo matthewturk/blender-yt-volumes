@@ -426,7 +426,11 @@ and scripts:
   `kpc, pc, Mpc/h, kpccm`): `unitary_in_<unit>` and `scene_per_<unit>`.
 
 A driver reads them with a Single Property variable, e.g.
-`["yt_units"]["scene_per_kpc"]`, which needs no Python auto-run. The data side
+`["yt_units"]["scene_per_kpc"]`, which needs no Python auto-run. Geometry Nodes can't
+read custom properties, so **Units for Geometry Nodes** (beside Data Units)
+makes a one-vertex mesh, linked as the volume's Units Object, whose point
+attributes hold the same values every frame: Object Info on it, then Sample
+Index 0 of a Named Attribute such as `scene_per_kpc`. The data side
 is yt's unit registry, recorded when the dataset loads (F12 or the viewport
 preview) and saved in the .blend; **Read Units** (the button beside Data Units)
 reads it from the dataset's header without loading its data. A yt_idv scene file

@@ -130,3 +130,65 @@ def test_a_subset_scenes_cube_is_its_bounding_boxs_longest_side(tmp_path):
         with zf.open("arrays/000000.npy", "w") as f:
             np.lib.format.write_array(f, np.array([[0.4, 0.45, 0.42], [0.48, 0.5, 0.47]]))
     assert units.scene_file_cube(str(path)) == pytest.approx(0.08)
+
+
+def _reader(scene, units_object, attribute):
+    """A mesh whose Geometry Nodes store `attribute`, sampled from `units_object`'s vertex 0, as "k"."""
+    tree = bpy.data.node_groups.new("Read Units", "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    nodes, links = tree.nodes, tree.links
+    group_in, group_out = nodes.new("NodeGroupInput"), nodes.new("NodeGroupOutput")
+    info = nodes.new("GeometryNodeObjectInfo")
+    info.inputs["Object"].default_value = units_object
+    named = nodes.new("GeometryNodeInputNamedAttribute")
+    named.data_type = "FLOAT"
+    named.inputs["Name"].default_value = attribute
+    sample = nodes.new("GeometryNodeSampleIndex")
+    sample.data_type, sample.domain = "FLOAT", "POINT"
+    store = nodes.new("GeometryNodeStoreNamedAttribute")
+    store.data_type, store.domain = "FLOAT", "POINT"
+    store.inputs["Name"].default_value = "k"
+    links.new(info.outputs["Geometry"], sample.inputs["Geometry"])
+    links.new(named.outputs["Attribute"], sample.inputs["Value"])
+    links.new(group_in.outputs[0], store.inputs["Geometry"])
+    links.new(sample.outputs["Value"], store.inputs["Value"])
+    links.new(store.outputs["Geometry"], group_out.inputs[0])
+    mesh = bpy.data.meshes.new("Reader")
+    mesh.vertices.add(1)
+    reader = bpy.data.objects.new("Reader", mesh)
+    scene.collection.objects.link(reader)
+    reader.modifiers.new("Read", "NODES").node_group = tree
+    return reader
+
+
+def _read_k(reader):
+    evaluated = reader.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    return evaluated.data.attributes["k"].data[0].value
+
+
+def test_geometry_nodes_read_the_units_object(scene):
+    obj = _volume(scene)
+    obj.volume_override.data_units = "kpc, pc"
+    obj["yt_units"] = {"registry": _kpc_dataset().unit_registry.to_json()}
+    obj.volume_override.zoom_target = "0.5, 0.5, 0.5"
+    obj.volume_override.zoom_level = 0.0
+    obj.volume_override.keyframe_insert("zoom_level", frame=1)
+    obj.volume_override.zoom_level = 2.0
+    obj.volume_override.keyframe_insert("zoom_level", frame=3)
+    scene.frame_set(1)
+
+    units_object = units.add_units_object(obj, scene)
+    reader = _reader(scene, units_object, "scene_per_kpc")
+    bpy.context.view_layer.update()
+    assert _read_k(reader) == pytest.approx(0.2, rel=1e-6)  # 2 scene units per 10 kpc
+    assert units_object.hide_render
+
+    scene.frame_set(3)
+    bpy.context.view_layer.update()
+    assert _read_k(reader) == pytest.approx(20.0, rel=1e-6)  # zoomed 100x
+
+    obj.volume_override.data_units = "pc"
+    units.update(obj, scene)
+    names = {a.name for a in units_object.data.attributes}
+    assert "scene_per_pc" in names and "scene_per_kpc" not in names

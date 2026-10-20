@@ -4,6 +4,9 @@ The group holds `scene_per_unitary` (scene units per unitary length right now,
 following the volume's transform, its Zoom Level or Deep Zoom), and for each of
 the volume's Data Units `unitary_in_<unit>` and `scene_per_<unit>`. A driver
 reads them with a Single Property variable, e.g. `["yt_units"]["scene_per_kpc"]`.
+Geometry Nodes can't read custom properties, so a volume's units object (Units
+for Geometry Nodes) holds the same values as point attributes of its one
+vertex: Object Info, then Sample Index 0 of a Named Attribute.
 The data side comes from yt's unit registry, recorded when the dataset loads;
 a yt_idv scene file carries it as a `dataset` entry in scene.json, or as a
 `dataset.json` member added by `add_units_to_scene_file`.
@@ -125,6 +128,44 @@ def update(obj, scene):
             changed = True
     if changed:
         obj.update_tag()
+    units_object = obj.volume_override.units_object
+    if units_object is not None and units_object.type == "MESH":
+        _write_attributes(units_object.data, values)
+
+
+def _write_attributes(mesh, values):
+    """Set the units mesh's float point attributes to `values`, dropping
+    units no longer listed; only touches the mesh if something changed.
+    """
+    attributes = mesh.attributes
+    changed = False
+    for name in [a.name for a in attributes if a.name.startswith(("scene_per_", "unitary_in_")) and a.name not in values]:
+        attributes.remove(attributes[name])
+        changed = True
+    for name, value in values.items():
+        attribute = attributes.get(name) or attributes.new(name, "FLOAT", "POINT")
+        current = np.empty(len(attribute.data), dtype=np.float32)
+        attribute.data.foreach_get("value", current)
+        if not np.all(current == np.float32(value)):
+            attribute.data.foreach_set("value", np.full(len(current), value, dtype=np.float32))
+            changed = True
+    if changed:
+        mesh.update()
+
+
+def add_units_object(obj, scene):
+    """The volume's units object, made (one vertex at its origin) if it has none."""
+    props = obj.volume_override
+    if props.units_object is None:
+        mesh = bpy.data.meshes.new(f"{obj.name} yt Units")
+        mesh.vertices.add(1)
+        units_object = bpy.data.objects.new(mesh.name, mesh)
+        units_object.hide_render = True
+        for collection in obj.users_collection or [scene.collection]:
+            collection.objects.link(units_object)
+        props.units_object = units_object
+    update(obj, scene)
+    return props.units_object
 
 
 def record(obj, dataset_id, scene):
@@ -173,6 +214,19 @@ def _on_update(scene, depsgraph=None):
         update(obj, scene)
 
 
+class VOLUMEOVERRIDE_OT_add_units_object(bpy.types.Operator):
+    """Make a one-vertex mesh whose point attributes are this volume's yt_units, for Geometry Nodes (Object Info, Sample Index 0)"""
+
+    bl_idname = "volume_override.add_units_object"
+    bl_label = "Units for Geometry Nodes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        units_object = add_units_object(context.object, context.scene)
+        self.report({"INFO"}, f"Read the units from {units_object.name!r}: Object Info, then Sample Index 0 of a Named Attribute")
+        return {"FINISHED"}
+
+
 class VOLUMEOVERRIDE_OT_read_units(bpy.types.Operator):
     """Read the dataset's units (its header only, or the scene file's) for yt_units"""
 
@@ -190,6 +244,7 @@ class VOLUMEOVERRIDE_OT_read_units(bpy.types.Operator):
 
 def register():
     bpy.utils.register_class(VOLUMEOVERRIDE_OT_read_units)
+    bpy.utils.register_class(VOLUMEOVERRIDE_OT_add_units_object)
     bpy.app.handlers.frame_change_post.append(_on_update)
     bpy.app.handlers.depsgraph_update_post.append(_on_update)
 
@@ -198,5 +253,6 @@ def unregister():
     for handlers in (bpy.app.handlers.frame_change_post, bpy.app.handlers.depsgraph_update_post):
         if _on_update in handlers:
             handlers.remove(_on_update)
-    if VOLUMEOVERRIDE_OT_read_units.is_registered:
-        bpy.utils.unregister_class(VOLUMEOVERRIDE_OT_read_units)
+    for cls in (VOLUMEOVERRIDE_OT_add_units_object, VOLUMEOVERRIDE_OT_read_units):
+        if cls.is_registered:
+            bpy.utils.unregister_class(cls)
