@@ -973,7 +973,9 @@ def test_approach_value_is_the_running_maximum_along_the_way_in(monkeypatch):
         r = np.linalg.norm(point)
         bump = 100.0 if 9e-4 < r < 1.1e-3 else (0.01 if 0.05 < r < 0.2 else 1.0)
         return bump / max(r, 1e-12)
-    monkeypatch.setattr(yir, "_field_value_at", field)
+    monkeypatch.setattr(yir, "_field_values_along", lambda scene, origin, direction, distances: np.array(
+        [field(scene, origin + d * direction) for d in distances]
+    ))
 
     at = lambda r: yir._approach_value(None, np.array([r, 0.0, 0.0]), "max")
     assert at(1.0) == pytest.approx(1.0, rel=0.05)
@@ -1527,6 +1529,29 @@ def test_zoom_depth_ends_rays_past_the_target():
     assert unlimited["far_plane"] == pytest.approx(yir.FAR_REACH * 1.5)
     unzoomed = yir.camera_planes(np.array([0.5, 0.5, 3.0]), zoom_depth=2.0)  # no zoom frame: no limit
     assert unzoomed["far_plane"] > 3.0
+
+
+def test_field_values_along_a_line_match_point_lookups():
+    # a coarse block over [0, 1]^3 and a finer one inside it, which wins where they overlap
+    rng = np.random.default_rng(3)
+    left = np.array([[0.0, 0.0, 0.0], [0.25, 0.3, 0.2]])
+    right = np.array([[1.0, 1.0, 1.0], [0.75, 0.7, 0.6]])
+    dx = np.array([[0.25] * 3, [0.05] * 3])
+    data = {0: rng.random((5, 5, 5)).astype("f4"), 1: rng.random((11, 9, 9)).astype("f4")}
+    collection = types.SimpleNamespace(
+        _yt_geom_str="cartesian", _get_unscaled_edges=lambda: (left, right, dx),
+        block_data=data, _textures_are_normalized=False,
+    )
+    scene = _block_scene(collection)
+    distances = np.linspace(0.0, 1.5, 301)
+    origin = np.array([0.5, 0.5, 0.4])
+    for direction in (*rng.normal(size=(4, 3)), np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, -1.0])):
+        direction = direction / np.linalg.norm(direction)
+        along = yir._field_values_along(scene, origin, direction, distances)
+        points = [yir._field_value_at(scene, origin + d * direction) for d in distances]
+        np.testing.assert_array_equal(along, [np.nan if v is None else v for v in points])
+    outside = yir._field_values_along(scene, np.array([2.0, 2.0, 2.0]), np.array([1.0, 0.0, 0.0]), distances)
+    assert np.isnan(outside).all()  # a line that misses every block
 
 
 def test_field_value_at_reads_the_nearest_texel_of_the_containing_block():

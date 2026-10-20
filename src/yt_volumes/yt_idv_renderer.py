@@ -1419,8 +1419,8 @@ def _smooth_monotonic(values):
 def _approach_value(scene, camera, spec):
     """The field the camera has met on its way in to the zoom target, taken to
     only grow: the highest value along the line from the domain edge to the
-    camera. Sampled once per target and direction, so it doesn't depend on
-    which frames are rendered.
+    camera. Sampled once per target and direction (in one pass along the
+    line), so it doesn't depend on which frames are rendered.
     """
     collections = _block_collections(scene)
     if not collections:
@@ -1434,9 +1434,7 @@ def _approach_value(scene, camera, spec):
     key = (tuple(target), tuple(np.round(direction, 4)))
     cache = collections[0].__dict__.setdefault("_yt_volumes_approach", {})
     if key not in cache:
-        values = np.array([
-            _field_value_at(scene, target + r * direction) or np.nan for r in _APPROACH_RADII
-        ])
+        values = _field_values_along(scene, target, direction, _APPROACH_RADII)
         log_values = np.where(values > 0, np.log10(np.where(values > 0, values, 1.0)), np.nan)
         # the running maximum coming in from outside, smoothed
         cache[key] = _smooth_monotonic(np.fmax.accumulate(log_values[::-1])[::-1])
@@ -1696,6 +1694,53 @@ def _camera_unitary(scene, volume, model_frame, camera_world):
     model = A @ (camera_world - b)
     collection = collections[0]
     return model * collection.applied_scale_ratio + np.asarray(collection.applied_scale_offset, dtype=np.float64)
+
+
+def _field_values_along(scene, origin, direction, distances):
+    """The field at unitary `origin + d * direction` for each of `distances`,
+    as `_field_value_at` gives it, NaN outside every block. Intersects the
+    line with each block once, so it costs about as much as one lookup.
+    """
+    distances = np.asarray(distances, dtype=np.float64)
+    values = np.full(distances.shape, np.nan)
+    origin = np.asarray(origin, dtype=np.float64)
+    direction = np.asarray(direction, dtype=np.float64)
+    for collection in _block_collections(scene):
+        if _is_spherical(collection) or not hasattr(collection, "_get_unscaled_edges"):
+            continue
+        left, right, dx = collection._get_unscaled_edges()
+        # the distances over which the line crosses each block pick the candidates;
+        # the same half-open test as _field_value_at then decides, faces included
+        moving = direction != 0.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_left = np.where(moving, (left - origin) / np.where(moving, direction, 1.0), -np.inf)
+            t_right = np.where(moving, (right - origin) / np.where(moving, direction, 1.0), np.inf)
+        stuck_outside = (~moving & ((origin < left) | (origin >= right))).any(axis=1)
+        enter = np.minimum(t_left, t_right).max(axis=1)
+        leave = np.maximum(t_left, t_right).min(axis=1)
+        slack = 1e-9 * (1.0 + np.abs(distances).max())
+        crossed = np.nonzero(
+            (enter <= leave + slack) & ~stuck_outside & (leave >= distances.min() - slack) & (enter <= distances.max() + slack)
+        )[0]
+        todo = np.nonzero(np.isnan(values))[0]
+        if crossed.size == 0 or todo.size == 0:
+            continue
+        points = origin + distances[todo, None] * direction
+        inside = np.all((left[crossed] <= points[:, None]) & (points[:, None] < right[crossed]), axis=2)
+        fineness = np.where(inside, dx[crossed].max(axis=1), np.inf)
+        found = np.isfinite(fineness.min(axis=1))
+        blocks = crossed[fineness.argmin(axis=1)]
+        for block in np.unique(blocks[found]):
+            here = todo[found & (blocks == block)]
+            points = origin + distances[here, None] * direction
+            data = np.asarray(collection.block_data[block])
+            # textures are vertex-centered: texel i sits at left + i * dx
+            index = np.clip(np.round((points - left[block]) / dx[block]).astype(int), 0, np.array(data.shape[:3]) - 1)
+            value = data[index[:, 0], index[:, 1], index[:, 2]].astype(np.float64)
+            if collection._textures_are_normalized:
+                value = value * collection.val_range + collection.min_val
+            values[here] = value
+    return values
 
 
 def _field_value_at(scene, point):
