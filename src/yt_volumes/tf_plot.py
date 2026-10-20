@@ -14,11 +14,14 @@ from bpy.app.handlers import persistent
 WIDTH, HEIGHT = 480, 360  # pixels of the plot image
 PLOT_BINS = 512  # yt's show() draws an nbins x nbins image, so tables are resampled first
 DEBOUNCE = 0.2  # seconds after a change before replotting
+IMAGE_DPI = 300  # the plot image's resolution, for zooming in the Image Editor
+VALUE_ROWS, TABLE_ROWS = 16, 48  # rows of the table image: log10 values above, the table below
 MODES = ("YT_IDV_TRANSFER_FUNCTION", "YT_IDV_YT_TRANSFER_FUNCTION", "YT_IDV_GN_TRANSFER_FUNCTION")
 
 _shown = {}  # object name -> signature of the plot in its icon, or an error message
 _pending = set()  # object names with a replot scheduled
 _previews = None  # bpy.utils.previews collection; not saved in the .blend
+_with_images = set()  # object names whose plot and table are also kept as Images
 
 
 def available():
@@ -38,6 +41,7 @@ def _preview(obj, create=False):
 
 
 def register():
+    bpy.utils.register_class(VOLUMEOVERRIDE_OT_show_tf_images)
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
     bpy.app.handlers.frame_change_post.append(_on_depsgraph_update)  # keyframed look settings
 
@@ -51,6 +55,9 @@ def unregister():
         bpy.utils.previews.remove(_previews)
     _previews = None
     _shown.clear()
+    _with_images.clear()
+    if VOLUMEOVERRIDE_OT_show_tf_images.is_registered:
+        bpy.utils.unregister_class(VOLUMEOVERRIDE_OT_show_tf_images)
 
 
 def transfer_function(obj):
@@ -106,21 +113,25 @@ def _for_display(tf):
     return shown
 
 
-def render(tf):
-    """`(HEIGHT, WIDTH, 4)` float RGBA of yt's `show()` plot of `tf`, top row first."""
+def render(tf, dpi=100):
+    """`(HEIGHT, WIDTH, 4)` float RGBA (times `dpi / 100`) of yt's `show()` plot
+    of `tf`, top row first.
+    """
     import matplotlib
 
     matplotlib.use("Agg")  # show() draws on pyplot's current figure; never open a window
     from matplotlib import pyplot
     from matplotlib.ticker import FuncFormatter
 
-    figure = pyplot.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=100)
+    figure = pyplot.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=dpi)
     try:
         _for_display(tf).show()
         axes = figure.axes[0]
         axes.set_aspect("auto")
         # show() labels the opacity axis in image rows rather than 0 to 1.
         axes.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y / PLOT_BINS:.2f}"))
+        low, high = tf.x_bounds
+        axes.set_title(f"log10 {low:.4f} to {high:.4f}", fontsize=9)
         figure.tight_layout()
         figure.canvas.draw()
         return np.asarray(figure.canvas.buffer_rgba(), dtype=np.float32) / 255.0
@@ -137,7 +148,82 @@ def plot(obj):
     preview = _preview(obj, create=True)
     preview.image_size = (WIDTH, HEIGHT)
     preview.image_pixels_float.foreach_set(pixels[::-1].ravel())  # bottom row first
+    if obj.name in _with_images:
+        _write_images(obj, tf)
     return None
+
+
+def plot_image_name(obj):
+    return f"yt TF plot {obj.name}"
+
+
+def table_image_name(obj):
+    return f"yt TF table {obj.name}"
+
+
+def table_pixels(tf):
+    """`(VALUE_ROWS + TABLE_ROWS, nbins, 4)` float rows, top first: each
+    column's log10 field value (in R, G and B) above its RGBA table entry.
+    """
+    x = tf.funcs[3].x
+    rgba = np.stack([channel.y for channel in tf.funcs], axis=-1)
+    values = np.stack([x, x, x, np.ones_like(x)], axis=-1)
+    return np.concatenate([np.repeat(values[None], VALUE_ROWS, 0), np.repeat(rgba[None], TABLE_ROWS, 0)]).astype(np.float32)
+
+
+def _set_image(name, pixels):
+    """Fill the float Image `name` with top-first `pixels`, as Non-Color so the
+    Image Editor reads out the values themselves.
+    """
+    height, width = pixels.shape[:2]
+    image = bpy.data.images.get(name)
+    if image is None or tuple(image.size) != (width, height):
+        if image is not None:
+            bpy.data.images.remove(image)
+        image = bpy.data.images.new(name, width, height, alpha=True, float_buffer=True)
+        image.colorspace_settings.name = "Non-Color"
+        image.alpha_mode = "STRAIGHT"
+    image.pixels.foreach_set(pixels[::-1].ravel())  # Blender stores the bottom row first
+    image.update()
+    return image
+
+
+def _write_images(obj, tf):
+    _set_image(plot_image_name(obj), render(tf, dpi=IMAGE_DPI))
+    _set_image(table_image_name(obj), table_pixels(tf))
+
+
+def show_images(obj):
+    """Keep `obj`'s plot and table as Images from now on; the table Image."""
+    _with_images.add(obj.name)
+    message = plot(obj)
+    if message:
+        raise ValueError(message)
+    return bpy.data.images[table_image_name(obj)]
+
+
+class VOLUMEOVERRIDE_OT_show_tf_images(bpy.types.Operator):
+    """Open the transfer function's table (log10 values above their RGBA) and a sharp plot in an Image Editor"""
+
+    bl_idname = "volume_override.show_tf_images"
+    bl_label = "Open in Image Editor"
+
+    def execute(self, context):
+        obj = context.object
+        try:
+            image = show_images(obj)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc)[:200])
+            return {"CANCELLED"}
+        area = next((a for a in context.screen.areas if a.type == "IMAGE_EDITOR"), None)
+        if area is None:
+            bpy.ops.wm.window_new()
+            area = context.window_manager.windows[-1].screen.areas[0]
+            area.type = "IMAGE_EDITOR"
+        area.spaces.active.image = image
+        area.spaces.active.display_channels = "COLOR"  # clicking still reads out alpha
+        self.report({"INFO"}, f"Also in the Image Editor: {plot_image_name(obj)!r}")
+        return {"FINISHED"}
 
 
 def _signature(obj):

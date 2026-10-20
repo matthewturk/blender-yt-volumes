@@ -528,7 +528,9 @@ TF_PLOT_SCALE = 18.0  # icon size in UI units; the plot keeps its aspect inside 
 def _draw_tf_plot(layout, obj):
     if not tf_plot.available():
         return
-    layout.prop(obj.volume_override, "show_tf_plot")
+    row = layout.row()
+    row.prop(obj.volume_override, "show_tf_plot")
+    row.operator("volume_override.show_tf_images", icon="IMAGE_DATA")
     if not obj.volume_override.show_tf_plot:
         return
     icon = tf_plot.icon(obj)

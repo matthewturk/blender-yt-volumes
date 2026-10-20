@@ -48,7 +48,7 @@ def test_plot_draws_into_a_preview_icon(volume):
     preview.image_pixels_float.foreach_get(pixels)
     assert pixels.reshape(-1, 4)[:, :3].std() > 0.05  # a picture, not a blank
     assert tf_plot.icon(volume) == preview.icon_id
-    assert not bpy.data.images and not bpy.data.textures
+    assert not bpy.data.images and not bpy.data.textures  # only show_images adds Images
 
 
 def test_display_resampling_keeps_thin_layers(volume):
@@ -78,3 +78,23 @@ def test_geometry_nodes_plot_uses_the_sampled_table(volume):
 def test_other_modes_have_nothing_to_plot(volume):
     volume.volume_override.renderer_mode = "YT_IDV_MAX_INTENSITY"
     assert tf_plot.transfer_function(volume) is None
+
+
+def test_the_table_image_holds_the_rendered_values(volume):
+    props = volume.volume_override
+    props.renderer_mode = "YT_IDV_TRANSFER_FUNCTION"
+    props.tf_fit_range = False
+    props.tf_log_min, props.tf_log_max = -26.0, -20.0
+    tf = tf_plot.transfer_function(volume)
+
+    image = tf_plot.show_images(volume)
+
+    width, height = image.size
+    assert width == tf.funcs[3].x.size and height == tf_plot.VALUE_ROWS + tf_plot.TABLE_ROWS
+    assert image.colorspace_settings.name == "Non-Color"
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    pixels = pixels.reshape(height, width, 4)[::-1]  # top row first
+    np.testing.assert_allclose(pixels[0, :, 0], tf.funcs[3].x, rtol=1e-6)  # log10 values on top
+    np.testing.assert_allclose(pixels[-1], np.stack([c.y for c in tf.funcs], axis=-1), rtol=1e-6)
+    assert bpy.data.images[tf_plot.plot_image_name(volume)].size[0] == tf_plot.WIDTH * tf_plot.IMAGE_DPI // 100
