@@ -3,11 +3,29 @@
 Changes to yt_idv made while working on this add-on, kept here as diffs for
 yt_idv PRs. Apply from a yt_idv checkout with `git apply <diff>`.
 
+## Worth upstreaming
+
+Measured on zoom.blend on 2026-10-21 (EEVEE, 4 samples per cell, fade off);
+only the saved-scene kd walk changed frame times noticeably.
+
+- **A compiled walk for saved scenes**, from either diff below: the Python
+  walk took ~86 ms per draw on dd0087 (40150 blocks), the compiled one ~1 ms,
+  with identical order. `viewpoint-order-arrays.diff` needs yt's
+  `viewpoint_order_arrays` (the `kdtree_walk_speedup` PR); `lod-cut.diff`
+  carries its own `utilities/kd_walk.pyx` and needs no yt change, but also
+  brings the LOD cut, which didn't pay (see below). The walk alone could be
+  split out of it.
+
 ## Not yet in yt_idv
 
 Both are against upstream `main` (74fac48) and also apply cleanly to the
 `exact_tf` and `remove_padding` branches. yt_idv's tests pass with each
 (217 passed, 1 skipped).
+
+Measured again on 2026-10-21 at 4 samples per cell with fade off,
+early termination plus occlusion culling saved only 3-5% of yt_idv's GPU
+time (images bit-identical): few rays reach 0.999 opacity there. They pay
+off only for heavily opaque transfer functions.
 
 - **`early-ray-termination.diff`**: a `ray_is_done(curr_color)` hook in
   `ray_tracing.frag.glsl`, beside `sample_texture` and `cleanup_phase`. The
@@ -26,6 +44,34 @@ Both are against upstream `main` (74fac48) and also apply cleanly to the
   pass's depth holds (`USE_DB`): which matters only for several components
   in one yt_idv scene, so upstream it would be better as an opt-in trait on
   `BlockRendering`.
+- **`viewpoint-order-arrays.diff`** (against `remove_padding`, 6f085c8):
+  scene files' saved kd-tree is ordered by yt's compiled
+  `amr_kdtools.viewpoint_order_arrays` when yt has it (the
+  `kdtree_walk_speedup` branch), instead of the Python walk.
+- **`lod-cut.diff`** (against `~/dxl/yt_idv`'s working tree of 2026-10-21:
+  `interruptible` plus the uncommitted `--interior-nodes` export and
+  `viewpoint-order-arrays.diff`, which this replaces): scene files' `lod/`
+  coarse interior-node data. `BlockCollection` loads it after the leaves (in
+  the atlases and vertex array, not `block_data`, not re-saved);
+  `BlockRendering.lod_pixels` draws a kd node smaller than that on screen as
+  its coarse block. The walk is a new Cython `utilities/kd_walk.pyx`, used for
+  all saved scenes. 18 new tests; the suite otherwise passes except
+  `test_geographic_matches_spherical`, which fails without it too.
+  Benchmarked on `dd0087_scene_gz.zip` (2725 coarse bricks): zoomed out it
+  draws 288 bricks instead of 40150 with no visible change but little time
+  saved (frame 1 at 240×135: 13.1 -> 9.8 ms); deep in the zoom the coarse
+  nodes are hundreds of pixels on screen, so it barely cuts, and where it
+  does the dense core washes out (parent grids hold averages). Not worth
+  upstreaming for zoom-style movies.
+- **`preintegrated-tf.diff`** (prototype; against `remove_padding` with
+  `viewpoint-order-arrays.diff` applied): a `tf_preintegrated` trait on
+  `BlockRendering`. Each step integrates the transfer function between the
+  field at its two ends (a block's first step starts on its boundary texels),
+  from a running-integral texture at the table's resolution. On zoom.blend at
+  4 samples per cell it matches the standard path's mean error with half its
+  worst-pixel error, at ~20% more GPU time per sample; at 2 samples it is ~35%
+  cheaper than standard 4 with better worst pixels. Only pays off where
+  standard sampling visibly bands.
 
 ## Already in yt_idv (`applied/`)
 
