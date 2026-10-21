@@ -1171,6 +1171,10 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     # Deep in a zoom the far plane cuts large bricks, and the clipped parts of their
     # faces never start rays (seams); clamping depth draws every face whole.
     GL.glEnable(GL.GL_DEPTH_CLAMP)
+    # Only the frame's part of the square canvas is kept: don't shade the rest.
+    y0, x0 = _crop_origin(render_size, height, width, offset)
+    GL.glEnable(GL.GL_SCISSOR_TEST)
+    GL.glScissor(x0, render_size - y0 - height, width, height)  # GL rows count from the bottom
 
     def run():
         image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), unclamped
@@ -1187,6 +1191,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         else:
             image = run()
     finally:
+        GL.glDisable(GL.GL_SCISSOR_TEST)
         GL.glDisable(GL.GL_DEPTH_CLAMP)
     image = np.clip(image, 0.0, 1.0)
 
