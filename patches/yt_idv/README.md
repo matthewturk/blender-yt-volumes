@@ -39,6 +39,15 @@ Both are against upstream `main` (74fac48) and also apply cleanly to the
   range, since the default log range starts at log(0) and draws nothing on
   macOS).
 
+## Data
+
+- `dd0087_block_sizes.npy`: the (40150, 3) int16 block shapes of
+  `dd0087_scene4.zip`, for a texture-packer test on real AMR blocks (3 to
+  161 texels per axis, 16646 distinct shapes, median anisotropy 3.4). The
+  current packer fills 60% of its atlas on them, against 85%+ on the
+  synthetic sizes its tests use; a layer-by-depth variant tried here did
+  worse (20%), so a better packer needs real 3D packing.
+
 ## Not prepared
 
 - yt_idv's default `tf_log = True` with `tf_min = 0` takes log(0) in the
