@@ -69,13 +69,30 @@ def set_linear_colorspace(image):
     )
 
 
+_decode_pool = None
+
+
+def _decode_rows(rgba, rows):
+    color = np.maximum(rgba[rows, ..., :3], 0.0)
+    rgba[rows, ..., :3] = np.where(color <= 0.04045, color / 12.92, ((color + 0.055) / 1.055) ** 2.4)
+
+
 def display_to_linear(rgba):
     """Premultiplied display-referred RGBA (sRGB-encoded color, any
     brightness) with its color channels decoded to linear, alpha unchanged.
     """
+    global _decode_pool
     rgba = np.array(rgba, dtype=np.float32)
-    color = np.maximum(rgba[..., :3], 0.0)
-    rgba[..., :3] = np.where(color <= 0.04045, color / 12.92, ((color + 0.055) / 1.055) ** 2.4)
+    if rgba.ndim < 2 or rgba.shape[0] < 64:
+        _decode_rows(rgba, slice(None))
+        return rgba
+    if _decode_pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _decode_pool = ThreadPoolExecutor(min(8, os.cpu_count() or 1))
+    # numpy releases the GIL in ufuncs, so row bands decode in parallel
+    bands = np.array_split(np.arange(rgba.shape[0]), 16)
+    list(_decode_pool.map(lambda band: _decode_rows(rgba, slice(band[0], band[-1] + 1)), bands))
     return rgba
 
 

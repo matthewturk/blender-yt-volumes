@@ -849,8 +849,17 @@ def _render_current_frame(context):
                 name: (_with_suffix(beauty_path, suffix), view_layers[name])
                 for name, suffix in (view or (None, "") for view in views)
             })
-        with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
-            bpy.ops.render.render(write_still=True)
+        # EEVEE renders the scene even with no Render Layers node, then discards it.
+        eevee = scene.render.engine.startswith("BLENDER_EEVEE")
+        prev_eevee_samples = scene.eevee.taa_render_samples
+        if eevee and prev_eevee_samples != 1:
+            scene.eevee.taa_render_samples = 1
+        try:
+            with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
+                bpy.ops.render.render(write_still=True)
+        finally:
+            if eevee and prev_eevee_samples != 1:
+                scene.eevee.taa_render_samples = prev_eevee_samples
         log(f"pass2 done; final output at {scene.render.frame_path()!r} "
             f"(Render Result image also holds it -- see _show_render_result)")
     finally:
