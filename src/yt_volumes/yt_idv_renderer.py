@@ -1778,7 +1778,9 @@ def _field_values_along(scene, origin, direction, distances):
         stuck_outside = (~moving & ((origin < left) | (origin >= right))).any(axis=1)
         enter = np.minimum(t_left, t_right).max(axis=1)
         leave = np.maximum(t_left, t_right).min(axis=1)
-        slack = 1e-9 * (1.0 + np.abs(distances).max())
+        # covers rounding in the distances only: the deepest blocks are ~3e-11 wide,
+        # and a larger slack makes them candidates for hundreds of points they don't hold
+        slack = 1e-13
         crossed = np.nonzero(
             (enter <= leave + slack) & ~stuck_outside & (leave >= distances.min() - slack) & (enter <= distances.max() + slack)
         )[0]
