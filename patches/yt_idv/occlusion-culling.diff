@@ -1,0 +1,95 @@
+diff --git a/yt_idv/shaders/header.inc.glsl b/yt_idv/shaders/header.inc.glsl
+index 39b5db4..917769c 100644
+--- a/yt_idv/shaders/header.inc.glsl
++++ b/yt_idv/shaders/header.inc.glsl
+@@ -1,4 +1,6 @@
+ #version 330 core
++// lets ray_tracing.frag.glsl promise depth_greater, keeping early depth tests
++#extension GL_ARB_conservative_depth : enable
+ 
+ const float INFINITY = 1. / 0.;
+ const float PI = 3.1415926535897932384626433832795;
+diff --git a/yt_idv/shaders/max_intensity.frag.glsl b/yt_idv/shaders/max_intensity.frag.glsl
+index a3be2fc..07c182d 100644
+--- a/yt_idv/shaders/max_intensity.frag.glsl
++++ b/yt_idv/shaders/max_intensity.frag.glsl
+@@ -24,3 +24,8 @@ bool ray_is_done(in vec4 curr_color)
+     // every sample along the ray counts
+     return false;
+ }
++
++float fragment_depth(in bool ever_sampled, in float nearest_sample_depth, in vec4 curr_color)
++{
++    return ever_sampled ? nearest_sample_depth : gl_FragCoord.z;
++}
+diff --git a/yt_idv/shaders/projection.frag.glsl b/yt_idv/shaders/projection.frag.glsl
+index 5ac7527..12059be 100644
+--- a/yt_idv/shaders/projection.frag.glsl
++++ b/yt_idv/shaders/projection.frag.glsl
+@@ -29,3 +29,8 @@ bool ray_is_done(in vec4 curr_color)
+     // every sample along the ray counts
+     return false;
+ }
++
++float fragment_depth(in bool ever_sampled, in float nearest_sample_depth, in vec4 curr_color)
++{
++    return ever_sampled ? nearest_sample_depth : gl_FragCoord.z;
++}
+diff --git a/yt_idv/shaders/ray_tracing.frag.glsl b/yt_idv/shaders/ray_tracing.frag.glsl
+index cc93996..ba27fc7 100644
+--- a/yt_idv/shaders/ray_tracing.frag.glsl
++++ b/yt_idv/shaders/ray_tracing.frag.glsl
+@@ -241,6 +241,14 @@ bool sample_texture(vec3 tex_curr_pos, inout vec4 curr_color, float tdelta,
+ vec4 cleanup_phase(in vec4 curr_color, in vec3 dir, in float t0, in float t1);
+ // true once nothing further along the ray can show, so it can stop early
+ bool ray_is_done(in vec4 curr_color);
++// the fragment's depth, never nearer than the block face it was rasterized on
++float fragment_depth(in bool ever_sampled, in float nearest_sample_depth, in vec4 curr_color);
++
++#ifdef GL_ARB_conservative_depth
++// written depths are never nearer than gl_FragCoord.z, so the GPU can still
++// reject fragments behind the depth buffer before running this shader
++layout(depth_greater) out float gl_FragDepth;
++#endif
+ 
+ // This main() function will call a function called sample_texture at every
+ // step along the ray.  sample_texture must be of the form
+@@ -431,7 +439,5 @@ void main()
+ 
+     output_color = cleanup_phase(curr_color, dir, t0, t1);
+ 
+-    if (ever_sampled) {
+-        gl_FragDepth = depth;
+-    }
++    gl_FragDepth = fragment_depth(ever_sampled, depth, curr_color);
+ }
+diff --git a/yt_idv/shaders/shaderlist.yaml b/yt_idv/shaders/shaderlist.yaml
+index 76568a1..7c6c1d9 100644
+--- a/yt_idv/shaders/shaderlist.yaml
++++ b/yt_idv/shaders/shaderlist.yaml
+@@ -138,6 +138,8 @@ shader_definitions:
+       source:
+         - ray_tracing.frag.glsl
+         - transfer_function.frag.glsl
++      # with fragment_depth: fragments where the ray is already opaque are skipped
++      depth_test: lequal
+       blend_func_separate:
+         - one minus dst alpha
+         - one
+diff --git a/yt_idv/shaders/transfer_function.frag.glsl b/yt_idv/shaders/transfer_function.frag.glsl
+index 13e4a18..0ea33fd 100644
+--- a/yt_idv/shaders/transfer_function.frag.glsl
++++ b/yt_idv/shaders/transfer_function.frag.glsl
+@@ -45,3 +45,12 @@ bool ray_is_done(in vec4 curr_color)
+     // front to back: once this opaque, what's behind adds under 0.1% of itself
+     return curr_color.a >= 0.999;
+ }
++
++float fragment_depth(in bool ever_sampled, in float nearest_sample_depth, in vec4 curr_color)
++{
++    // Blocks are blended front to back, so once a pixel is opaque nothing drawn
++    // after it adds anything. Opaque rays mark it with their block's face depth,
++    // which rejects the blocks behind before they run; the rest stay at the far
++    // plane, so they hide nothing.
++    return ray_is_done(curr_color) ? gl_FragCoord.z : 1.0;
++}
