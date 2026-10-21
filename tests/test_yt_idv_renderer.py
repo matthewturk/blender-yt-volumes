@@ -1264,6 +1264,41 @@ def test_cycles_depth_to_yt_idv_window_depth_masks_no_hit_pixels_to_far(persp_ca
     assert window_depth[CENTER_ROW, CENTER_COL] == pytest.approx(0.75)  # everywhere else, unaffected
 
 
+@pytest.mark.parametrize("row_order", ["BOTTOM_LEFT_ORIGIN", "TOP_LEFT_ORIGIN"])
+@pytest.mark.parametrize("model_frame", [None, (np.array([0.3, 0.6, 0.45]), 1e6)])
+def test_perspective_window_depth_matches_the_general_path(monkeypatch, row_order, model_frame):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.render.resolution_x, scene.render.resolution_y = RES_X, RES_Y
+    cam_data = bpy.data.cameras.new("C")
+    cam_data.lens, cam_data.shift_x, cam_data.shift_y = 35.0, 0.07, -0.04
+    cam_obj = bpy.data.objects.new("C", cam_data)
+    cam_obj.location, cam_obj.rotation_euler = (1.0, -7.0, 4.0), (1.1, 0.1, 0.2)
+    scene.collection.objects.link(cam_obj)
+    bpy.context.view_layer.update()
+    camera = operators.build_camera_params(scene, cam_obj)
+    depth = _uniform_depth_buffer(1.0, row_order=row_order)
+    depth.data[:] = np.random.default_rng(1).uniform(3.0, 12.0, depth.data.shape)
+    depth.data[::7, ::5] = 1e10  # background
+    volume = _identity_volume(
+        bounding_box_local=_cube_bbox(),
+        matrix_world=[[2.0, 0.3, 0, 0.5], [-0.3, 2.0, 0, -0.2], [0, 0, 2.0, 0.4], [0, 0, 0, 1]],
+    )
+    request = RenderRequest(camera=camera, depth=depth, volume=volume, frame=FrameParams(frame_number=1, scene_time_seconds=0.0))
+    s = 0.05 / (1.0 if model_frame is None else model_frame[1])  # model units in play: a few, or 1e6 times that
+    yt_idv_camera = types.SimpleNamespace(
+        projection_matrix=np.array([[s, 0, 0, 0], [0, s, 0, 0], [0, 0, s, 0.01], [0, 0, -0.2 * s, 1]]),
+        view_matrix=np.array([[0.8, 0, -0.6, 0.1], [0, 1, 0, -0.3], [0.6, 0, 0.8, -0.2], [0, 0, 0, 1]]),
+    )
+
+    fast = yir._cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame)
+    monkeypatch.setattr(yir, "_is_plain_perspective", lambda projection: False)
+    general = yir._cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame)
+
+    assert 0.05 < np.mean((fast > 0) & (fast < 1)) and (fast == 1.0).any()  # a real mix of depths
+    np.testing.assert_allclose(fast, general, atol=1e-6)
+
+
 # --- zoom ---------------------------------------------------------------------
 
 

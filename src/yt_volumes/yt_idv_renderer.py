@@ -71,7 +71,7 @@ import numpy as np
 
 from . import change_tracking
 from .external_render import RenderRequest, RenderResult
-from .sample_renderers import _persp_ortho_rays
+from .sample_renderers import _persp_ortho_rays, _pixel_grid_fractions
 
 SAMPLE_DATASET_NAME = "IsolatedGalaxy"
 SAMPLE_FIELD = "density"
@@ -954,6 +954,9 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=Non
     camera = request.camera
     depth_buffer = request.depth
     volume = request.volume
+    projection = None if camera.projection_matrix is None else np.array(camera.projection_matrix, dtype=np.float64)
+    if projection is not None and _is_plain_perspective(projection):
+        return _perspective_window_depth(request, projection, yt_idv_camera, model_frame)
 
     origins, directions = _persp_ortho_rays(camera, depth_buffer.row_order, depth_buffer.data.shape)
 
@@ -992,6 +995,50 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=Non
         window_depth = window_depth[::-1, :]
     elif depth_buffer.row_order != "TOP_LEFT_ORIGIN":
         raise ValueError(f"unknown row_order {depth_buffer.row_order!r}")
+    return np.ascontiguousarray(window_depth)
+
+
+def _is_plain_perspective(projection):
+    """True for a perspective matrix with no skew: x and y depend only on their own NDC."""
+    return (
+        projection[0, 1] == 0.0 and projection[1, 0] == 0.0
+        and np.allclose(projection[3], (0.0, 0.0, -1.0, 0.0))
+        and projection[0, 0] != 0.0 and projection[1, 1] != 0.0
+    )
+
+
+def _perspective_window_depth(request, projection, yt_idv_camera, model_frame=None):
+    """`_cycles_depth_to_yt_idv_window_depth` for a plain perspective camera:
+    a pixel's camera-space point at planar depth d is d * (u, v, -1), with u
+    set by its column and v by its row, and everything after is linear, so
+    one 4x3 matrix and two 1-D arrays cover the whole image.
+    """
+    camera, depth_buffer = request.camera, request.depth
+    h, w = depth_buffer.data.shape
+    col_frac, row_frac_from_bottom = _pixel_grid_fractions(depth_buffer.row_order, (h, w))
+    # inverts ndc = (P00 x + P02 z) / -z at z = -1 (and the same for y)
+    u = (col_frac * 2.0 - 1.0 + projection[0, 2]) / projection[0, 0]
+    v = (row_frac_from_bottom * 2.0 - 1.0 + projection[1, 2]) / projection[1, 1]
+
+    cam_matrix_world = np.array(camera.matrix_world, dtype=np.float64)
+    A, b = _world_to_model(request.volume, model_frame)
+    proj_view = np.array(yt_idv_camera.projection_matrix, dtype=np.float64) @ np.array(
+        yt_idv_camera.view_matrix, dtype=np.float64
+    )
+    # clip = proj_view @ [A (R p + t - b), 1]; t - b first, in float64, for deep zooms
+    linear = proj_view[2:, :3] @ A @ cam_matrix_world[:3, :3]
+    constant = proj_view[2:, :3] @ (A @ (cam_matrix_world[:3, 3] - b)) + proj_view[2:, 3]
+    depth = depth_buffer.data.astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        clip_z, clip_w = (
+            depth * (row[0] * u[None, :] + row[1] * v[:, None] - row[2]) + c
+            for row, c in zip(linear, constant)
+        )
+        window_depth = 0.5 * (clip_z / clip_w) + 0.5
+    window_depth = np.where(depth >= depth_buffer.no_hit_value * 0.999, 1.0, window_depth)
+    window_depth = np.clip(np.nan_to_num(window_depth, nan=1.0, posinf=1.0, neginf=1.0), 0.0, 1.0).astype("f4")
+    if depth_buffer.row_order == "BOTTOM_LEFT_ORIGIN":
+        window_depth = window_depth[::-1, :]
     return np.ascontiguousarray(window_depth)
 
 
