@@ -1,10 +1,11 @@
+import dataclasses
 import math
 
 import bpy
 import numpy as np
 import pytest
 
-from yt_volumes import change_tracking, operators, properties, viewport_preview
+from yt_volumes import change_tracking, external_render, operators, properties, viewport_preview
 from yt_volumes import yt_idv_renderer as yir
 
 
@@ -75,7 +76,11 @@ def test_volumes_are_composited_far_to_near(scene, monkeypatch):
     monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_render)
     params = viewport_preview.camera_params(camera.matrix_world.inverted(), np.eye(4) * 2, 6, 4, 0.1, 100.0)
 
-    image = viewport_preview.render_view(scene, params)
+    viewport_preview.register()  # the viewport's scene settings
+    try:
+        image = viewport_preview.render_view(scene, params)
+    finally:
+        viewport_preview.unregister()
 
     assert order == ["Far", "Near"]
     np.testing.assert_allclose(image[0, 0], [0.5, 0.0, 0.5, 1.0])  # near over far, premultiplied
@@ -170,3 +175,29 @@ def test_the_preview_waits_out_a_volume_override_render(scene, monkeypatch):
 
     assert viewport_preview._render_pending() == pytest.approx(0.5)  # try again later
     assert rendered == []
+
+
+@pytest.mark.parametrize("own, viewport, expected", [(16.0, 4.0, 4.0), (2.0, 4.0, 2.0)])
+def test_the_viewport_samples_at_most_its_own_samples_per_cell(scene, monkeypatch, own, viewport, expected):
+    viewport_preview.register()
+    try:
+        camera = _camera(scene)
+        volume = _flag(scene, "Shown", (0, 0, 0))
+        volume.volume_override.samples_per_cell = own
+        scene.yt_volumes_preview_samples = viewport
+        seen = []
+
+        def renderer(request):
+            seen.append(request.volume.custom_params["yt_idv_samples_per_cell"])
+            h, w = request.depth.data.shape
+            return external_render.RenderResult(rgba=np.zeros((h, w, 4), "f4"), alpha_mode="PREMULTIPLIED", color_space="LINEAR")
+
+        monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", renderer)
+        monkeypatch.setattr(viewport_preview.units, "record", lambda *a: None)
+        params = operators.build_camera_params(scene, camera)
+        viewport_preview.render_view(scene, dataclasses.replace(params, resolution_x=8, resolution_y=6))
+
+        assert seen == [expected]
+        assert volume.volume_override.samples_per_cell == own  # F12's own setting is untouched
+    finally:
+        viewport_preview.unregister()

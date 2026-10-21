@@ -633,6 +633,7 @@ def _draw_viewport_preview(layout, obj, scene):
     layout.operator("volume_override.toggle_viewport", text="Show in Viewport", icon=icon, emboss=False)
     if props.show_in_viewport:
         layout.prop(scene, "yt_volumes_preview_scale")
+        layout.prop(scene, "yt_volumes_preview_samples")
 
 
 def _draw_grids(layout, obj):

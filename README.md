@@ -135,15 +135,18 @@ sample. The field defaults to density; set it with an extra custom param
 over each 3D viewport, rendered with yt_idv from the viewport's own view. It
 re-renders a moment after the view, the frame or the scene (a volume's look,
 its transfer-function nodes, geometry) changes, at **Viewport Resolution**
-times the viewport's size. It shares F12's loaded data, so turning it on loads the data once
+times the viewport's size and at most **Viewport Samples per Cell** (default
+4; F12 keeps each volume's own, 16 for the yt modes). Ray samples are most of
+a preview's time: on DD0087 deep in a zoom, 4 instead of 16 takes a preview
+from about 0.7 s to 0.3 s. It shares F12's loaded data, so turning it on loads the data once
 (Blender is unresponsive meanwhile) and F12 after that doesn't load it again.
 Before either loads data, a dialog names the dataset and asks to confirm; a
 file saved with Show in Viewport on doesn't load until you turn it on again.
 Batch renders (`render_volume`, `render_series`) never ask.
 Scene geometry occludes the volume as in F12: the viewport's depth buffer
 clips yt_idv's rays. Solid and Material Preview shading draw geometry into
-it; a Rendered viewport may not. Not yet: orthographic views and camera
-shift.
+it; a Rendered viewport may not. Camera shift and panning in camera view
+are followed; orthographic views aren't supported yet.
 
 ## Exploring in a yt_idv window
 

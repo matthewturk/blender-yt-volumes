@@ -9,6 +9,7 @@ POST_VIEW handler draws the latest image, under the gizmos. Renders share F12's 
 data (see `yt_idv_renderer._use_render_size`).
 """
 
+import dataclasses
 import time
 
 import bpy
@@ -16,6 +17,7 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from . import external_render, operators, properties, units
+from . import yt_idv_renderer as yir
 
 SETTLE = 0.15  # seconds without changes before a viewport re-renders
 
@@ -106,19 +108,24 @@ def render_view(scene, camera, depth=None):
     volumes.sort(key=lambda o: -np.linalg.norm(np.asarray(o.matrix_world.translation) - position))
     image = np.zeros((height, width, 4), dtype=np.float32)
     for obj in volumes:
-        request = external_render.RenderRequest(
-            camera=camera, depth=depth, volume=operators.build_volume_params(obj), frame=frame,
+        volume = operators.build_volume_params(obj)
+        # the viewport samples more coarsely than F12, never more finely
+        params = dict(volume.custom_params)
+        params["yt_idv_samples_per_cell"] = min(
+            float(params.get("yt_idv_samples_per_cell") or yir.SAMPLES_PER_CELL), scene.yt_volumes_preview_samples,
         )
+        volume = dataclasses.replace(volume, custom_params=params)
+        request = external_render.RenderRequest(camera=camera, depth=depth, volume=volume, frame=frame)
         layer = operators.RENDERER_MODES[obj.volume_override.renderer_mode](request).rgba
         units.record(obj, request.volume.dataset.dataset_id, scene)
         image = layer + image * (1.0 - layer[..., 3:4])
     return image
 
 
-def _signature(region, rv3d, scale):
+def _signature(region, rv3d, scale, samples):
     return (
         tuple(map(tuple, rv3d.view_matrix)), tuple(map(tuple, rv3d.window_matrix)),
-        region.width, region.height, scale, _generation[0],
+        region.width, region.height, scale, samples, _generation[0],
     )
 
 
@@ -129,7 +136,7 @@ def _capture():
     if rv3d is None or not shown_volumes(scene):
         return
     state = _regions.setdefault(region.as_pointer(), {"signature": None, "texture": None, "shown": None, "error": None})
-    signature = _signature(region, rv3d, scene.yt_volumes_preview_scale)
+    signature = _signature(region, rv3d, scene.yt_volumes_preview_scale, scene.yt_volumes_preview_samples)
     if signature == state["signature"]:
         return
     state["signature"] = signature
@@ -307,6 +314,14 @@ def register():
         name="Viewport Resolution", description="Size of the viewport's volume image, as a fraction of the viewport's",
         default=0.5, min=0.1, max=1.0, subtype="FACTOR",
     )
+    bpy.types.Scene.yt_volumes_preview_samples = bpy.props.FloatProperty(
+        name="Viewport Samples per Cell",
+        description=(
+            "Ray samples per cell in the viewport, at most each volume's own Samples per Cell; "
+            "the preview's time is mostly these samples, so fewer keep it interactive"
+        ),
+        default=4.0, min=0.25, soft_max=64.0,
+    )
     _draw_handles[:] = [
         bpy.types.SpaceView3D.draw_handler_add(_capture, (), "WINDOW", "POST_VIEW"),
         bpy.types.SpaceView3D.draw_handler_add(_draw_image, (), "WINDOW", "POST_VIEW"),
@@ -328,4 +343,5 @@ def unregister():
         bpy.app.timers.unregister(_render_pending)
     _regions.clear()
     del bpy.types.Scene.yt_volumes_preview_scale
+    del bpy.types.Scene.yt_volumes_preview_samples
     bpy.utils.unregister_class(VOLUMEOVERRIDE_OT_toggle_viewport)
