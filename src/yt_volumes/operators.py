@@ -620,6 +620,19 @@ class render_session:
         return False  # never swallow exceptions
 
 
+def _pass2_render_overrides(scene):
+    """(owner, property, value) settings that make pass 2's discarded scene
+    render as cheap as possible for the scene's engine.
+    """
+    engine = scene.render.engine
+    if engine.startswith("BLENDER_EEVEE"):
+        return [(scene.eevee, "taa_render_samples", 1)]
+    if engine == "CYCLES":
+        # toggling use_denoising too makes the next pass 1 re-sync, costing what it saves
+        return [(scene.cycles, "samples", 1)]
+    return []
+
+
 def _gpu_backend():
     """The GPU backend Blender is running on ("OPENGL", "VULKAN", ...), not the
     preference, which only applies after a restart.
@@ -849,17 +862,19 @@ def _render_current_frame(context):
                 name: (_with_suffix(beauty_path, suffix), view_layers[name])
                 for name, suffix in (view or (None, "") for view in views)
             })
-        # EEVEE renders the scene even with no Render Layers node, then discards it.
-        eevee = scene.render.engine.startswith("BLENDER_EEVEE")
-        prev_eevee_samples = scene.eevee.taa_render_samples
-        if eevee and prev_eevee_samples != 1:
-            scene.eevee.taa_render_samples = 1
+        # The engine renders the scene even with no Render Layers node, then discards it.
+        overrides = _pass2_render_overrides(scene)
+        saved = [(owner, name, getattr(owner, name)) for owner, name, _ in overrides]
+        for owner, name, value in overrides:
+            if getattr(owner, name) != value:
+                setattr(owner, name, value)
         try:
             with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
                 bpy.ops.render.render(write_still=True)
         finally:
-            if eevee and prev_eevee_samples != 1:
-                scene.eevee.taa_render_samples = prev_eevee_samples
+            for owner, name, value in saved:
+                if getattr(owner, name) != value:
+                    setattr(owner, name, value)
         log(f"pass2 done; final output at {scene.render.frame_path()!r} "
             f"(Render Result image also holds it -- see _show_render_result)")
     finally:
