@@ -1785,13 +1785,23 @@ def _field_values_along(scene, origin, direction, distances):
         todo = np.nonzero(np.isnan(values))[0]
         if crossed.size == 0 or todo.size == 0:
             continue
-        points = origin + distances[todo, None] * direction
-        inside = np.all((left[crossed] <= points[:, None]) & (points[:, None] < right[crossed]), axis=2)
-        fineness = np.where(inside, dx[crossed].max(axis=1), np.inf)
-        found = np.isfinite(fineness.min(axis=1))
-        blocks = crossed[fineness.argmin(axis=1)]
-        for block in np.unique(blocks[found]):
-            here = todo[found & (blocks == block)]
+        # each block's distances, found by bisection: pairs (point, block) to test exactly
+        order = np.argsort(distances[todo], kind="stable")
+        sorted_distances = distances[todo][order]
+        first = np.searchsorted(sorted_distances, enter[crossed] - slack, side="left")
+        counts = np.searchsorted(sorted_distances, leave[crossed] + slack, side="right") - first
+        pair_block = np.repeat(crossed, counts)
+        pair_point = todo[order[np.repeat(first - np.cumsum(counts) + counts, counts) + np.arange(counts.sum())]]
+        points = origin + distances[pair_point, None] * direction
+        inside = np.all((left[pair_block] <= points) & (points < right[pair_block]), axis=1)
+        pair_point, pair_block = pair_point[inside], pair_block[inside]
+        # the finest block holding each point (the first such, as blocks are in order)
+        by_point = np.lexsort((dx[pair_block].max(axis=1), pair_point))
+        pair_point, pair_block = pair_point[by_point], pair_block[by_point]
+        keep = np.r_[True, pair_point[1:] != pair_point[:-1]]
+        pair_point, pair_block = pair_point[keep], pair_block[keep]
+        for block in np.unique(pair_block):
+            here = pair_point[pair_block == block]
             points = origin + distances[here, None] * direction
             data = np.asarray(collection.block_data[block])
             # textures are vertex-centered: texel i sits at left + i * dx
