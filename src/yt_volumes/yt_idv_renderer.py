@@ -69,7 +69,7 @@ import types
 
 import numpy as np
 
-from . import change_tracking
+from . import change_tracking, parallel
 from .external_render import RenderRequest, RenderResult
 from .sample_renderers import _persp_ortho_rays, _pixel_grid_fractions
 
@@ -595,14 +595,18 @@ def needs_load(request: RenderRequest) -> bool:
     return cached[2] != backend or getattr(cached[0], "_yt_volumes_source", source) != source
 
 
-def _render_signature(request: RenderRequest, render_size: int, render_mode: str = "") -> dict:
+def _depth_hash(depth_buffer):
+    return hashlib.blake2b(np.ascontiguousarray(depth_buffer.data), digest_size=16).hexdigest()
+
+
+def _render_signature(request: RenderRequest, render_size: int, render_mode: str = "", depth_hash=None) -> dict:
     """Everything besides the volume data that affects the image. The depth
     buffer is hashed by content, since occluders can move under a fixed camera.
     """
     return {
         "camera": dataclasses.asdict(request.camera),
         "depth_shape": list(request.depth.data.shape),
-        "depth_hash": hashlib.sha256(np.ascontiguousarray(request.depth.data).tobytes()).hexdigest(),
+        "depth_hash": depth_hash or _depth_hash(request.depth),
         "render_size": render_size,
         "params_hash": request.volume.params_version.hash,
         "render_mode": render_mode,
@@ -610,20 +614,23 @@ def _render_signature(request: RenderRequest, render_size: int, render_mode: str
 
 
 def _render_signature_changed(
-    dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool, render_mode: str = ""
+    dataset_id: str, request: RenderRequest, render_size: int, volume_changed: bool, render_mode: str = "",
+    depth_hash=None,
 ) -> bool:
     """True if the provider reported a change or the render signature differs
     from this object's last successful render.
     """
-    signature = _render_signature(request, render_size, render_mode)
+    signature = _render_signature(request, render_size, render_mode, depth_hash)
     version = change_tracking.version_for(
         _sized_key(dataset_id, render_size), "yt_idv_render_signature", signature, record=False,
     )
     return volume_changed or version.changed
 
 
-def _record_render_signature(dataset_id: str, request: RenderRequest, render_size: int, render_mode: str = ""):
-    signature = _render_signature(request, render_size, render_mode)
+def _record_render_signature(
+    dataset_id: str, request: RenderRequest, render_size: int, render_mode: str = "", depth_hash=None
+):
+    signature = _render_signature(request, render_size, render_mode, depth_hash)
     change_tracking.version_for(_sized_key(dataset_id, render_size), "yt_idv_render_signature", signature)
 
 
@@ -1033,15 +1040,20 @@ def _perspective_window_depth(request, projection, yt_idv_camera, model_frame=No
     # clip = proj_view @ [A (R p + t - b), 1]; t - b first, in float64, for deep zooms
     linear = proj_view[2:, :3] @ A @ cam_matrix_world[:3, :3]
     constant = proj_view[2:, :3] @ (A @ (cam_matrix_world[:3, 3] - b)) + proj_view[2:, 3]
-    depth = depth_buffer.data.astype(np.float64)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        clip_z, clip_w = (
-            depth * (row[0] * u[None, :] + row[1] * v[:, None] - row[2]) + c
-            for row, c in zip(linear, constant)
-        )
-        window_depth = 0.5 * (clip_z / clip_w) + 0.5
-    window_depth = np.where(depth >= depth_buffer.no_hit_value * 0.999, 1.0, window_depth)
-    window_depth = np.clip(np.nan_to_num(window_depth, nan=1.0, posinf=1.0, neginf=1.0), 0.0, 1.0).astype("f4")
+    window_depth = np.empty((h, w), dtype="f4")
+
+    def convert(rows):
+        depth = depth_buffer.data[rows].astype(np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            clip_z, clip_w = (
+                depth * (row[0] * u[None, :] + row[1] * v[rows, None] - row[2]) + c
+                for row, c in zip(linear, constant)
+            )
+            band = 0.5 * (clip_z / clip_w) + 0.5
+        band = np.where(depth >= depth_buffer.no_hit_value * 0.999, 1.0, band)
+        window_depth[rows] = np.clip(np.nan_to_num(band, nan=1.0, posinf=1.0, neginf=1.0), 0.0, 1.0)
+
+    parallel.for_row_bands(h, convert)
     if depth_buffer.row_order == "BOTTOM_LEFT_ORIGIN":
         window_depth = window_depth[::-1, :]
     return np.ascontiguousarray(window_depth)
@@ -1129,7 +1141,8 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     rc, scene, ds, volume_changed = _get_volume_scene(request, render_size)
     # The mode isn't in custom_params, so switching modes must be tracked here.
     render_mode = getattr(configure_component, "__qualname__", repr(configure_component))
-    needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed, render_mode)
+    depth_hash = _depth_hash(request.depth)
+    needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed, render_mode, depth_hash)
     if not needs_render:
         cached_result = _render_result_cache.get((dataset_id, render_size))
         if cached_result is not None:
@@ -1210,7 +1223,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         cmap_range=_component_cmap_range(scene),
     )
     _render_result_cache[(dataset_id, render_size)] = result
-    _record_render_signature(dataset_id, signed_request, render_size, render_mode)
+    _record_render_signature(dataset_id, signed_request, render_size, render_mode, depth_hash)
     return result
 
 
@@ -1277,7 +1290,9 @@ def _exposure_factor(image):
     """The factor that puts the unclamped `image`'s brightest 0.1% at
     AUTO_EXPOSURE_TARGET (so at most 0.1% clips); 1 when nothing is visible.
     """
-    brightness = np.asarray(image)[..., :3].max(axis=-1).ravel()
+    image = np.asarray(image)
+    # max over a length-3 axis is several times slower than two elementwise maxima
+    brightness = np.maximum(np.maximum(image[..., 0], image[..., 1]), image[..., 2]).ravel()
     if not (brightness > 0.0).any():
         return 1.0  # nothing to expose; leave the gain for the next frame
     peak = float(np.percentile(brightness, 99.9)) or float(brightness.max())  # tiny volumes: their brightest pixel
