@@ -183,18 +183,20 @@ def _get_render_context(backend):
 
 
 def _float_texture(size):
-    """A `size` x `size` float32 RGBA texture for the scene's framebuffer:
+    """A `(width, height)` float32 RGBA texture for the scene's framebuffer:
     unclamped, so auto exposure can rescale a rendered image exactly; the
     image is clipped to [0, 1] after (the same as clamping every write, for
     projection's sums of non-negative samples).
     """
     from yt_idv.opengl_support import Texture2D
 
-    return Texture2D(data=np.zeros((size, size, 4), "f4"), boundary_x="repeat", boundary_y="repeat")
+    width, height = size
+    # yt_idv's textures take (width, height) data
+    return Texture2D(data=np.zeros((width, height, 4), "f4"), boundary_x="repeat", boundary_y="repeat")
 
 
 def _use_render_size(scene, size):
-    """Make the next `rc.run()` render `scene` as a `size` x `size` image: set
+    """Make the next `rc.run()` render `scene` as a `(width, height)` image: set
     the viewport and give the scene and its components framebuffers that size.
 
     A framebuffer's size is fixed when first used, so a new size gets new ones;
@@ -208,7 +210,7 @@ def _use_render_size(scene, size):
         fb._yt_volumes_size = size
         return fb
 
-    GL.glViewport(0, 0, size, size)
+    GL.glViewport(0, 0, *size)
     if getattr(scene.fb, "_yt_volumes_size", None) != size:
         old, scene.fb = scene.fb, sized(_float_texture(size))
         if old is not None:
@@ -833,15 +835,16 @@ def _world_to_model(volume, model_frame=None):
 
 def _registered_camera_kwargs(
     camera, volume, ds, width, height, model_bounds=None, model_frame=None, frame_aspect=None,
-    zoom_depth=None, margin=1.0,
+    zoom_depth=None, frame_height=None,
 ):
     """Map Blender `CameraParams` to `BaseCamera.update()` kwargs through the
     object bounding-box registration into yt_idv model space, for a `width` x
     `height` canvas covering a Blender frame of `frame_aspect` (default the
     canvas's).
 
-    `margin` widens the field of view by that factor, for a canvas larger than
-    the frame. `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
+    `frame_height` (pixels) makes the canvas the frame plus margins at the
+    frame's own pixel size: its field of view is the frame's, widened by
+    `height / frame_height`. `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
     planes. `model_frame` is `apply_zoom`'s; see `_world_to_model`.
     """
     if camera.projection != "PERSP":
@@ -885,9 +888,11 @@ def _registered_camera_kwargs(
     focus = position + forward * look_ahead
 
     aspect_ratio = width / height
-    fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
-    if margin != 1.0:
-        fov_deg = math.degrees(2.0 * math.atan(margin * math.tan(math.radians(fov_deg) / 2.0)))
+    if frame_height:
+        frame_fov = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio)
+        fov_deg = math.degrees(2.0 * math.atan(height / frame_height * math.tan(math.radians(frame_fov) / 2.0)))
+    else:
+        fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
     planes = camera_planes(position, model_bounds, model_frame, zoom_depth)
 
     return {
@@ -1042,13 +1047,14 @@ def _perspective_window_depth(request, projection, yt_idv_camera, model_frame=No
     return np.ascontiguousarray(window_depth)
 
 
-def _pad_to_square(depth_2d, render_size, fill_value=1.0, offset=(0, 0)):
-    """Place a top-down `(height, width)` array in a square canvas filled with
-    `fill_value`, where `_center_crop` with the same `offset` takes it from.
+def _pad_to_canvas(depth_2d, canvas_size, fill_value=1.0, offset=(0, 0)):
+    """Place a top-down `(height, width)` array in a `(width, height)` canvas
+    filled with `fill_value`, where `_center_crop` with the same `offset` takes
+    it from.
     """
     height, width = depth_2d.shape
-    canvas = np.full((render_size, render_size), fill_value, dtype="f4")
-    y0, x0 = _crop_origin(render_size, height, width, offset)
+    canvas = np.full(canvas_size[::-1], fill_value, dtype="f4")
+    y0, x0 = _crop_origin(canvas_size, height, width, offset)
     canvas[y0 : y0 + height, x0 : x0 + width] = depth_2d
     return canvas
 
@@ -1078,19 +1084,20 @@ def _to_row_order(image, row_order):
     raise ValueError(f"unknown row_order {row_order!r}")
 
 
-def _crop_origin(size, height, width, offset=(0, 0)):
-    """Top-left corner of the frame in a square canvas, `offset` = `(dx, dy)`
-    pixels right and up of center.
+def _crop_origin(canvas_size, height, width, offset=(0, 0)):
+    """Top-left corner of the frame in a `(width, height)` canvas, `offset` =
+    `(dx, dy)` pixels right and up of center.
     """
     dx, dy = offset
-    return (size - height) // 2 - dy, (size - width) // 2 + dx
+    canvas_width, canvas_height = canvas_size
+    return (canvas_height - height) // 2 - dy, (canvas_width - width) // 2 + dx
 
 
 def _center_crop(image, expected_height, expected_width, offset=(0, 0)):
-    """Crop a top-down square render to `(expected_height, expected_width, 4)`,
+    """Crop a top-down canvas render to `(expected_height, expected_width, 4)`,
     `offset` as `_crop_origin`'s.
     """
-    y0, x0 = _crop_origin(image.shape[0], expected_height, expected_width, offset)
+    y0, x0 = _crop_origin(image.shape[1::-1], expected_height, expected_width, offset)
     return image[y0 : y0 + expected_height, x0 : x0 + expected_width, :]
 
 
@@ -1115,7 +1122,8 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     """
     height, width = request.depth.data.shape
     offset = _shift_offset(request.camera, height, width)
-    render_size = max(height, width) + 2 * max(map(abs, offset))
+    # the frame plus room for a camera shift, rendered centered and cropped back
+    render_size = (width + 2 * abs(offset[0]), height + 2 * abs(offset[1]))
     dataset_id = request.volume.dataset.dataset_id
 
     rc, scene, ds, volume_changed = _get_volume_scene(request, render_size)
@@ -1155,15 +1163,15 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         _apply_colormap_range(component, custom_params)
     scene.camera.update(
         **_registered_camera_kwargs(
-            request.camera, request.volume, ds, render_size, render_size,
+            request.camera, request.volume, ds, *render_size,
             model_bounds=_scene_model_bounds(scene), model_frame=model_frame,
             frame_aspect=width / height, zoom_depth=custom_params.get("yt_idv_zoom_depth"),
-            margin=render_size / max(height, width),
+            frame_height=height,
         )
     )
 
     window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera, model_frame)
-    set_external_depth_clip(scene, _pad_to_square(window_depth, render_size, offset=offset))
+    set_external_depth_clip(scene, _pad_to_canvas(window_depth, render_size, offset=offset))
 
     _use_render_size(scene, render_size)
     from OpenGL import GL
@@ -1171,14 +1179,14 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     # Deep in a zoom the far plane cuts large bricks, and the clipped parts of their
     # faces never start rays (seams); clamping depth draws every face whole.
     GL.glEnable(GL.GL_DEPTH_CLAMP)
-    # Only the frame's part of the square canvas is kept: don't shade the rest.
+    # Only the frame's part of the canvas is kept: don't shade the shift margins.
     y0, x0 = _crop_origin(render_size, height, width, offset)
     GL.glEnable(GL.GL_SCISSOR_TEST)
-    GL.glScissor(x0, render_size - y0 - height, width, height)  # GL rows count from the bottom
+    GL.glScissor(x0, render_size[1] - y0 - height, width, height)  # GL rows count from the bottom
 
     def run():
-        image = np.asarray(rc.run(), dtype=np.float32)  # nominally (render_size, render_size, 4), unclamped
-        image = _fix_yt_idv_axis_order(image, render_size, render_size)  # defensive; square shape makes this a no-op
+        image = np.asarray(rc.run(), dtype=np.float32)  # (canvas height, canvas width, 4), unclamped
+        image = _fix_yt_idv_axis_order(image, render_size[1], render_size[0])  # defensive
         return _to_row_order(_center_crop(image, height, width, offset), request.depth.row_order)
 
     try:

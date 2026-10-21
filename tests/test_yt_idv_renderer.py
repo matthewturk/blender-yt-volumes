@@ -1171,11 +1171,11 @@ def test_build_mip_alpha_colormap_data_with_curve_and_color_overrides():
     assert data[-1, 0] == pytest.approx(0.0) and data[-1, 2] == pytest.approx(1.0)
 
 
-def test_pad_to_square_centers_the_array_and_fills_the_margin():
+def test_pad_to_canvas_centers_the_array_and_fills_the_margin():
     depth = np.zeros((4, 8), dtype="f4")
-    padded = yir._pad_to_square(depth, render_size=10, fill_value=1.0)
-    assert padded.shape == (10, 10)
-    y0, x0 = (10 - 4) // 2, (10 - 8) // 2
+    padded = yir._pad_to_canvas(depth, (12, 10), fill_value=1.0)  # (width, height)
+    assert padded.shape == (10, 12)
+    y0, x0 = (10 - 4) // 2, (12 - 8) // 2
     np.testing.assert_array_equal(padded[y0 : y0 + 4, x0 : x0 + 8], depth)
     assert padded[0, 0] == 1.0
     assert padded[-1, -1] == 1.0
@@ -1826,9 +1826,7 @@ def test_auto_exposure_converges_and_leaves_the_cached_tables_unscaled(monkeypat
     np.testing.assert_array_equal(component.transfer_function.data, table)  # unscaled again
 
 
-def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
-    # Projection adds up alpha per brick crossed; a float target kept it above 1 (blown-out, blocky
-    # renders), and an 8-bit one rounds away faint transfer-function emission (bands, lost gas).
+def test_each_render_size_gets_its_own_float_scene_framebuffer(monkeypatch):
     from OpenGL import GL
     import yt_idv.opengl_support as ogl
 
@@ -1851,24 +1849,42 @@ def test_render_sizes_use_a_16_bit_normalized_scene_framebuffer(monkeypatch):
 
     monkeypatch.setattr(GL, "glViewport", lambda *args: None)
     monkeypatch.setattr(ogl, "Framebuffer", FakeFramebuffer)
-    monkeypatch.setattr(yir, "_float_texture", lambda size: ("RGBA16", size))
+    monkeypatch.setattr(yir, "_float_texture", lambda size: ("float", size))
     scene = FakeScene()
 
-    yir._use_render_size(scene, 64)
+    yir._use_render_size(scene, (64, 36))
     first = scene.fb
-    assert first.fb_tex == ("RGBA16", 64)
-    yir._use_render_size(scene, 64)
+    assert first.fb_tex == ("float", (64, 36))
+    yir._use_render_size(scene, (64, 36))
     assert scene.fb is first  # same size: kept
-    yir._use_render_size(scene, 32)
-    assert first.released and scene.fb.fb_tex == ("RGBA16", 32)
-    assert scene.components[0].fb._yt_volumes_size == 32
+    yir._use_render_size(scene, (32, 48))
+    assert first.released and scene.fb.fb_tex == ("float", (32, 48))
+    assert scene.components[0].fb._yt_volumes_size == (32, 48)
 
 
 @pytest.mark.parametrize("offset", [(0, 0), (7, 0), (-5, 3)])
 def test_a_shifted_crop_takes_back_the_padded_depth(offset):
     depth = np.arange(6 * 10, dtype="f4").reshape(6, 10)
-    padded = yir._pad_to_square(depth, render_size=30, offset=offset)
+    padded = yir._pad_to_canvas(depth, (30, 20), offset=offset)
     np.testing.assert_array_equal(yir._center_crop(padded[..., None], 6, 10, offset)[..., 0], depth)
+
+
+def test_a_canvas_with_margins_keeps_the_frames_pixel_size():
+    camera = types.SimpleNamespace(
+        projection="PERSP", lens_mm=35.0, sensor_width_mm=36.0, sensor_height_mm=24.0, sensor_fit="AUTO",
+        matrix_world=np.eye(4).tolist(),
+    )
+    kwargs = lambda w, h: yir._registered_camera_kwargs(
+        camera, _identity_volume(), _FakeDataset(), w, h, frame_aspect=1920 / 1080, frame_height=1080,
+    )
+    tan = lambda kw: math.tan(math.radians(kw["fov"]) / 2.0)
+    frame = kwargs(1920, 1080)
+    assert frame["fov"] == pytest.approx(yir._approx_vertical_fov_deg(camera, 1920 / 1080))
+    taller = kwargs(1920, 1080 + 2 * 60)  # a vertical shift's margin
+    assert tan(taller) == pytest.approx(tan(frame) * 1200 / 1080)
+    assert taller["aspect_ratio"] == pytest.approx(1920 / 1200)
+    wider = kwargs(1920 + 2 * 80, 1080)  # a stereo eye's horizontal margin
+    assert tan(wider) == pytest.approx(tan(frame))
 
 
 def test_camera_shift_is_whole_pixels_along_the_sensor_fit():

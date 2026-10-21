@@ -261,11 +261,10 @@ now-correctly-positioned camera to get its window-space depth convention.
 No new yt_idv Camera subclass needed -- `BaseCamera.update(position=...,
 focus=..., up=..., ...)` was already general enough, it just needed
 genuinely-transformed values fed in instead of an orbit-at-a-fixed-distance
-heuristic. Still approximate in two specific, undisguised ways: yt_idv
-renders square while Blender's camera essentially never is (so depth
-reconstruction happens on Blender's real pixel grid, then gets
-center-padded/cropped to align with the square canvas -- a square-aspect
-camera can't reproduce Blender's true horizontal FOV), and the object's
+heuristic. yt_idv renders the frame's own shape (plus room for a camera
+shift, cropped back); it used to render a square and crop it, to work around
+the non-square bugs below, which current yt_idv no longer has. Still
+approximate in one undisguised way: the object's
 bounding box has to actually correspond to where you want the dataset
 positioned (a registration you place by sizing/moving the flagged object,
 not inferred from the dataset). Verified against a real, disc-shaped
@@ -555,8 +554,10 @@ in `scripts/yt_idv_exploration/` (retained, not just described):
    still open (candidates: EGL surface/multisample config, a width/height
    mixup in yt_idv's own viewport or grid-expansion geometry shader for
    non-square viewports specifically). **Worked around by rendering square
-   and center-cropping** to the requested shape (`yt_idv_max_intensity_
-   renderer`'s own docstring has the mechanics and cost).
+   and center-cropping** to the requested shape. Gone in current yt_idv,
+   which reads framebuffers back row by row with their real width and
+   height: a 320x180 render matches the middle rows of a 320x320 one to
+   6e-4, so since 2026-10-20 the add-on renders the frame's shape again.
 4. **A wrong doc comment on yt_idv's own `viewport` uniform.**
    `known_uniforms.inc.glsl` documents `viewport` as `(offset_x, offset_y,
    1 / screen_x, 1 / screen_y)` (multiply by `.zw` for a UV); it's actually
