@@ -1214,6 +1214,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     finally:
         GL.glDisable(GL.GL_SCISSOR_TEST)
         GL.glDisable(GL.GL_DEPTH_CLAMP)
+    image = _clamp_coverage(image)
     image = np.clip(image, 0.0, 1.0)
 
     result = RenderResult(
@@ -1284,6 +1285,23 @@ def _exposure_scale(alpha, gain, solid_ratio=None):
     with np.errstate(divide="ignore"):
         rise = np.clip(np.log(np.maximum(alpha, 1e-30) * solid_ratio / peak) / np.log(solid_ratio), 0.0, 1.0)
     return gain ** (1.0 - rise)
+
+
+def _clamp_coverage(image):
+    """The image an 8-bit framebuffer would give: alpha clamped to 1.
+    Projection's first pass sums alpha over the blocks a ray crosses (N), and
+    yt_idv's colormap pass blends with that alpha as the source factor, so the
+    float framebuffer holds color * N and alpha N * N.
+    """
+    alpha = image[..., 3]
+    over = alpha > 1.0
+    if not over.any():
+        return image
+    image = image.copy()
+    # the scene is cleared to 0, so color / N is the colormapped color itself
+    image[..., :3][over] /= np.sqrt(alpha[over])[:, None]
+    image[..., 3][over] = 1.0
+    return image
 
 
 def _exposure_factor(image):

@@ -1905,3 +1905,14 @@ def test_auto_exposure_can_keep_the_last_gain(monkeypatch):
     assert yir._exposure_gains["d"] == 3.0
     yir._auto_exposed(scene, "d", dim)
     assert yir._exposure_gains["d"] > 3.0
+
+
+def test_clamp_coverage_matches_a_clamped_framebuffer():
+    color = np.array([0.2, 0.5, 0.8])
+    image = np.zeros((2, 2, 4), dtype=np.float32)
+    image[0, 0] = [*(color * 250.0), 250.0**2]  # a ray crossing 250 blocks
+    image[0, 1] = [*(color * 0.5), 0.5]  # ordinary coverage is untouched
+    out = yir._clamp_coverage(image)
+    np.testing.assert_allclose(out[0, 0], [*color, 1.0], rtol=1e-6)
+    np.testing.assert_array_equal(out[0, 1], image[0, 1])
+    np.testing.assert_array_equal(out[1], image[1])
