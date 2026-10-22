@@ -1334,6 +1334,16 @@ def _apply_samples_per_cell(component, custom_params):
         component.sample_factor = samples
 
 
+def _cmap_scale(component):
+    """What the colormap range is multiplied by in yt_idv's units: Projective
+    Integration sums along model units, which a zoom stretches, so its range
+    is remembered per unzoomed length and scaled by the zoom here.
+    """
+    if getattr(component, "render_method", None) == "projection":
+        return _zoom_factor(component.data)
+    return 1.0
+
+
 def _apply_colormap_range(component, custom_params):
     """Refit the colormap range this render, or pin it to the volume's
     remembered `yt_idv_cmap_range`. Fixed bounds (`fixed_cmap_min/max`) win.
@@ -1342,7 +1352,7 @@ def _apply_colormap_range(component, custom_params):
     if custom_params.get("yt_idv_rescale_colormap") or remembered is None:
         component._cmap_bounds_invalid = True
     elif component.fixed_cmap_min is None and component.fixed_cmap_max is None:
-        component.cmap_min, component.cmap_max = (float(v) for v in remembered)
+        component.cmap_min, component.cmap_max = (float(v) * _cmap_scale(component) for v in remembered)
         component._cmap_bounds_invalid = False
 
 
@@ -1351,7 +1361,8 @@ def _component_cmap_range(scene):
     for component in scene.components:
         low, high = getattr(component, "cmap_min", None), getattr(component, "cmap_max", None)
         if low is not None and high is not None:
-            return (float(low), float(high))
+            scale = _cmap_scale(component)
+            return (float(low) / scale, float(high) / scale)
     return None
 
 

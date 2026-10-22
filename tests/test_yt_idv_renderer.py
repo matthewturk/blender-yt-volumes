@@ -1916,3 +1916,16 @@ def test_clamp_coverage_matches_a_clamped_framebuffer():
     np.testing.assert_allclose(out[0, 0], [*color, 1.0], rtol=1e-6)
     np.testing.assert_array_equal(out[0, 1], image[0, 1])
     np.testing.assert_array_equal(out[1], image[1])
+
+
+def test_projection_colormap_range_is_remembered_per_unzoomed_length():
+    data = types.SimpleNamespace(_yt_volumes_base_transform=(None, 1.0), applied_scale_ratio=1e-3)
+    projection = types.SimpleNamespace(render_method="projection", data=data, cmap_min=2e-9, cmap_max=4e-6,
+                                       fixed_cmap_min=None, fixed_cmap_max=None)
+    scene = types.SimpleNamespace(components=[projection])
+    # yt_idv's range is in model units, which the 1000x zoom stretches
+    assert yir._component_cmap_range(scene) == pytest.approx((2e-12, 4e-9))
+    yir._apply_colormap_range(projection, {"yt_idv_cmap_range": (2e-12, 4e-9)})
+    assert (projection.cmap_min, projection.cmap_max) == pytest.approx((2e-9, 4e-6))
+    mip = types.SimpleNamespace(render_method="max_intensity", data=data, cmap_min=0.1, cmap_max=0.9)
+    assert yir._component_cmap_range(types.SimpleNamespace(components=[mip])) == (0.1, 0.9)
