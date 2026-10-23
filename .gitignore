@@ -22,3 +22,6 @@ scripts/yt_idv_exploration/blender_scene/_headless_render_out/
 /examples/*.npz
 /examples/*_path.json
 /examples/*_frames/
+
+# Claude Code local settings
+.claude/

@@ -34,7 +34,7 @@ a little — not an expert, not a beginner.
 ## Gotchas when debugging
 
 - Don't run a test render while another render is running: they share
-  `work_dir` (`/tmp/yt_volumes`) and `render_session` sweeps
+  `work_dir` (`$TMPDIR/yt_volumes` by default) and `render_session` sweeps
   leftover `frame_*` directories. Set `prefs.work_dir` to a private directory.
 - Checking output for the volume: compare RGB only. PNGs are RGBA, and the
   constant alpha channel hides large RGB differences in a plain mean.
@@ -46,4 +46,4 @@ a little — not an expert, not a beginner.
   invalidated. Timestamp `bpy.app.handlers.render_stats` and look for
   "Synchronizing object" / "Updating Lights | Computing tree" to see which
   render re-synced, then bisect the steps before it.
-- `/` is usually close to full; clean up scratch renders and EXRs.
+- Clean up scratch renders and EXRs; they add up fast.
