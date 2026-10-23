@@ -11,6 +11,10 @@ interactively in Blender or in batch from a config file. A companion Blender
 extension, Deep Zoom (`extensions/deep_zoom`), authors camera paths through
 deep hierarchies.
 
+**NOTE**: Much of this was written with Claude!  There are even little bits of
+Claude's thinking process scattered throughout.  That being said, the
+underlying yt and yt_idv are generally (but not totally!) AI-free.
+
 ## Quick start
 
 Needs Python 3.13 (the `bpy` module used for tests and batch renders is
