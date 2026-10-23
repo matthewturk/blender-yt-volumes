@@ -97,13 +97,18 @@ Extensions > Install from Disk) is the whole setup: no uv, no compiler, no
 startup script. numpy is left out; Blender's is used. Deep Zoom stays a
 separate extension so it can author camera paths without yt_idv.
 
+Prebuilt Linux x64 zips are attached to each
+[GitHub release](https://github.com/matthewturk/blender-yt-volumes/releases);
+`.github/workflows/release.yml` builds them when a `v*` tag is pushed. To build
+them yourself:
+
 ```
 scripts/build_extension.sh $BLENDER dist/
 ```
 
 It needs uv and downloads wheels for Linux x64, Windows x64 and macOS arm64
-from this one machine. Until yt_idv publishes wheels on PyPI, build one as in
-route 2 and point the script at it, for your own platform only:
+from this one machine (`PLATFORMS=linux-x64` limits it). yt_idv comes from its
+PyPI release; to bundle a local yt_idv build instead, point `WHEELS` at it:
 
 ```
 PLATFORMS=linux-x64 WHEELS=wheels/ scripts/build_extension.sh $BLENDER dist/
