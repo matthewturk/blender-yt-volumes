@@ -19,11 +19,10 @@ underlying yt and yt_idv are generally (but not totally!) AI-free.
 
 Needs Python 3.13 (the `bpy` module used for tests and batch renders is
 Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL. yt_idv
-comes from its `main` branch, which has the scene transforms, texture atlas
-and transfer function conversion this relies on.
+0.6.1 or later is needed, from PyPI.
 
 ```
-git clone https://github.com/matthewturk/cycles-override.git && cd cycles-override
+git clone https://github.com/matthewturk/blender-yt-volumes.git && cd blender-yt-volumes
 PYTHONPATH= uv sync --group ytidv       # the add-on, bpy, yt, yt_idv
 PYTHONPATH= uv run --group ytidv pytest -q
 PYTHONPATH= uv run --group ytidv python examples/make_simple_blend.py examples/simple.blend

@@ -6,7 +6,7 @@ name = "yt-volumes"
 tagline = "Render yt datasets with yt_idv inside Cycles or EEVEE renders"
 maintainer = "Matthew Turk"
 type = "add-on"
-website = "https://github.com/matthewturk/cycles-yt"
+website = "https://github.com/matthewturk/blender-yt-volumes"
 tags = ["Render", "Import-Export"]
 # The bundled wheels are cp313, Blender 5.x's Python.
 blender_version_min = "5.2.0"
