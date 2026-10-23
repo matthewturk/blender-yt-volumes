@@ -5,8 +5,8 @@ this repo's dev venv. On Linux x64 the quickest is route 3: download the
 extension zip from the
 [releases page](https://github.com/matthewturk/blender-yt-volumes/releases)
 and install it from disk. Routes 1 and 2 were tested on Linux x86-64 with the
-official `blender-5.2.2-linux-x64.tar.xz` and render the README's quick-start
-frame identically. Not yet tried on macOS or Windows (yt_idv's offscreen
+official `blender-5.2.2-linux-x64.tar.xz` and render the README's development
+example frame identically. Not yet tried on macOS or Windows (yt_idv's offscreen
 rendering uses EGL, which macOS doesn't have).
 
 You need an NVIDIA/AMD/Intel GPU driver with EGL, and for routes 1 and 2
