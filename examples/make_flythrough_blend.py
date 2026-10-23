@@ -1,7 +1,6 @@
 """Turn flythrough_densest.py's camera path into a .blend and a render_volume config.
 
-flythrough_densest.py (a yt_idv flythrough planner) isn't part of this repo;
-point --flythrough at your copy.
+flythrough_densest.py, a yt_idv flythrough planner, sits next to this script.
 
     python examples/make_flythrough_blend.py SCENE.zip OUT_PREFIX [flythrough options]
 
@@ -47,8 +46,7 @@ RENDER_MODES = {"max_intensity": "YT_IDV_MAX_INTENSITY", "projection": "YT_IDV_P
 def _load_flythrough(path):
     if not os.path.isfile(path):
         raise SystemExit(
-            f"no flythrough_densest.py at {path}: this example plans the path with that script, "
-            "which isn't part of this repo; pass its location with --flythrough"
+            f"no flythrough_densest.py at {path}: pass its location with --flythrough"
         )
     spec = importlib.util.spec_from_file_location("flythrough_densest", path)
     module = importlib.util.module_from_spec(spec)
@@ -61,7 +59,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("scene")
     p.add_argument("out", help="output prefix for the .blend and .toml")
-    p.add_argument("--flythrough", default=os.path.join(here, "..", "flythrough_densest.py"))
+    p.add_argument("--flythrough", default=os.path.join(here, "flythrough_densest.py"))
     p.add_argument("--distance", type=float, default=0.2)
     p.add_argument("--orbit-distance", type=float)
     p.add_argument("--deep-distance", type=float)

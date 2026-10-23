@@ -21,7 +21,7 @@ a little — not an expert, not a beginner.
 
 - Tests: `PYTHONPATH= uv run --group ytidv pytest -q`
 - Headless render (real `.blend`, real yt_idv, GPU):
-  `PYTHONPATH= uv run --group ytidv python scripts/yt_idv_exploration/blender_scene/render_headless.py`
+  `PYTHONPATH= uv run --group ytidv python scripts/headless/render_headless.py`
   — limit frames with `RENDER_START_FRAME`/`RENDER_END_FRAME`. Frame 1 pays a
   multi-minute dataset load. Scene/dataset/look changes go in `scene_setup.py`.
 - For quick pipeline experiments, set the volume's

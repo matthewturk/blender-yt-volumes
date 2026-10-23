@@ -4,12 +4,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 scripts/*.exr
-scripts/yt_idv_exploration/blender_scene/output/
-scripts/yt_idv_exploration/blender_scene/images/
-scripts/yt_idv_exploration/blender_scene/_real_demo_work/
-scripts/yt_idv_exploration/blender_scene/_verify_overlap_work/
-scripts/yt_idv_exploration/blender_scene/_diag_work/
-scripts/yt_idv_exploration/blender_scene/_headless_render_out/
+scripts/headless/_headless_render_out/
 # a local yt_idv checkout, if you develop against one (see pyproject.toml)
 /yt_idv/
 
@@ -25,3 +20,8 @@ scripts/yt_idv_exploration/blender_scene/_headless_render_out/
 
 # Claude Code local settings
 .claude/
+
+# build output (scripts/build_extension.sh, uv build)
+/dist/
+/dist-ext/
+/extensions/*.zip
