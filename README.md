@@ -37,8 +37,10 @@ intermediates; default: the system temp directory) and **Verbose Logging**.
 
 ## Quick start in Blender
 
-1. In the 3D viewport, **Add > yt Volume**. That makes a flagged Empty-Cube
-   with a Geometry Nodes transfer function on it.
+1. Delete the default cube: it fills exactly the box the volume will occupy,
+   so it hides the volume completely. Then in the 3D viewport, **Add > yt
+   Volume**. That makes a flagged Empty-Cube with a Geometry Nodes transfer
+   function on it.
 2. In Object Properties > **Volume Override**, set the **Dataset Path** to
    anything `yt.load` reads, or to a yt_idv scene (`.zip`). With no path it
    renders yt's IsolatedGalaxy sample, which needs Blender's Allow Online
