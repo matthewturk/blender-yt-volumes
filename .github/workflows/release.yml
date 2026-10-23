@@ -1,10 +1,11 @@
 # On a `v*` tag, build the Linux yt-volumes and Deep Zoom extension zips and attach them to a GitHub release.
-# Run it by hand (Actions tab) to get the zips as a workflow artifact without releasing.
+# Pull requests and manual runs (Actions tab) only upload the zips as a workflow artifact.
 name: Release extension
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
