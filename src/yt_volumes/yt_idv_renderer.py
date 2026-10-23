@@ -54,8 +54,8 @@ yt_idv gotchas handled here or in the required yt_idv patches:
   - Blender's GPU compositor holds an EGL context that makes yt_idv's
     `eglMakeCurrent` fail (`EGL_BAD_ACCESS`); `operators` forces the CPU
     compositor during yt_idv renders.
-  - The external depth clip requires yt-project/yt_idv#247.
-  - `scale_scene_to_subset` requires yt-project/yt_idv#287.
+  - The external depth clip and `scale_scene_to_subset` need yt_idv 0.6.1
+    or later.
 
 `yt`/`yt_idv` are imported lazily so the add-on registers without them.
 """
@@ -174,8 +174,7 @@ def _get_render_context(backend):
     except ImportError as exc:
         raise ImportError(
             "yt_idv rendering needs `yt_idv` importable from Blender's own "
-            "Python -- see README 'yt_idv integration' for how to install "
-            "it there."
+            "Python -- see docs/installing-in-blender.md."
         ) from exc
     rc = yt_idv.render_context(backend, width=CONTEXT_SURFACE_SIZE, height=CONTEXT_SURFACE_SIZE)
     _render_context_cache[key] = rc
@@ -368,8 +367,8 @@ def scale_scene_to_subset(scene):
             continue
         if not hasattr(collection, "apply_scale"):
             raise RuntimeError(
-                "scale_scene_to_subset needs a yt_idv with scene transforms "
-                "(yt-project/yt_idv#287); this install doesn't have it."
+                "scale_scene_to_subset needs yt_idv 0.6.1 or later, with scene "
+                "transforms; this install doesn't have them."
             )
         if collection.scale or _fills_unit_cube(*_collection_bounds(collection)):
             continue
@@ -655,15 +654,14 @@ def set_external_depth_clip(scene, depth=None):
     depth (0..1, as `gl_FragDepth`), matching the square render size.
 
     Raises if `depth` is given but no component supports the clip (yt_idv
-    without yt-project/yt_idv#247), since it would otherwise silently no-op.
+    before 0.6.1), since it would otherwise silently no-op.
     """
     try:
         from yt_idv.opengl_support import Texture2D
     except ImportError as exc:
         raise ImportError(
             "yt_idv rendering needs `yt_idv` importable from Blender's own "
-            "Python -- see README 'yt_idv integration' for how to install "
-            "it there."
+            "Python -- see docs/installing-in-blender.md."
         ) from exc
     any_component_supports_clip = False
     for component in scene.components:
@@ -691,14 +689,8 @@ def set_external_depth_clip(scene, depth=None):
         component.use_external_depth_clip = True
     if depth is not None and not any_component_supports_clip:
         raise RuntimeError(
-            "set_external_depth_clip(depth=...) was asked to enable the "
-            "depth clip, but no component in this yt_idv scene has a "
-            "`use_external_depth_clip` attribute -- this yt_idv install is "
-            "missing the external-depth-clip changes (yt-project/"
-            "yt_idv#247), so the clip would silently do nothing while every "
-            "render still looked plausible. See this function's own "
-            "docstring and README 'yt_idv integration' for how to get a "
-            "yt_idv checkout that actually supports it."
+            "The external depth clip needs yt_idv 0.6.1 or later; no "
+            "component in this yt_idv scene has `use_external_depth_clip`."
         )
 
 

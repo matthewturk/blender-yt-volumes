@@ -1,7 +1,7 @@
 """Unit tests for yt_idv_renderer.py's pure-Python helpers.
 
-These don't need yt/yt_idv; the real render path is exercised by the scripts in
-scripts/yt_idv_exploration/blender_scene/. yt/matplotlib may or may not be
+These don't need yt/yt_idv; scripts/headless/render_headless.py exercises the
+real render path. yt/matplotlib may or may not be
 installed (optional `ytidv` group), so tests needing them absent force it via
 sys.modules.
 """
@@ -337,7 +337,7 @@ def test_scale_scene_to_subset_is_idempotent():
 
 
 def test_scale_scene_to_subset_raises_without_yt_idv_scene_transforms():
-    with pytest.raises(RuntimeError, match="#287"):
+    with pytest.raises(RuntimeError, match="0.6.1"):
         yir.scale_scene_to_subset(_block_scene(_subset_collection(has_scaling=False)))
 
 

@@ -4,7 +4,7 @@ box away from it, then orbit it slowly about the z axis with the horizon level.
 
     python flythrough_densest.py SCENE.zip [--out DIR] [--distance 0.2] ...
 
-The scene is scaled first (BlockCollection.scale, PR 276), so the data source's
+The scene is scaled first (BlockCollection.scale), so the data source's
 bounding box spans [0, 1] and distances are fractions of the box. Frames are
 written as PNGs and, with --encode, as an MP4.
 
