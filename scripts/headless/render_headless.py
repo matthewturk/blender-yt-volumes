@@ -5,7 +5,7 @@ using the pip-installed `bpy` module in this repo's dev venv.
 Run with:
 
     uv run --group ytidv python \\
-        scripts/yt_idv_exploration/blender_scene/render_headless.py
+        scripts/headless/render_headless.py
 
 Dataset, field, renderer mode, and colormap live in `scene_setup.py`; edit
 that file for routine scene changes, not this one. The look is applied to
@@ -19,7 +19,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 ADDON_SRC_PARENT = os.path.join(REPO_ROOT, "src")
 sys.path.insert(0, ADDON_SRC_PARENT)
 sys.path.insert(0, HERE)  # so SCENE_SETUP_MODULE resolves as an importable module
@@ -27,7 +27,7 @@ sys.path.insert(0, HERE)  # so SCENE_SETUP_MODULE resolves as an importable modu
 import bpy  # noqa: E402
 from yt_volumes import operators  # noqa: E402
 
-BLEND_PATH = os.path.join(REPO_ROOT, "test-cycles-override.blend")
+BLEND_PATH = os.path.join(HERE, "test-cycles-override.blend")
 OUT_DIR = os.path.join(HERE, "_headless_render_out")
 # RENDER_START_FRAME/RENDER_END_FRAME env vars (inclusive, default 1-250)
 # render part of the animation, e.g. to resume an interrupted run.

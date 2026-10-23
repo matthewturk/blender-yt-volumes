@@ -1,14 +1,16 @@
 # Installing yt_idv and yt-volumes in a stock Blender
 
 How to get from a fresh Blender download to F12 renders with yt_idv, without
-this repo's dev venv. Tested on Linux x86-64 with the official
-`blender-5.2.2-linux-x64.tar.xz` and yt_idv `main`; both routes below render
-the README's quick-start frame identically. Not yet tried on macOS or Windows
-(yt_idv's offscreen rendering uses EGL, which macOS doesn't have).
+this repo's dev venv. On Linux x64 the quickest is route 3: download the
+extension zip from the
+[releases page](https://github.com/matthewturk/blender-yt-volumes/releases)
+and install it from disk. Routes 1 and 2 were tested on Linux x86-64 with the
+official `blender-5.2.2-linux-x64.tar.xz` and render the README's development
+example frame identically. Not yet tried on macOS or Windows (yt_idv's offscreen
+rendering uses EGL, which macOS doesn't have).
 
-You need [uv](https://docs.astral.sh/uv/getting-started/installation/), a C
-compiler (yt_idv `main` has Cython extensions and no prebuilt wheel), and an
-NVIDIA/AMD/Intel GPU driver with EGL.
+You need an NVIDIA/AMD/Intel GPU driver with EGL, and for routes 1 and 2
+[uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ## What you have to match
 
@@ -16,9 +18,9 @@ NVIDIA/AMD/Intel GPU driver with EGL.
   package (yt_idv, yt, h5py, ...) must be a `cp313` build. Check with
   `blender -b --python-expr "import sys; print(sys.version)"`.
 - **No `Python.h` in Blender.** Blender's bundled Python ships without
-  headers, so `pip install "yt_idv @ git+..."` *into Blender's Python*
-  fails with `fatal error: Python.h: No such file or directory`. Build
-  yt_idv with a uv-managed Python 3.13 instead, which has headers; the
+  headers, so anything that has to compile (yt_idv from git, for instance)
+  fails with `fatal error: Python.h: No such file or directory` when built
+  by Blender's Python. Build it with a uv-managed Python 3.13 instead; the
   wheel it produces loads fine in Blender's 3.13.
 - **numpy.** Blender bundles its own numpy (2.3.4 in 5.2). Pin the same
   version so installing yt doesn't replace or shadow it:
@@ -39,7 +41,7 @@ Blender versions with the same Python minor version.
 ```
 uv venv --python 3.13 ~/blender-ytenv
 uv pip install --python ~/blender-ytenv/bin/python \
-    "yt_idv @ git+https://github.com/yt-project/yt_idv.git" \
+    "yt_idv>=0.6.1" \
     pooch pandas h5py "numpy==$NUMPY"
 ```
 
@@ -64,23 +66,14 @@ Alternative to the startup script: launch with
 Blender ignores `PYTHONPATH` without that flag. Here the venv comes *first*
 on the path, so the numpy pin matters more.
 
-## Route 2: install into Blender's bundled Python, from a tarball
+## Route 2: install into Blender's bundled Python
 
 Self-contained (one directory holds Blender and everything it needs), at the
-cost of being undone by a Blender reinstall. Build the yt_idv wheel first,
-from a source tarball or a checkout:
+cost of being undone by a Blender reinstall. Everything has `cp313` wheels on
+PyPI, so it installs straight into Blender's Python:
 
 ```
-curl -L -o yt_idv-main.tar.gz \
-    https://github.com/yt-project/yt_idv/archive/refs/heads/main.tar.gz
-uv build --wheel --python 3.13 --out-dir wheels yt_idv-main.tar.gz
-```
-
-then install it and the rest (all of which have `cp313` wheels on PyPI)
-straight into Blender's Python:
-
-```
-uv pip install --python $BLENDER_PY wheels/yt_idv-*-cp313-*.whl \
+uv pip install --python $BLENDER_PY "yt_idv>=0.6.1" \
     pooch pandas h5py "numpy==$NUMPY"
 ```
 
@@ -97,13 +90,18 @@ Extensions > Install from Disk) is the whole setup: no uv, no compiler, no
 startup script. numpy is left out; Blender's is used. Deep Zoom stays a
 separate extension so it can author camera paths without yt_idv.
 
+Prebuilt Linux x64 zips are attached to each
+[GitHub release](https://github.com/matthewturk/blender-yt-volumes/releases);
+`.github/workflows/release.yml` builds them when a `v*` tag is pushed. To build
+them yourself:
+
 ```
 scripts/build_extension.sh $BLENDER dist/
 ```
 
 It needs uv and downloads wheels for Linux x64, Windows x64 and macOS arm64
-from this one machine. Until yt_idv publishes wheels on PyPI, build one as in
-route 2 and point the script at it, for your own platform only:
+from this one machine (`PLATFORMS=linux-x64` limits it). yt_idv comes from its
+PyPI release; to bundle a local yt_idv build instead, point `WHEELS` at it:
 
 ```
 PLATFORMS=linux-x64 WHEELS=wheels/ scripts/build_extension.sh $BLENDER dist/

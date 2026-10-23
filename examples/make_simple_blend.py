@@ -1,4 +1,4 @@
-"""A minimal scene for render_volume.toml and the README's quick start.
+"""A minimal scene for render_volume.toml and the README's development example.
 
     python examples/make_simple_blend.py examples/simple.blend
 

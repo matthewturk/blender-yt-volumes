@@ -206,8 +206,7 @@ def main():
             "raw on-disk EXR scanline order -- NOT bpy.data.images.load().pixels "
             "(which real Blender is documented to return bottom-left-origin, "
             "applying its own flip on load regardless of on-disk order). "
-            "Re-run this script against a real Blender to close this loop; "
-            "see README 'Verification caveats'."
+            "Re-run this script against a real Blender to close this loop."
         )
 
     # --- 1. Row order: is buffer row 0 the top or bottom of the image? ---

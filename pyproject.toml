@@ -3,6 +3,7 @@ name = "yt-volumes"
 version = "0.1.0"
 description = "Blender add-on: render yt datasets with yt_idv inside Cycles or EEVEE renders, depth-clipped and composited on F12."
 readme = "README.md"
+authors = [{ name = "Matthew Turk" }]
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
@@ -13,6 +14,9 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "numpy>=1.24",
 ]
+
+[project.urls]
+Repository = "https://github.com/matthewturk/blender-yt-volumes"
 
 [dependency-groups]
 dev = [
@@ -27,12 +31,10 @@ dev = [
     "openexr>=3.4.13",
 ]
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
-# real yt_idv, from its `main` branch (see `[tool.uv.sources]`): this needs
-# yt_idv's scene transforms (yt-project/yt_idv#287), texture atlas (#285)
-# and transfer function conversion (#288), which aren't in a release yet.
-# uv.lock pins a commit of main; `uv lock --upgrade-package yt_idv` moves it.
+# real yt_idv. 0.6.1 is the first release with the scene transforms and
+# texture atlas this relies on.
 ytidv = [
-    "yt_idv",
+    "yt_idv>=0.6.1",
     # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
     # of yt_idv's own declared dependencies.
     "pooch>=1.8",
@@ -43,10 +45,9 @@ ytidv = [
 [tool.uv]
 package = true
 
-[tool.uv.sources]
-yt_idv = { git = "https://github.com/yt-project/yt_idv.git", branch = "main" }
-# to develop against a local checkout instead:
-# yt_idv = { path = "yt_idv" }
+# To develop against a local yt_idv checkout:
+# [tool.uv.sources]
+# yt_idv = { path = "../yt_idv", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["src"]
