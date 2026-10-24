@@ -18,6 +18,13 @@ group's Color Ramp and opacity curve are also drawn in the Volume Override
 panel, and any node setup (math, Scene Time, keyframes) that stores those
 attributes works.
 
+**Load Colormap** fills the Color Ramp from any matplotlib or cmyt colormap
+(32 stops; listed colormaps of up to 32 colors load as constant steps). The
+opacity curve is linear by default; its scale button sets a number of decades
+D, making curve height y an opacity of 10^(D (y - 1)), so 4 decades spans
+1e-4 to 1 and a height of 0 stays transparent. Changing it moves the curve's
+points to keep their opacities; ones below 10^-D become transparent.
+
 The transfer function's x runs linearly in log10 of the value. With **Fit to
 Data** (on by default) it spans the data between the **Low %** and **High %**
 percentiles by volume (10 and 100); off, Min/Max (log10) set it in the field's

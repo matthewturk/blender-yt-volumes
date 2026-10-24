@@ -1215,3 +1215,86 @@ def test_volume_override_renders_are_named_by_frame(addon_enabled, monkeypatch, 
 
     assert (tmp_path / expected).exists()
     assert scene.render.filepath == str(tmp_path / output)
+
+
+def test_loading_a_colormap_fills_the_gn_ramp(clean_scene_with_props):
+    import matplotlib
+
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    obj.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.load_tf_colormap(colormap="viridis") == {"FINISHED"}
+
+    rgba = np.asarray(operators._yt_idv_custom_params(obj)["yt_idv_gn_tf_rgba"])
+
+    viridis = matplotlib.colormaps["viridis"]
+    for i in (0, len(rgba) // 3, len(rgba) - 1):
+        assert rgba[i, :3] == pytest.approx(viridis(i / (len(rgba) - 1))[:3], abs=1e-2)
+
+
+def test_a_qualitative_colormap_loads_as_constant_steps(clean_scene_with_props):
+    import matplotlib
+
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    ramp, _ = transfer_function_nodes.find_nodes(obj)
+    transfer_function_nodes.load_colormap(ramp, "tab10")
+
+    assert ramp.color_ramp.interpolation == "CONSTANT"
+    assert len(ramp.color_ramp.elements) == 10
+    rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+    assert rgba[len(rgba) // 2 + 20, :3] == pytest.approx(matplotlib.colormaps["tab10"].colors[5], abs=2e-3)
+
+
+def test_log_opacity_keeps_the_curve_points_opacities(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    _, curve = transfer_function_nodes.find_nodes(obj)
+    points = curve.mapping.curves[0].points
+    points[-1].location = (1.0, 0.01)
+    curve.mapping.update()
+    tree = curve.id_data
+
+    transfer_function_nodes.set_opacity_decades(tree, 4.0)
+    obj.update_tag()
+
+    assert points[-1].location[1] == pytest.approx(0.5)  # 1e-2 is half of 4 decades
+    rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+    assert rgba[-1, 3] == pytest.approx(0.01, rel=1e-3)
+    assert rgba[0, 3] == 0.0  # the curve's 0 stays transparent
+
+    transfer_function_nodes.set_opacity_decades(tree, 0.0)
+    obj.update_tag()
+    assert points[-1].location[1] == pytest.approx(0.01)
+    rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+    assert rgba[-1, 3] == pytest.approx(0.01, rel=1e-3)
+
+
+def test_opacity_scale_upgrades_an_older_group(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes
+
+    obj = _flagged_cube()
+    transfer_function_nodes.add_transfer_function_modifier(obj)
+    tree = obj.modifiers[0].node_group
+    # Strip the scale nodes the way a group made before them would look.
+    store = next(n for n in tree.nodes if n.bl_idname == "GeometryNodeStoreNamedAttribute"
+                 and n.inputs["Name"].default_value == transfer_function_nodes.ALPHA_ATTRIBUTE)
+    switch = store.inputs["Value"].links[0].from_node
+    decades = tree.nodes[transfer_function_nodes.DECADES_NODE_NAME]
+    tree.nodes.remove(decades)
+    tree.nodes.remove(switch)
+    tree.links.new(tree.nodes[transfer_function_nodes.ALPHA_NODE_NAME].outputs["Value"], store.inputs["Value"])
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.set_opacity_curve_scale(decades=3.0) == {"FINISHED"}
+
+    assert tree.nodes[transfer_function_nodes.DECADES_NODE_NAME].outputs[0].default_value == 3.0
+    rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
+    assert rgba[-1, 3] == pytest.approx(0.8, rel=1e-3)

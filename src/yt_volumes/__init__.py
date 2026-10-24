@@ -9,7 +9,7 @@ Blender's addons folder) or as an extension (`blender_manifest.toml`).
 bl_info = {
     "name": "yt-volumes",
     "author": "Matthew Turk",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (3, 6, 0),
     "location": "Properties > Object > Volume Override; Render menu",
     "description": (
