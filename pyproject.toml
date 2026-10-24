@@ -1,6 +1,6 @@
 [project]
 name = "yt-volumes"
-version = "0.1.0"
+version = "0.1.1"
 description = "Blender add-on: render yt datasets with yt_idv inside Cycles or EEVEE renders, depth-clipped and composited on F12."
 readme = "README.md"
 authors = [{ name = "Matthew Turk" }]
