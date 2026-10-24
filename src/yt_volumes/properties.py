@@ -539,11 +539,20 @@ def _draw_gn_transfer_function(layout, obj):
         return
     # The starter group's nodes, editable here; anything else in Geometry Nodes.
     if ramp is not None:
-        layout.label(text="Color")
+        row = layout.row()
+        row.label(text="Color")
+        row.operator("volume_override.load_tf_colormap", icon="COLOR")
         layout.template_color_ramp(ramp, "color_ramp", expand=True)
     if curve is not None:
-        layout.label(text="Opacity")
+        decades_node = transfer_function_nodes.find_node(obj, transfer_function_nodes.DECADES_NODE_NAME)
+        decades = decades_node.outputs[0].default_value if decades_node is not None else 0.0
+        row = layout.row()
+        row.label(text="Opacity")
+        scale = f"Log, {decades:g} decades" if decades > 0 else "Linear"
+        row.operator("volume_override.set_opacity_curve_scale", text=scale, icon="PREFERENCES")
         layout.template_curve_mapping(curve, "mapping")
+        if decades > 0:
+            layout.label(text=f"Height 0.5 = {10 ** (-decades / 2):.2g}, near 0 = {10 ** -decades:.2g}, 0 = off")
     if low is not None:
         # The ramp and curve run 0-1 across the range; this places a zoomed-in view.
         layout.label(text=f"0 = {low:.2f}, 0.5 = {(low + high) / 2:.2f}, 1 = {high:.2f} (log10)")
