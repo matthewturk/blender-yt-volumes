@@ -884,3 +884,24 @@ def _draw_units(layout, obj):
 def flagged_objects(scene):
     """All objects in `scene` flagged for external volume rendering."""
     return [obj for obj in scene.objects if getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override]
+
+
+def _renderable(layer_collection):
+    """Objects a render includes from `layer_collection` and its children."""
+    if layer_collection.exclude or layer_collection.collection.hide_render:
+        return set()
+    found = set(layer_collection.collection.objects)
+    for child in layer_collection.children:
+        found |= _renderable(child)
+    return found
+
+
+def rendered_volumes(scene, view_layer=None):
+    """Flagged objects a render of `view_layer` (default the active one)
+    includes: Disable in Renders off, collection neither excluded nor
+    disabled in renders.
+    """
+    if view_layer is None:
+        view_layer = bpy.context.view_layer if bpy.context.scene == scene else scene.view_layers[0]
+    included = _renderable(view_layer.layer_collection)
+    return [obj for obj in flagged_objects(scene) if not obj.hide_render and obj in included]

@@ -740,7 +740,7 @@ def _render_current_frame(context):
         raise RuntimeError("Scene has no active camera")
 
     prefs = _get_prefs(context)
-    flagged = properties.flagged_objects(scene)
+    flagged = properties.rendered_volumes(scene, context.view_layer)
     uses_yt_idv = any(obj.volume_override.renderer_mode in YT_IDV_RENDERER_MODES for obj in flagged)
     if uses_yt_idv and scene.render.engine != "CYCLES" and _gpu_backend() != "VULKAN":
         # Under the OpenGL backend EEVEE holds a GL context, and yt_idv's EGL
@@ -932,7 +932,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     _session = None
 
     def invoke(self, context, event):
-        pending = pending_loads(properties.flagged_objects(context.scene))
+        pending = pending_loads(properties.rendered_volumes(context.scene, context.view_layer))
         if pending:
             return context.window_manager.invoke_confirm(
                 self, event, title="Load data to render?", message=load_message(pending),
@@ -941,7 +941,7 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
-        if not properties.flagged_objects(context.scene):
+        if not properties.rendered_volumes(context.scene, context.view_layer):
             # F12 is always remapped here; fall back to a normal render.
             return bpy.ops.render.render("INVOKE_DEFAULT", animation=self.animation)
 

@@ -1,8 +1,7 @@
 """Handlers and keymaps.
 
-1. A `render_cancel` handler restoring `hide_render` on flagged objects, as
-   a backstop for renders started outside our operator, and a `render_pre`
-   one warning, with a popup in the UI, that such renders leave the volumes out.
+1. A `render_pre` handler warning, with a popup in the UI, that renders
+   started outside our operator leave the volumes out.
 
 2. F12 / Ctrl+F12 bound to `render.volume_override`: Blender can't override
    an operator, so the default `render.render` keymap items are disabled
@@ -22,18 +21,11 @@ PLAIN_RENDER_HINT = "Use Render (Volume Override), Render Animation (Volume Over
 
 
 @persistent
-def _restore_all_flagged_visibility(*_args):
-    for scene in bpy.data.scenes:
-        for obj in properties.flagged_objects(scene):
-            obj.hide_render = False
-
-
-@persistent
 def _warn_plain_render(scene, *_args):
     from . import operators
 
     if operators._in_pipeline or not any(
-        obj.volume_override.renderer_mode in operators.YT_IDV_RENDERER_MODES for obj in properties.flagged_objects(scene)
+        obj.volume_override.renderer_mode in operators.YT_IDV_RENDERER_MODES for obj in properties.rendered_volumes(scene)
     ):
         return
     if _warned[0]:
@@ -68,7 +60,6 @@ def _render_done(*_args):
 
 
 def register_handlers():
-    bpy.app.handlers.render_cancel.append(_restore_all_flagged_visibility)
     bpy.app.handlers.render_pre.append(_warn_plain_render)
     bpy.app.handlers.render_complete.append(_render_done)
     bpy.app.handlers.render_cancel.append(_render_done)
@@ -78,8 +69,6 @@ def unregister_handlers():
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         if _render_done in handlers:
             handlers.remove(_render_done)
-    if _restore_all_flagged_visibility in bpy.app.handlers.render_cancel:
-        bpy.app.handlers.render_cancel.remove(_restore_all_flagged_visibility)
     if _warn_plain_render in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.remove(_warn_plain_render)
 
