@@ -1532,3 +1532,61 @@ def test_slot_keyframes_can_be_removed(clean_scene_with_props):
         assert [p.co[0] for p in tfn.blend_fcurve(obj).keyframe_points] == [11.0]
         bpy.ops.volume_override.remove_tf_slot_key(frame=11.0)
     assert tfn.blend_fcurve(obj) is None and not tfn.blend_is_animated(obj)
+
+
+def test_the_annotation_scene_is_laid_over_the_render(addon_enabled, monkeypatch, tmp_path):
+    from yt_volumes import annotations, transfer_function_nodes as tfn
+
+    scene = addon_enabled
+    scene.render.resolution_x, scene.render.resolution_y = 200, 112
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "Standard"
+    _add_camera(scene, "PERSP", lens=50.0)
+    volume = _flagged_cube()
+    volume.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    tfn.add_transfer_function_modifier(volume)
+    n = tfn.NBINS
+    tfn.update_distribution(volume, {"volume_fraction": np.zeros(n), "mass_fraction": np.zeros(n), "log10_value": np.linspace(-2.3, 1.7, n)})
+    colorbar = annotations.add_colorbar(scene, volume)
+    colorbar.location = (0.2, 0.12, 0.0)
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    scene.render.filepath = str(tmp_path / "out_")
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_GN_TRANSFER_FUNCTION", _fake_render_result)
+
+    operators.render_current_frame(bpy.context)
+
+    image = bpy.data.images.load(str(tmp_path / "out_.png"))
+    pixels = np.array(image.pixels[:]).reshape(112, 200, 4)  # bottom row first
+    row = int(0.135 / annotations.aspect(scene) * 112)  # the bar's middle, in frame y
+    # The starter ramp's middle stop, sRGB, at the bar's middle.
+    assert pixels[row, 100, :3] == pytest.approx([0.735, 0.216, 0.330], abs=0.06)
+    assert pixels[100, 100, :3] == pytest.approx(pixels[100, 10, :3], abs=1e-3)  # nothing drawn up there
+
+
+def test_a_colorbar_ticks_whole_decades_of_the_fitted_range(clean_scene_with_props):
+    from yt_volumes import annotations, transfer_function_nodes as tfn
+
+    annotations.register()
+    try:
+        scene = bpy.context.scene
+        volume = _flagged_cube()
+        tfn.add_transfer_function_modifier(volume)
+        n = tfn.NBINS
+        tfn.update_distribution(volume, {"volume_fraction": np.zeros(n), "mass_fraction": np.zeros(n), "log10_value": np.linspace(-2.3, 1.7, n)})
+        colorbar = annotations.add_colorbar(scene, volume)
+        overlay = scene.yt_annotation_scene
+        scene.frame_set(7)
+        annotations.sync(scene, overlay)
+        assert overlay.frame_current == 7 and overlay.camera.data.type == "ORTHO"
+        assert annotations.add_annotation_scene(scene) == overlay  # one per scene
+
+        with bpy.context.temp_override(scene=overlay, view_layer=overlay.view_layers[0]):
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+        mesh = colorbar.evaluated_get(depsgraph).data
+        tick_bottom = -0.4 * 0.03  # ticks hang 0.4 bar heights below the bar
+        xs = np.array([v.co.x for v in mesh.vertices if abs(v.co.y - tick_bottom) < 1e-5])
+        centers = sorted({round(float(x), 4) for x in (xs[::2] + xs[1::2]) / 2})  # each tick's two bottom corners
+        assert centers == pytest.approx([0.6 * (d + 2.3) / 4.0 for d in (-2, -1, 0, 1)], abs=1e-4)
+    finally:
+        annotations.unregister()

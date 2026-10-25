@@ -264,10 +264,11 @@ def build_or_update_graph(scene, beauty_exr_path, volume_layers):
     return build_or_update_views_graph(scene, {None: (beauty_exr_path, volume_layers)})
 
 
-def build_or_update_views_graph(scene, views):
+def build_or_update_views_graph(scene, views, overlay=None):
     """`build_or_update_graph` for each view of a Multi-View render:
     `views` maps a view name (None without Multi-View) to `(beauty_exr_path,
-    volume_layers)`; a Switch View node picks each view's chain.
+    volume_layers)`; a Switch View node picks each view's chain. `overlay`, a
+    scene, is rendered by a Render Layers node and laid over the result.
     """
     tree = ensure_compositor_tree(scene)
 
@@ -277,7 +278,7 @@ def build_or_update_views_graph(scene, views):
     expected_order = [
         entry for view, (_, layers) in views.items()
         for entry in ([f"{view}/"] if view else []) + [f"{view}/{obj}" if view else obj for obj, _ in layers]
-    ]
+    ] + ([f"overlay:{overlay.name}"] if overlay is not None else [])
     topology_matches = (
         all(tree.nodes.get(name("Beauty", view=view)) is not None for view in views)
         and list(tree.get(_VOLUME_ORDER_KEY, [])) == expected_order
@@ -321,6 +322,12 @@ def build_or_update_views_graph(scene, views):
         for view, socket in outputs.items():
             tree.links.new(socket, switch.inputs[view])
         final_output = switch.outputs[0]
+    if overlay is not None:
+        layers = tree.nodes.new("CompositorNodeRLayers")
+        layers.name = layers.label = _node_name("Overlay")
+        layers.scene = overlay
+        layers.layer = overlay.view_layers[0].name
+        final_output = _make_alpha_over(tree, _node_name("OverOverlay"), final_output, layers.outputs["Image"]).outputs.get("Image")
     _link_final_output(scene, tree, final_output)
     tree[_VOLUME_ORDER_KEY] = expected_order
 
