@@ -1706,6 +1706,18 @@ def dataset_units(dataset_id):
     return registry, (_base_transform(collections[0])[1] if collections else None)
 
 
+def dataset_frame(dataset_id):
+    """`(unitary offset of the volume cube's origin corner, the "max" zoom
+    target in unitary)` of a loaded dataset, either None if unknown.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    collections = [] if cached is None else _block_collections(cached[0])
+    if not collections:
+        return None, None
+    maximum = getattr(collections[0], "_yt_volumes_zoom_max", None)
+    return tuple(_base_transform(collections[0])[0]), (None if maximum is None else tuple(maximum))
+
+
 def gn_tf_fit(dataset_id):
     """The last Geometry Nodes transfer function fit for a loaded dataset:
     `{"physical_range", "units", "points"}` (see `_point_distribution`), or None.

@@ -21,6 +21,8 @@ image the group samples.
 import bpy
 import numpy as np
 
+from .node_layout import arrange
+
 COLOR_ATTRIBUTE = "yt_tf_color"
 ALPHA_ATTRIBUTE = "yt_tf_alpha"
 COLOR_NODE_NAME = "TF Color"
@@ -115,9 +117,8 @@ def _new_slot_tree(name):
     link(group_input.outputs["Value"], curve.inputs["Value"])
     link(ramp.outputs["Color"], group_output.inputs["Color"])
     link(curve.outputs["Value"], group_output.inputs["Opacity"])
-    group_input.location, ramp.location, curve.location = (-300, 0), (0, 200), (0, -100)
     link(add_opacity_scale(tree).outputs[0], group_output.inputs["Decades"])
-    group_output.location = (1300, 0)
+    arrange(tree)
     return tree
 
 
@@ -166,10 +167,6 @@ def build_node_group(name=MODIFIER_NAME, nbins=NBINS):
     link(instances.outputs["Instances"], join.inputs["Geometry"])
     link(join.outputs["Geometry"], output.inputs["Geometry"])
 
-    group_input.location = (800, 200)
-    for column, node in enumerate((line, store_color, store_alpha, instances, join, output)):
-        node.location = (200 * column, 0)
-    position.location, value.location = (-400, -250), (-200, -250)
     _add_slot_node(tree, _new_slot_tree(f"{name} Slot"), "")
     rebuild_mix(tree)
     return tree
@@ -267,7 +264,6 @@ def rebuild_mix(tree):
     _update_blend_input(tree, len(slots))
     group_input = nodes.new("NodeGroupInput")
     group_input.name = f"{MIX_PREFIX}input"
-    group_input.location = (-400, -1000)
     value = nodes[VALUE_NODE_NAME].outputs["X"]
     position = math("MINIMUM", math("MAXIMUM", group_input.outputs[BLEND_INPUT], 1.0), float(len(slots)))
     weights, alphas, colors, decades = [], [], [], []
@@ -281,7 +277,6 @@ def rebuild_mix(tree):
         alphas.append(weighted_alpha)
         colors.append(vector("SCALE", slot.outputs["Color"], color_weight))
         decades.append(math("MULTIPLY", slot.outputs["Decades"], math("GREATER_THAN", weight, 0.0)))
-        slot.location = (0, -250 - 300 * i)
     linear = total(alphas, lambda a, b: math("ADD", a, b))
     color = total(colors, lambda a, b: vector("ADD", a, b))
     color = vector("SCALE", color, math("DIVIDE", 1.0, math("ADD", linear, MIX_EPSILON)))
@@ -303,8 +298,7 @@ def rebuild_mix(tree):
 
     link(color, _store_node(tree, COLOR_ATTRIBUTE).inputs["Value"])
     link(alpha, _store_node(tree, ALPHA_ATTRIBUTE).inputs["Value"])
-    for column, node in enumerate(n for n in nodes if n.name.startswith(MIX_PREFIX) and n != group_input):
-        node.location = (250 + 40 * column, -400 - 20 * column)
+    arrange(tree)
     tree.update_tag()
 
 
@@ -421,11 +415,7 @@ def add_opacity_scale(tree):
     for socket in targets:
         link(switch.outputs[0], socket)
 
-    x, y = curve.location
-    decades.location = (x, y - 300)
-    for column, node in enumerate((exponent.inputs[0].links[0].from_node, exponent, power, log_alpha, switch)):
-        node.location = (x + 250 + 180 * column, y - 150)
-    visible.location, is_log.location = (x + 610, y - 350), (x + 790, y - 450)
+    arrange(tree)
     return decades
 
 
@@ -546,9 +536,6 @@ def _add_outline(tree, group_input):
     link(is_sphere.outputs["Result"], switch.inputs["Switch"])
     link(no_faces.outputs["Geometry"], switch.inputs["False"])
     link(circles.outputs["Geometry"], switch.inputs["True"])
-    for column, node in enumerate((double, cube, no_faces)):
-        node.location = (900 + 200 * column, 500)
-    circle.location, circles.location, is_sphere.location, switch.location = (1100, 750), (1300, 750), (1300, 950), (1500, 600)
     return switch
 
 
@@ -585,9 +572,6 @@ def _add_distribution(tree, value, name, nbins):
         if stores:
             link(stores[-1].outputs["Geometry"], store.inputs["Geometry"])
         stores.append(store)
-    center.location, at_x.location, texture.location, channels.location = (100, -700), (300, -700), (500, -700), (700, -700)
-    for column, store in enumerate(stores):
-        store.location = (900 + 200 * column, -500)
     return stores
 
 

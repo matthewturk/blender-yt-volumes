@@ -289,6 +289,28 @@ carries it as a `dataset` entry in scene.json (yt_idv 0.6.1 and later write
 it); for scenes saved without it, `units.add_units_to_scene_file(path, ds)` appends a `dataset.json`
 member without rewriting the archive.
 
+### Placing things at unitary positions
+The Units Object also carries where unitary coordinates are in the scene right
+now: through the volume's transform and subset box, its Zoom Level, or Deep
+Zoom. **Units for Geometry Nodes** also adds a **yt Unitary to Scene** node
+group: give it the Units Object and a **Unitary** position, and its
+**Position** output, in the space of the object the nodes run on, goes
+straight into Set Position or Instance on Points; **Scene per Unitary** sizes
+things to the data. Positions stay put as you zoom or move the volume.
+
+Geometry Nodes works in float32, which runs out at about 1e-7 of the box. For
+deeper zooms give the position in two parts, **Unitary** plus **Unitary Low**,
+and the node group keeps float64 precision near the zoom target:
+
+- typed: select the node, then the node editor's sidebar **yt** tab, **Set
+  Unitary Position**, and paste `x, y, z` with all its digits;
+- from Python, for catalogs: `units.store_unitary_positions(mesh, positions)`
+  writes float64 `(n, 3)` positions as point attributes `unitary` and
+  `unitary_low`, read with Named Attribute.
+
+A "max" zoom target is placed once a render or the viewport preview has found
+it; spherical volumes aren't supported yet.
+
 ## Examples
 
 Each script's docstring has the commands.
