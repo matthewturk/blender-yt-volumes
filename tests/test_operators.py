@@ -1277,24 +1277,216 @@ def test_log_opacity_keeps_the_curve_points_opacities(clean_scene_with_props):
     assert rgba[-1, 3] == pytest.approx(0.01, rel=1e-3)
 
 
-def test_opacity_scale_upgrades_an_older_group(clean_scene_with_props):
-    from yt_volumes import transfer_function_nodes
+def _pre_slot_transfer_function(obj, with_scale):
+    """A transfer function as 0.1.0 (no opacity scale) or 0.1.1 made it: the
+    ramp and curve right in the modifier's group.
+    """
+    from yt_volumes import transfer_function_nodes as tfn
+
+    tfn.add_transfer_function_modifier(obj)
+    tree = obj.modifiers[0].node_group
+    for node in [n for n in tree.nodes if n.name.startswith((tfn.SLOT_PREFIX, tfn.MIX_PREFIX))]:
+        if node.bl_idname == "GeometryNodeGroup":
+            bpy.data.node_groups.remove(node.node_tree)
+        tree.nodes.remove(node)
+    tree.interface.remove(tree.interface.items_tree[tfn.BLEND_INPUT])
+    value = tree.nodes[tfn.VALUE_NODE_NAME]
+    value.name = "Separate XYZ"
+    ramp = tree.nodes.new("ShaderNodeValToRGB")
+    ramp.name = tfn.COLOR_NODE_NAME
+    ramp.color_ramp.elements[0].color = (0.0, 0.0, 1.0, 1.0)
+    curve = tree.nodes.new("ShaderNodeFloatCurve")
+    curve.name = tfn.ALPHA_NODE_NAME
+    curve.mapping.curves[0].points[1].location = (1.0, 0.5)
+    curve.mapping.update()
+    tree.links.new(value.outputs["X"], ramp.inputs["Fac"])
+    tree.links.new(value.outputs["X"], curve.inputs["Value"])
+    tree.links.new(ramp.outputs["Color"], tfn._store_node(tree, tfn.COLOR_ATTRIBUTE).inputs["Value"])
+    tree.links.new(curve.outputs["Value"], tfn._store_node(tree, tfn.ALPHA_ATTRIBUTE).inputs["Value"])
+    if with_scale:
+        tfn.set_opacity_decades(tree, 2.0)
+    obj.update_tag()
+    return tree
+
+
+def test_opacity_scale_upgrades_a_pre_scale_group(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
 
     obj = _flagged_cube()
-    transfer_function_nodes.add_transfer_function_modifier(obj)
-    tree = obj.modifiers[0].node_group
-    # Strip the scale nodes the way a group made before them would look.
-    store = next(n for n in tree.nodes if n.bl_idname == "GeometryNodeStoreNamedAttribute"
-                 and n.inputs["Name"].default_value == transfer_function_nodes.ALPHA_ATTRIBUTE)
-    switch = store.inputs["Value"].links[0].from_node
-    decades = tree.nodes[transfer_function_nodes.DECADES_NODE_NAME]
-    tree.nodes.remove(decades)
-    tree.nodes.remove(switch)
-    tree.links.new(tree.nodes[transfer_function_nodes.ALPHA_NODE_NAME].outputs["Value"], store.inputs["Value"])
+    tree = _pre_slot_transfer_function(obj, with_scale=False)
 
     with bpy.context.temp_override(object=obj):
         assert bpy.ops.volume_override.set_opacity_curve_scale(decades=3.0) == {"FINISHED"}
 
-    assert tree.nodes[transfer_function_nodes.DECADES_NODE_NAME].outputs[0].default_value == 3.0
-    rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
-    assert rgba[-1, 3] == pytest.approx(0.8, rel=1e-3)
+    assert tree.nodes[tfn.DECADES_NODE_NAME].outputs[0].default_value == 3.0
+    rgba = tfn.sample(obj, bpy.context.evaluated_depsgraph_get())
+    assert rgba[-1, 3] == pytest.approx(0.5, rel=1e-3)
+
+
+def _sample(obj):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj.update_tag()
+    return tfn.sample(obj, bpy.context.evaluated_depsgraph_get())
+
+
+def _two_slots(obj):
+    """Slot 1 the starter; slot 2 all red, opacity a flat 0.2. Returns the tree."""
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    tfn.add_transfer_function_modifier(obj)
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.add_tf_slot() == {"FINISHED"}
+    assert obj.volume_override.tf_active_slot == 1
+    ramp, curve = tfn.find_nodes(obj)
+    for element in ramp.color_ramp.elements:
+        element.color = (1.0, 0.0, 0.0, 1.0)
+    for point in curve.mapping.curves[0].points:
+        point.location = (point.location[0], 0.2)
+    curve.mapping.update()
+    return tfn.transfer_function_tree(obj)
+
+
+def test_blend_cross_fades_between_slots(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    _two_slots(obj)
+    tfn.set_blend(obj, 1.0)
+    first = _sample(obj)
+
+    tfn.set_blend(obj, 2.0)
+    second = _sample(obj)
+    tfn.set_blend(obj, 1.5)
+    half = _sample(obj)
+
+    assert second[:, 3] == pytest.approx(0.2, abs=2e-3)
+    assert second[-1, :3] == pytest.approx([1.0, 0.0, 0.0], abs=2e-3)
+    assert half[:, 3] == pytest.approx((first[:, 3] + second[:, 3]) / 2, abs=2e-3)
+    # Where slot 1 is transparent, only slot 2's red shows.
+    assert first[100, 3] == 0.0 and half[100, :3] == pytest.approx([1.0, 0.0, 0.0], abs=2e-3)
+    tfn.set_blend(obj, 7.0)  # clamped to the last slot
+    assert _sample(obj) == pytest.approx(second, abs=1e-6)
+
+
+def test_log_slots_blend_in_log_opacity(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    slots = tfn.slot_nodes(tree)
+    # Slot 1 at 1e-4, slot 2 at 1e-2 (opacities kept as the scale changes).
+    curve = slots[0].node_tree.nodes[tfn.ALPHA_NODE_NAME]
+    for point in curve.mapping.curves[0].points:
+        point.location = (point.location[0], 1e-4)
+    curve.mapping.update()
+    tfn.set_opacity_decades(slots[0].node_tree, 4.0)
+    for point in slots[1].node_tree.nodes[tfn.ALPHA_NODE_NAME].mapping.curves[0].points:
+        point.location = (point.location[0], 0.01)
+    tfn.set_opacity_decades(slots[1].node_tree, 4.0)
+    tfn.set_blend(obj, 1.5)
+
+    rgba = _sample(obj)
+
+    assert rgba[2000, 3] == pytest.approx(1e-3, rel=1e-2)  # the geometric mean, not 5e-3
+
+
+def test_blend_can_be_keyframed(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    scene = bpy.context.scene
+    with bpy.context.temp_override(object=obj):
+        for frame, slot in ((1, 0), (11, 1)):
+            scene.frame_set(frame)
+            obj.volume_override.tf_slot = str(slot)
+            assert bpy.ops.volume_override.key_tf_slot() == {"FINISHED"}
+        assert bpy.ops.volume_override.set_tf_blend_easing(easing="LINEAR") == {"FINISHED"}
+    # Once Blend is animated, choosing a slot to edit leaves it alone.
+    obj.volume_override.tf_slot = "0"
+    assert tfn.blend_is_animated(obj) and tfn.blend_value(obj) == 2.0
+
+    alphas = []
+    for frame in (1, 6, 11):
+        bpy.context.scene.frame_set(frame)
+        alphas.append(_sample(obj)[-1, 3])
+
+    assert alphas == pytest.approx([0.8, 0.5, 0.2], abs=2e-3)
+
+
+def test_removing_a_slot_keeps_the_rest(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    second = tfn.slot_nodes(tree)[1].node_tree
+    obj.volume_override.tf_active_slot = 0
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.remove_tf_slot() == {"FINISHED"}
+        assert bpy.ops.volume_override.remove_tf_slot.poll() is False
+
+    assert [n.node_tree for n in tfn.slot_nodes(tree)] == [second]
+    assert tfn.slot_nodes(tree)[0].name == f"{tfn.SLOT_PREFIX}1"
+    assert _sample(obj)[:, 3] == pytest.approx(0.2, abs=2e-3)
+
+
+@pytest.mark.parametrize("with_scale", [False, True])
+def test_adding_a_slot_converts_an_older_group(clean_scene_with_props, with_scale):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _pre_slot_transfer_function(obj, with_scale)
+    before = _sample(obj)
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.add_tf_slot() == {"FINISHED"}
+
+    assert tfn.COLOR_NODE_NAME not in tree.nodes and len(tfn.slot_nodes(tree)) == 2
+    assert not [n for n in tree.nodes if n.bl_idname == "ShaderNodeFloatCurve" or getattr(n, "input_type", "") == "FLOAT"]
+    assert _sample(obj) == pytest.approx(before, abs=2e-3)
+    assert tfn.blend_value(obj) == 2.0  # the new slot is shown
+    assert _sample(obj) == pytest.approx(before, abs=2e-3)  # the copy matches
+
+
+def test_colormap_reload_with_fewer_stops_keeps_them_in_order(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tfn.add_transfer_function_modifier(obj)
+    ramp, _ = tfn.find_nodes(obj)
+    tfn.load_colormap(ramp, "viridis")
+    tfn.load_colormap(ramp, "tab10")
+
+    assert [round(e.position, 4) for e in ramp.color_ramp.elements] == [i / 10 for i in range(10)]
+
+
+def test_a_colormap_loads_with_stops_where_it_bends(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tfn.add_transfer_function_modifier(obj)
+    ramp, _ = tfn.find_nodes(obj)
+    tfn.load_colormap(ramp, "viridis", max_stops=8)
+    positions = [e.position for e in ramp.color_ramp.elements]
+    assert len(positions) == 8
+    assert positions[0] == 0.0 and positions[-1] == 1.0
+    tfn.load_colormap(ramp, "gray")
+    assert len(ramp.color_ramp.elements) < 20  # stops once the fit is close
+    assert tfn.colormap_name(obj) == "gray"
+
+
+def test_slot_keyframes_can_be_removed(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    _two_slots(obj)
+    with bpy.context.temp_override(object=obj):
+        for frame in (1, 11):
+            bpy.context.scene.frame_set(frame)
+            bpy.ops.volume_override.key_tf_slot()
+        bpy.ops.volume_override.remove_tf_slot_key(frame=1.0)
+        assert [p.co[0] for p in tfn.blend_fcurve(obj).keyframe_points] == [11.0]
+        bpy.ops.volume_override.remove_tf_slot_key(frame=11.0)
+    assert tfn.blend_fcurve(obj) is None and not tfn.blend_is_animated(obj)

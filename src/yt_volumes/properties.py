@@ -276,6 +276,23 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         default=0.15, min=0.01, max=10.0,
     )
 
+    tf_active_slot: bpy.props.IntProperty(
+        name="Transfer Function Slot",
+        description="The Geometry Nodes transfer function slot shown for editing (0-based)",
+        default=0, min=0,
+    )
+    tf_slot: bpy.props.EnumProperty(
+        name="Slot",
+        description="The transfer function slot to edit; Blend chooses which ones render",
+        items=transfer_function_nodes.slot_enum_items,
+        get=lambda self: self.tf_active_slot,
+        set=lambda self, value: transfer_function_nodes.select_slot(self.id_data, value),
+    )
+    tf_show_stops: bpy.props.BoolProperty(
+        name="Edit Stops",
+        description="Show the Color Ramp's stops for editing by hand",
+        default=False,
+    )
     show_tf_plot: bpy.props.BoolProperty(
         name="Show Transfer Function",
         description="Plot the transfer function as yt does (ColorTransferFunction.show): color over the value range, with the opacity curve; redrawn when the look changes",
@@ -538,11 +555,25 @@ def _draw_gn_transfer_function(layout, obj):
         layout.operator("volume_override.add_transfer_function", icon="ADD")
         return
     # The starter group's nodes, editable here; anything else in Geometry Nodes.
+    tree = transfer_function_nodes.transfer_function_tree(obj)
+    slots = transfer_function_nodes.slot_nodes(tree) if tree is not None else []
+    if len(slots) > 1:
+        _draw_tf_blend(layout.box(), obj, slots)
+    row = layout.row(align=True)
+    row.label(text="Edit Slot" if len(slots) > 1 else "Slot")
+    row.prop(props, "tf_slot", text="")
+    if slots:
+        row.prop(transfer_function_nodes.active_slot(obj), "label", text="", placeholder="Name")
+    row.operator("volume_override.add_tf_slot", text="", icon="ADD")
+    row.operator("volume_override.remove_tf_slot", text="", icon="REMOVE")
     if ramp is not None:
-        row = layout.row()
-        row.label(text="Color")
-        row.operator("volume_override.load_tf_colormap", icon="COLOR")
-        layout.template_color_ramp(ramp, "color_ramp", expand=True)
+        row = layout.row(align=True)
+        row.label(text="Colormap")
+        name = transfer_function_nodes.colormap_name(obj) or "Custom"
+        row.operator("volume_override.load_tf_colormap", text=name, icon="COLOR")
+        row.prop(props, "tf_show_stops", text="", icon="IPO_LINEAR")
+        if props.tf_show_stops:
+            layout.template_color_ramp(ramp, "color_ramp", expand=True)
     if curve is not None:
         decades_node = transfer_function_nodes.find_node(obj, transfer_function_nodes.DECADES_NODE_NAME)
         decades = decades_node.outputs[0].default_value if decades_node is not None else 0.0
@@ -557,6 +588,46 @@ def _draw_gn_transfer_function(layout, obj):
         # The ramp and curve run 0-1 across the range; this places a zoomed-in view.
         layout.label(text=f"0 = {low:.2f}, 0.5 = {(low + high) / 2:.2f}, 1 = {high:.2f} (log10)")
         layout.label(text=f"0.01 along = {(high - low) / 100:.3g} decades")
+
+
+def _slot_name(slots, index):
+    return f"{index + 1}: {slots[index].label or 'Slot'}"
+
+
+def _draw_tf_blend(layout, obj, slots):
+    """The Blend slider, what it shows now, and its keyframes as a list."""
+    blend = transfer_function_nodes.blend_value(obj)
+    position = min(max(blend, 1.0), len(slots)) - 1.0
+    low = min(int(position), len(slots) - 2)
+    along = position - low
+    if along < 1e-3 or along > 1 - 1e-3:
+        showing = _slot_name(slots, round(position))
+    else:
+        showing = f"{_slot_name(slots, low)} → {_slot_name(slots, low + 1)}, {along:.0%}"
+    layout.label(text=f"Showing {showing}", icon="HIDE_OFF")
+    found = transfer_function_nodes._blend_input(obj)
+    if found is None:  # made before Blend was a modifier input; adding a slot updates it
+        layout.label(text="Add a slot to update this transfer function", icon="INFO")
+        return
+    layout.prop(found[0], "value", text="Blend", slider=True)
+    fcurve = transfer_function_nodes.blend_fcurve(obj)
+    if fcurve is not None and fcurve.keyframe_points:
+        col = layout.column(align=True)
+        for point in sorted(fcurve.keyframe_points, key=lambda p: p.co[0]):
+            frame, value = point.co
+            row = col.row(align=True)
+            index = int(round(min(max(value, 1.0), len(slots)))) - 1
+            label = _slot_name(slots, index) if abs(value - (index + 1)) < 1e-3 else f"blend {value:.2f}"
+            go = row.operator("volume_override.goto_tf_slot_key", text=f"Frame {frame:g}", icon="KEYFRAME_HLT", emboss=False)
+            go.frame = int(round(frame))
+            row.label(text=label)
+            row.operator("volume_override.remove_tf_slot_key", text="", icon="X", emboss=False).frame = frame
+        row = layout.row(align=True)
+        current = {p.interpolation for p in fcurve.keyframe_points}
+        for easing, label, _ in transfer_function_nodes.BLEND_EASINGS:
+            row.operator("volume_override.set_tf_blend_easing", text=label, depress=current == {easing}).easing = easing
+    frame = bpy.context.scene.frame_current
+    layout.operator("volume_override.key_tf_slot", text=f"Keyframe Edited Slot at Frame {frame}", icon="KEY_HLT")
 
 
 TF_PLOT_SCALE = 18.0  # icon size in UI units; the plot keeps its aspect inside it
