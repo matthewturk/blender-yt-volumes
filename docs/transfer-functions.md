@@ -19,11 +19,33 @@ panel, and any node setup (math, Scene Time, keyframes) that stores those
 attributes works.
 
 **Load Colormap** fills the Color Ramp from any matplotlib or cmyt colormap
-(32 stops; listed colormaps of up to 32 colors load as constant steps). The
+(stops placed where the colormap bends most; listed colormaps of up to 32
+colors load as constant steps). The ramp's stops are hidden unless you toggle
+**Edit Stops** next to the colormap's name. The
 opacity curve is linear by default; its scale button sets a number of decades
 D, making curve height y an opacity of 10^(D (y - 1)), so 4 decades spans
 1e-4 to 1 and a height of 0 stays transparent. Changing it moves the curve's
 points to keep their opacities; ones below 10^-D become transparent.
+
+To animate the look, keep several transfer functions as **slots**. **Edit
+Slot** picks the one the colormap and opacity controls below it change; **+**
+adds a copy of it and **−** removes it. Until Blend is keyframed, picking a
+slot also shows it. **Blend** (on the modifier, so it can be keyframed or
+driven) chooses what renders: 1 is the first slot, 2 the second, 1.5 halfway;
+going from 1 to 3 passes through 2. To animate, pick a slot, go to a frame and
+press **Keyframe Edited Slot**; repeat for the next slot at a later frame. The
+keys are listed above the slot picker (click one to go to its frame), with
+**Linear**, **Smooth** or **Cut** for how Blend moves between them, and a line
+saying which slots are showing now.
+
+Opacity blends linearly when the slots being blended are linear, and in log
+space (over the largest of their decades) when any is log, so a structure fades
+in by decades instead of all at once. Color is weighted by opacity, so a slot
+that is transparent at a value doesn't tint the other there. Each slot is a
+nested node group with its own Color Ramp, opacity curve and decades; a
+transfer function made before slots existed becomes the first slot when you
+add one. Opacity curve points can't be keyframed in Blender, which is what
+slots work around.
 
 The transfer function's x runs linearly in log10 of the value. With **Fit to
 Data** (on by default) it spans the data between the **Low %** and **High %**
