@@ -201,3 +201,50 @@ def test_the_viewport_samples_at_most_its_own_samples_per_cell(scene, monkeypatc
         assert volume.volume_override.samples_per_cell == own  # F12's own setting is untouched
     finally:
         viewport_preview.unregister()
+
+
+def _view3d_space():
+    return next(a.spaces.active for s in bpy.data.screens for a in s.areas if a.type == "VIEW_3D")
+
+
+def test_a_viewport_shows_only_volumes_visible_in_it(scene):
+    space, view_layer = _view3d_space(), bpy.context.view_layer
+    shown = _flag(scene, "Shown", (0, 0, 0))
+    eye_off = _flag(scene, "EyeOff", (1, 0, 0))
+    eye_off.hide_set(True)
+    disabled = _flag(scene, "Disabled", (2, 0, 0))
+    disabled.hide_viewport = True
+    hidden_collection = bpy.data.collections.new("Hidden")
+    scene.collection.children.link(hidden_collection)
+    in_hidden = _flag(scene, "InHidden", (3, 0, 0))
+    scene.collection.objects.unlink(in_hidden)
+    hidden_collection.objects.link(in_hidden)
+    view_layer.layer_collection.children["Hidden"].hide_viewport = True
+    space.shading.type = "SOLID"
+
+    assert viewport_preview.viewport_volumes(scene, space, view_layer) == [shown]
+    space.shading.type = "WIREFRAME"
+    assert viewport_preview.viewport_volumes(scene, space, view_layer) == []
+
+
+def test_render_view_draws_only_the_volumes_given(scene, monkeypatch):
+    camera = _camera(scene)
+    _flag(scene, "A", (0.6, 1.0, 0.4))
+    b = _flag(scene, "B", (0.6, 2.0, 0.4))
+    rendered = []
+
+    def renderer(request):
+        rendered.append(request.volume.dataset.dataset_id)
+        h, w = request.depth.data.shape
+        return external_render.RenderResult(rgba=np.zeros((h, w, 4), "f4"), alpha_mode="PREMULTIPLIED", color_space="LINEAR")
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", renderer)
+    monkeypatch.setattr(viewport_preview.units, "record", lambda *a: None)
+    viewport_preview.register()
+    try:
+        params = operators.build_camera_params(scene, camera)
+        viewport_preview.render_view(scene, dataclasses.replace(params, resolution_x=8, resolution_y=6), volumes=[b])
+    finally:
+        viewport_preview.unregister()
+
+    assert rendered == [b.volume_override.dataset_uuid]

@@ -689,6 +689,48 @@ def test_render_current_frame_never_touches_hide_render_on_the_flagged_object(ad
     assert box.hide_render is False
 
 
+def test_only_volumes_enabled_for_renders_are_rendered(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
+
+    shown = _flagged_cube()
+    camera_off = _flagged_cube()
+    camera_off.hide_render = True
+    hidden = bpy.data.collections.new("NotRendered")
+    scene.collection.children.link(hidden)
+    hidden.hide_render = True
+    in_hidden = _flagged_cube()
+    for collection in in_hidden.users_collection:
+        collection.objects.unlink(in_hidden)
+    hidden.objects.link(in_hidden)
+    excluded = bpy.data.collections.new("Excluded")
+    scene.collection.children.link(excluded)
+    bpy.context.view_layer.layer_collection.children["Excluded"].exclude = True
+    in_excluded = _flagged_cube()
+    for collection in in_excluded.users_collection:
+        collection.objects.unlink(in_excluded)
+    excluded.objects.link(in_excluded)
+    eye_off = _flagged_cube()
+    eye_off.hide_set(True)  # viewport only: still renders
+
+    rendered = []
+
+    def fake_renderer(request):
+        rendered.append(next(o.name for o in scene.objects if getattr(o, "volume_override", None)
+                             and o.volume_override.dataset_uuid == request.volume.dataset.dataset_id))
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    operators.render_current_frame(bpy.context)
+
+    assert sorted(rendered) == sorted([shown.name, eye_off.name])
+    assert camera_off.hide_render  # left as the user set it
+
+
 # --- render_session (batch-scoped restore) --------------------------------
 # Restoring/re-forcing scene settings around every frame invalidated Cycles'
 # cache; render_session restores once at the end. Bare calls still restore.

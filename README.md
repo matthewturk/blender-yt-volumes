@@ -76,6 +76,10 @@ times the viewport's size and at most **Viewport Samples per Cell** (default
 Before either loads data, a dialog names the dataset and asks to confirm; a
 file saved with Show in Viewport on doesn't load until you turn it on again.
 Batch renders (`render_volume`, `render_series`) never ask.
+A viewport leaves the volume out wherever Blender would hide the object there
+(its eye, Disable in Viewports, a hidden collection, local view) and in
+Wireframe shading. Renders leave out volumes with Disable in Renders (the
+camera icon) on, or in a collection that is excluded or disabled in renders.
 Scene geometry occludes the volume as in F12: the viewport's depth buffer
 clips yt_idv's rays. Solid and Material Preview shading draw geometry into
 it; a Rendered viewport may not. Camera shift and panning in camera view

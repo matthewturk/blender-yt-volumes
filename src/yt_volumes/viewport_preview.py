@@ -1,7 +1,9 @@
 """Flagged volumes drawn over the 3D viewport, rendered with yt_idv from each
 viewport's own view.
 
-Volumes set to Show in Viewport (Volume Override panel) are drawn. A
+Volumes set to Show in Viewport (Volume Override panel) are drawn in each
+viewport where the object is visible (its eye, its collections, local view),
+except in Wireframe shading. A
 POST_VIEW handler notices when a viewport's view or the scene changed and
 reads its depth buffer; a timer re-renders the volumes once things settle,
 clipped against that depth as F12 clips against the Z pass; a second
@@ -85,10 +87,20 @@ def shown_volumes(scene):
     ]
 
 
-def render_view(scene, camera, depth=None):
-    """`(height, width, 4)` premultiplied RGBA of the volumes set to Show in
-    Viewport, seen by `camera`, bottom row first, composited far to near; `depth`
-    (planar, as `planar_depth`, any size) clips them, else nothing does.
+def viewport_volumes(scene, space, view_layer):
+    """`shown_volumes` that 3D viewport `space` displays: visible there, and
+    not in Wireframe shading.
+    """
+    if space.shading.type == "WIREFRAME":
+        return []
+    return [o for o in shown_volumes(scene) if o.visible_get(view_layer=view_layer, viewport=space)]
+
+
+def render_view(scene, camera, depth=None, volumes=None):
+    """`(height, width, 4)` premultiplied RGBA of `volumes` (default: those set
+    to Show in Viewport), seen by `camera`, bottom row first, composited far to
+    near; `depth` (planar, as `planar_depth`, any size) clips them, else
+    nothing does.
     """
     width, height = camera.resolution_x, camera.resolution_y
     if depth is None:
@@ -104,7 +116,7 @@ def render_view(scene, camera, depth=None):
     )
     frame = operators.build_frame_params(scene)
     position = np.asarray(camera.matrix_world)[:3, 3]
-    volumes = shown_volumes(scene)
+    volumes = shown_volumes(scene) if volumes is None else list(volumes)
     volumes.sort(key=lambda o: -np.linalg.norm(np.asarray(o.matrix_world.translation) - position))
     image = np.zeros((height, width, 4), dtype=np.float32)
     for obj in volumes:
@@ -122,10 +134,10 @@ def render_view(scene, camera, depth=None):
     return image
 
 
-def _signature(region, rv3d, scale, samples):
+def _signature(region, rv3d, scale, samples, volumes):
     return (
         tuple(map(tuple, rv3d.view_matrix)), tuple(map(tuple, rv3d.window_matrix)),
-        region.width, region.height, scale, samples, _generation[0],
+        region.width, region.height, scale, samples, _generation[0], volumes,
     )
 
 
@@ -136,10 +148,14 @@ def _capture():
     if rv3d is None or not shown_volumes(scene):
         return
     state = _regions.setdefault(region.as_pointer(), {"signature": None, "texture": None, "shown": None, "error": None})
-    signature = _signature(region, rv3d, scene.yt_volumes_preview_scale, scene.yt_volumes_preview_samples)
+    volumes = tuple(o.name for o in viewport_volumes(scene, context.space_data, context.view_layer))
+    signature = _signature(region, rv3d, scene.yt_volumes_preview_scale, scene.yt_volumes_preview_samples, volumes)
     if signature == state["signature"]:
         return
-    state["signature"] = signature
+    state["signature"], state["volumes"] = signature, volumes
+    if not volumes:  # all hidden here: drop the image now, nothing to render
+        state["texture"], state["error"], state["shown"] = None, None, signature
+        return
     state["view"] = (
         [list(r) for r in rv3d.view_matrix], [list(r) for r in rv3d.window_matrix],
         region.width, region.height, rv3d.is_perspective, context.space_data.clip_start, context.space_data.clip_end,
@@ -239,7 +255,8 @@ def _render_pending():
         scale = scene.yt_volumes_preview_scale
         size = (max(1, round(width * scale)), max(1, round(height * scale)))
         try:
-            image = render_view(scene, camera_params(view, window, *size, clip_start, clip_end), state.get("depth"))
+            volumes = [scene.objects[name] for name in state["volumes"] if name in scene.objects]
+            image = render_view(scene, camera_params(view, window, *size, clip_start, clip_end), state.get("depth"), volumes)
         except Exception as exc:  # shown in the viewport; F12 raises the same error with its details
             state["texture"], state["error"] = None, str(exc)[:200]
             continue
