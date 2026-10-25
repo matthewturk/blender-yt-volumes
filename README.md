@@ -315,6 +315,27 @@ and the node group keeps float64 precision near the zoom target:
 A "max" zoom target is placed once a render or the viewport preview has found
 it; spherical volumes aren't supported yet.
 
+## Colorbars
+**Add Colorbar** (in a Geometry Nodes transfer function's panel) makes the
+scene's **annotation scene** if it has none, and adds a colorbar of that
+volume's transfer function to it. The annotation scene is flat: an
+orthographic camera puts x from 0 to 1 across the frame and y from 0 up to
+height/width, origin at the bottom left, so you place things by moving them
+on z = 0. Open it in another window to lay it out. Renders through the
+pipeline (F12, Ctrl+F12, `render_volume`) render it with Cycles at the main
+scene's frame and resolution and lay it over the finished frame; it
+doesn't appear in the main scene's viewport.
+
+A colorbar is a mesh object whose **yt Colorbar** modifier reads the volume
+live: the bar shows the transfer function as rendered on that frame, slots
+mid-blend included, with ticks and labels in log10 of the field across the
+range the last render fitted, and its opacity drawn above. The modifier's
+inputs set the bar's width and height, the tick spacing (in decades) and
+decimals, label size, title, text color, and whether and how (linearly or
+over a number of decades) to draw the opacity. The bar starts from the
+object's origin, so moving or scaling the object places it. Ticks appear
+after the first render has fitted the range.
+
 ## Examples
 
 Each script's docstring has the commands.

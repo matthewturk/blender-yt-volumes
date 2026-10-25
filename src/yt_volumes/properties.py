@@ -584,6 +584,10 @@ def _draw_gn_transfer_function(layout, obj):
         layout.template_curve_mapping(curve, "mapping")
         if decades > 0:
             layout.label(text=f"Height 0.5 = {10 ** (-decades / 2):.2g}, near 0 = {10 ** -decades:.2g}, 0 = off")
+    row = layout.row(align=True)
+    row.operator("volume_override.add_colorbar", icon="COLOR")
+    if getattr(bpy.context.scene, "yt_annotation_scene", None) is not None:
+        row.prop(bpy.context.scene, "yt_annotation_scene", text="")
     if low is not None:
         # The ramp and curve run 0-1 across the range; this places a zoomed-in view.
         layout.label(text=f"0 = {low:.2f}, 0.5 = {(low + high) / 2:.2f}, 1 = {high:.2f} (log10)")

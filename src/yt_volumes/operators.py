@@ -24,7 +24,7 @@ import time
 import bpy
 import mathutils
 
-from . import change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
+from . import annotations, change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -857,11 +857,16 @@ def _render_current_frame(context):
         # Same engine as pass 1: rendering with any other engine in between
         # invalidates Cycles' persistent-data cache. Nothing is path-traced,
         # since the graph has no Render Layers node.
+        overlay = annotations.annotation_scene(scene)
+        if overlay is not None and not any(o.type != "CAMERA" for o in overlay.objects):
+            overlay = None
+        if overlay is not None:
+            annotations.sync(scene, overlay)
         with step("pass2 build/update compositor graph"):
             compositor_build.build_or_update_views_graph(scene, {
                 name: (_with_suffix(beauty_path, suffix), view_layers[name])
                 for name, suffix in (view or (None, "") for view in views)
-            })
+            }, overlay)
         # The engine renders the scene even with no Render Layers node, then discards it.
         overrides = _pass2_render_overrides(scene)
         saved = [(owner, name, getattr(owner, name)) for owner, name, _ in overrides]
