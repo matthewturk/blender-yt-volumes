@@ -23,6 +23,7 @@ from . import grid_structure, points, shot_space
 
 GRID_MAP_NAME = "DeepZoomGridMap"
 _grid_cache = {}  # absolute path -> grid_structure dict
+_grid_map_shown = {}  # grid map object name -> what its mesh was last built from
 
 
 def _settings(scene):
@@ -462,11 +463,19 @@ def update_grid_map(scene):
     anchor = None if shot is None else shot_space.parse_anchor(shot.anchor)
     if not (settings.enabled and settings.show_grid_map and grids is not None) or anchor is None or isinstance(anchor, str):
         if obj is not None:
-            obj.hide_viewport = obj.hide_render = True
+            points.set_hidden(obj, True)
         return
     obj = _grid_map_object(scene)
-    obj.hide_viewport = obj.hide_render = False
-    obj.modifiers["Lines"].thickness = settings.map_thickness
+    points.set_hidden(obj, False)
+    if obj.modifiers["Lines"].thickness != settings.map_thickness:
+        obj.modifiers["Lines"].thickness = settings.map_thickness
+    built_from = (
+        tuple(anchor), settings.zoom, settings.world_scale, settings.map_min_size, settings.map_max_size,
+        settings.map_max_distance, settings.map_max_count, id(grids),
+    )
+    if _grid_map_shown.get(obj.name) == built_from and len(obj.data.vertices):
+        return
+    _grid_map_shown[obj.name] = built_from
     left, right, index = shot_space.visible_boxes(
         grids["left"], grids["right"], anchor, settings.zoom, settings.world_scale,
         min_size=settings.map_min_size, max_size=settings.map_max_size,

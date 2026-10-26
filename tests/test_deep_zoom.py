@@ -432,3 +432,44 @@ def test_points_files_give_positions_and_extra_columns(tmp_path, text):
     np.testing.assert_array_equal(unitary, [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
     assert list(attributes) == ["mass" if text.startswith("x") else "column_3"]
     np.testing.assert_array_equal(next(iter(attributes.values())), [5.0, 7.0])
+
+
+def _ids_updated_by(action):
+    """Names of the IDs the depsgraph re-evaluates after `action()`."""
+    bpy.context.view_layer.update()
+    updated = []
+
+    def record(scene, depsgraph):
+        updated.extend(update.id.name for update in depsgraph.updates)
+
+    bpy.app.handlers.depsgraph_update_post.append(record)
+    try:
+        action()
+        bpy.context.view_layer.update()
+    finally:
+        bpy.app.handlers.depsgraph_update_post.remove(record)
+    return updated
+
+
+@pytest.mark.parametrize("with_grids", [True, False])
+def test_an_unchanged_frame_change_leaves_the_grid_map_and_points_alone(scene, tmp_path, with_grids):
+    # Rewriting them from the frame-change handler during a window scene switch crashed Blender 5.4.
+    if with_grids:
+        sizes = 10.0 ** -np.arange(15)
+        path = tmp_path / "grids.npz"
+        np.savez(path, left=ANCHOR - sizes[:, None] / 2, right=ANCHOR + sizes[:, None] / 2, level=np.arange(15))
+        scene.deep_zoom.grid_file = str(path)
+    _anchored(scene)
+    scene.deep_zoom.zoom = 8.0
+    if not with_grids:
+        authoring._grid_map_object(scene)  # a grid map left hidden, as in a file without grid data
+        authoring.update_grid_map(scene)
+    grid_map = bpy.data.objects[authoring.GRID_MAP_NAME]
+    obj = points.create_points(scene, ANCHOR + np.array([[1e-9, 0.0, 0.0]]))
+    assert grid_map.hide_viewport is not with_grids
+
+    updated = _ids_updated_by(lambda: authoring._on_frame_change(scene))
+
+    assert grid_map.name not in updated and obj.name not in updated
+    if with_grids:  # and a real change is still drawn
+        assert grid_map.name in _ids_updated_by(lambda: setattr(scene.deep_zoom, "zoom", 8.5))

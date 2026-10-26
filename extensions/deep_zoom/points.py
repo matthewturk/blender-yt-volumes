@@ -102,15 +102,30 @@ def read_points_file(path):
     return data[:, :3], {h: data[:, i] for i, h in enumerate(headers) if i >= 3}
 
 
+def set_hidden(obj, hidden):
+    """Hide or show `obj` in viewports and renders, writing only on a change."""
+    # Even a same-value write rebuilds depsgraph relations; from a frame-change
+    # handler during a window scene switch, that crashes Blender 5.4.
+    if obj.hide_viewport != hidden or obj.hide_render != hidden:
+        obj.hide_viewport = obj.hide_render = hidden
+
+
 def update_object(obj, scene):
     positions = world_positions(obj, scene)
-    obj.hide_viewport = obj.hide_render = positions is None
+    set_hidden(obj, positions is None)
     if positions is None:
         return
     mesh = obj.data
-    mesh.vertices.foreach_set("co", positions.astype(np.float32).ravel())
-    scale = shot_space.world_per_unitary(scene.deep_zoom.zoom, scene.deep_zoom.world_scale)
-    mesh.attributes[SCALE_ATTRIBUTE].data.foreach_set("value", np.full(len(mesh.vertices), scale, dtype=np.float32))
+    positions = positions.astype(np.float32).ravel()
+    scale = np.full(len(mesh.vertices), shot_space.world_per_unitary(scene.deep_zoom.zoom, scene.deep_zoom.world_scale), dtype=np.float32)
+    current_positions = np.empty(len(positions), dtype=np.float32)
+    mesh.vertices.foreach_get("co", current_positions)
+    current_scale = np.empty(len(scale), dtype=np.float32)
+    mesh.attributes[SCALE_ATTRIBUTE].data.foreach_get("value", current_scale)
+    if np.array_equal(current_positions, positions) and np.array_equal(current_scale, scale):
+        return
+    mesh.vertices.foreach_set("co", positions)
+    mesh.attributes[SCALE_ATTRIBUTE].data.foreach_set("value", scale)
     mesh.update()
 
 
