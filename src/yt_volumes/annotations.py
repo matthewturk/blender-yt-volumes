@@ -1,5 +1,6 @@
 """The annotation scene: a flat scene laid over the finished frame, holding
-colorbars that read volumes' transfer functions through Geometry Nodes.
+colorbars that read volumes' transfer functions, scale bars, and anything
+built with the "yt Annotation View" group, all through Geometry Nodes.
 
 Its orthographic camera puts x from 0 to 1 across the frame and y from 0 to
 height/width up it, origin at the bottom left; build annotations on z = 0.
@@ -9,10 +10,14 @@ scene's frame and resolution, and lays it over the volumes.
 
 import bpy
 
+from . import units
 from .node_layout import arrange
 
 SCENE_PROPERTY = "yt_annotation_scene"
 COLORBAR_GROUP = "yt Colorbar"
+FOV_GROUP = "yt Field of View"
+VIEW_GROUP = "yt Annotation View"
+TEMPLATE_GROUP = "yt Annotation"
 MATERIAL_NAME = "yt Annotation"
 COLOR_ATTRIBUTE = "yt_annotation_color"  # scene-linear; the material emits it
 TICK_ATTRIBUTE = "yt_tick_value"
@@ -49,6 +54,7 @@ def sync(scene, annotations):
 
 def add_annotation_scene(scene):
     """`scene`'s annotation scene, made if it has none."""
+    view_node_group()  # in Add > Group for building annotations
     existing = annotation_scene(scene)
     if existing is not None:
         return existing
@@ -105,7 +111,7 @@ class _Builder:
             socket = node.inputs[key]
             if isinstance(source, bpy.types.NodeSocket):
                 self.link(source, socket)
-            else:
+            elif source is not None:
                 socket.default_value = source
         return node
 
@@ -163,6 +169,18 @@ _INPUTS = (
 )
 
 
+def _new_group(name, inputs):
+    tree = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    for socket_name, socket_type, default, description in inputs:
+        item = tree.interface.new_socket(socket_name, in_out="INPUT", socket_type=socket_type)
+        item.description = description
+        if default is not None:
+            item.default_value = default
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    return tree
+
+
 def colorbar_node_group():
     """The "yt Colorbar" group, made if the file has none: a bar of the
     volume's transfer function colors from the object's origin to +x, ticks
@@ -171,14 +189,7 @@ def colorbar_node_group():
     tree = bpy.data.node_groups.get(COLORBAR_GROUP)
     if tree is not None:
         return tree
-    tree = bpy.data.node_groups.new(COLORBAR_GROUP, "GeometryNodeTree")
-    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    for name, socket_type, default, description in _INPUTS:
-        item = tree.interface.new_socket(name, in_out="INPUT", socket_type=socket_type)
-        item.description = description
-        if default is not None:
-            item.default_value = default
-    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    tree = _new_group(COLORBAR_GROUP, _INPUTS)
     b = _Builder(tree)
     inputs = b.node("NodeGroupInput").outputs
     width, height, size = inputs["Width"], inputs["Height"], inputs["Label Size"]
@@ -260,6 +271,187 @@ def colorbar_node_group():
     return tree
 
 
+_VIEW_INPUTS = (
+    ("Units Object", "NodeSocketObject", None, "The volume's units object (Units for Geometry Nodes)"),
+    ("Unit", "NodeSocketString", "unitary", "A unit listed in the volume's Data Units, or unitary"),
+    ("Use Point", "NodeSocketBool", False, "Ask about Point instead of the volume's zoom target or middle"),
+    ("Point", "NodeSocketVector", (0.0, 0.0, 0.0), "A position in the main scene, e.g. an Object Info's Location"),
+)
+_VIEW_OUTPUTS = (
+    ("Screen Position", "NodeSocketVector", "Where the point is on the frame, in the space of the object these nodes run on"),
+    ("Frame per Unit", "NodeSocketFloat", "On-frame length of one Unit at the point's depth; multiply a length in Unit by it"),
+    ("Frame Width", "NodeSocketFloat", "The frame's width in Unit at the point's depth"),
+    ("Depth", "NodeSocketFloat", "The point's distance along the camera's view axis, in scene units"),
+    ("Scene per Unit", "NodeSocketFloat", "Scene units per Unit"),
+    ("In Front", "NodeSocketBool", "Whether the point is in front of the camera"),
+)
+
+
+def _vector(b, operation, *values):
+    node = b.node("ShaderNodeVectorMath", dict(enumerate(values)), operation=operation)
+    return node.outputs["Value" if operation == "DOT_PRODUCT" else "Vector"]
+
+
+def _joined(b, *strings):
+    join = b.node("GeometryNodeStringJoin")
+    for string in reversed(strings):  # a multi-input lists its newest link first
+        if isinstance(string, str):
+            string = b.node("FunctionNodeInputString", string=string).outputs[0]
+        b.link(string, join.inputs["Strings"])
+    return join.outputs[0]
+
+
+def view_node_group():
+    """The "yt Annotation View" group, made if the file has none: where a
+    main-scene point lands on the frame, and how long one Unit is there.
+    """
+    tree = bpy.data.node_groups.get(VIEW_GROUP)
+    if tree is not None:
+        return tree
+    tree = bpy.data.node_groups.new(VIEW_GROUP, "GeometryNodeTree")
+    tree.description = "Where a main-scene point lands on the annotation frame, and how long one Unit is there"
+    for name, socket_type, default, description in _VIEW_INPUTS:
+        item = tree.interface.new_socket(name, in_out="INPUT", socket_type=socket_type)
+        item.description = description
+        if default is not None:
+            item.default_value = default
+    for name, socket_type, description in _VIEW_OUTPUTS:
+        tree.interface.new_socket(name, in_out="OUTPUT", socket_type=socket_type).description = description
+    b = _Builder(tree)
+    inputs = b.node("NodeGroupInput").outputs
+    outputs = b.node("NodeGroupOutput").inputs
+
+    geometry = b.node("GeometryNodeObjectInfo", {"Object": inputs["Units Object"]}, transform_space="ORIGINAL").outputs["Geometry"]
+
+    def attribute(name, data_type="FLOAT"):
+        return b.sample(geometry, name, data_type, 0)
+
+    camera = attribute(units.CAMERA_TO_WORLD, "FLOAT4X4")
+
+    def axis(direction):
+        node = b.node("FunctionNodeTransformDirection", {"Direction": direction, "Transform": camera})
+        return _vector(b, "NORMALIZE", node.outputs[0])
+
+    point = b.node("GeometryNodeSwitch", {
+        "Switch": inputs["Use Point"], "False": attribute(units.VIEW_CENTER, "FLOAT_VECTOR"), "True": inputs["Point"],
+    }, input_type="VECTOR").outputs[0]
+    eye = b.node("FunctionNodeTransformPoint", {"Vector": (0.0, 0.0, 0.0), "Transform": camera}).outputs[0]
+    relative = _vector(b, "SUBTRACT", point, eye)
+    depth = _vector(b, "DOT_PRODUCT", relative, axis((0.0, 0.0, -1.0)))
+    span = b.math("MULTIPLY_ADD", depth, attribute(units.WIDTH_PER_DEPTH), attribute(units.WIDTH_ORTHO))  # frame width, scene units
+    per_unit = attribute(_joined(b, "scene_per_", inputs["Unit"]))
+
+    # Frame coordinates: x 0 to 1 across, y 0 to frame_height up; shifting the camera moves the frame, not the point.
+    shift = b.node("ShaderNodeSeparateXYZ", {"Vector": attribute(units.FRAME_SHIFT, "FLOAT_VECTOR")}).outputs
+    x = b.math("SUBTRACT", b.math("ADD", b.math("DIVIDE", _vector(b, "DOT_PRODUCT", relative, axis((1.0, 0.0, 0.0))), span), 0.5), shift["X"])
+    y = b.math("SUBTRACT", b.math("MULTIPLY_ADD", attribute(units.FRAME_HEIGHT), 0.5, b.math("DIVIDE", _vector(b, "DOT_PRODUCT", relative, axis((0.0, 1.0, 0.0))), span)),
+               shift["Y"])
+    self_info = b.node("GeometryNodeObjectInfo", {"Object": b.node("GeometryNodeSelfObject").outputs[0]})
+    to_local = b.node("FunctionNodeInvertMatrix", {"Matrix": self_info.outputs["Transform"]}).outputs["Matrix"]
+    screen = b.node("FunctionNodeTransformPoint", {"Vector": b.xyz(x, y), "Transform": to_local}).outputs[0]
+
+    b.link(screen, outputs["Screen Position"])
+    b.link(b.math("DIVIDE", per_unit, span), outputs["Frame per Unit"])
+    b.link(b.math("DIVIDE", span, per_unit), outputs["Frame Width"])
+    b.link(depth, outputs["Depth"])
+    b.link(per_unit, outputs["Scene per Unit"])
+    b.link(b.math("GREATER_THAN", depth, 0.0), outputs["In Front"])
+    arrange(tree)
+    return tree
+
+
+_FOV_INPUTS = (
+    ("Units Object", "NodeSocketObject", None, "The volume's units object (Units for Geometry Nodes)"),
+    ("Unit", "NodeSocketString", "unitary", "A unit listed in the volume's Data Units, or unitary"),
+    ("Length", "NodeSocketFloat", 0.0, "Length in Unit, which can be keyframed; 0 picks a round length up to Auto Max"),
+    ("Auto Max", "NodeSocketFloat", 0.2, "With Length 0: the largest 1, 2 or 5 x 10^n at most this many frame widths"),
+    ("Line Width", "NodeSocketFloat", 0.004, "Thickness of the bar, in frame widths"),
+    ("Label Size", "NodeSocketFloat", 0.02, "Height of the label, in frame widths"),
+    ("Text Color", "NodeSocketColor", (1.0, 1.0, 1.0, 1.0), "Color of the bar and label"),
+)
+
+
+def fov_node_group():
+    """The "yt Field of View" group, made if the file has none: a labeled
+    scale bar from the object's origin to +x, sized at the volume's zoom
+    target or middle; also an example of "yt Annotation View".
+    """
+    tree = bpy.data.node_groups.get(FOV_GROUP)
+    if tree is not None:
+        return tree
+    tree = _new_group(FOV_GROUP, _FOV_INPUTS)
+    b = _Builder(tree)
+    inputs = b.node("NodeGroupInput").outputs
+    line_width, size, unit = inputs["Line Width"], inputs["Label Size"], inputs["Unit"]
+    view = b.node("GeometryNodeGroup", {}, node_tree=view_node_group())
+    b.link(inputs["Units Object"], view.inputs["Units Object"])
+    b.link(unit, view.inputs["Unit"])
+    view = view.outputs
+
+    def log10(value):
+        return b.math("FLOOR", b.math("LOGARITHM", value, 10.0))
+
+    # Length, or the largest 1, 2 or 5 x 10^n at most Auto Max of the frame.
+    longest = b.math("MULTIPLY", view["Frame Width"], inputs["Auto Max"])
+    exponent = log10(longest)
+    power = b.math("POWER", 10.0, exponent)
+    mantissa = b.math("DIVIDE", longest, power)
+    step = b.math("ADD", b.math("ADD", 1.0, b.math("GREATER_THAN", mantissa, 1.9999)), b.math("MULTIPLY", b.math("GREATER_THAN", mantissa, 4.9999), 3.0))
+    auto = b.math("LESS_THAN", inputs["Length"], 1e-30)
+    value = b.node("GeometryNodeSwitch", {"Switch": auto, "False": inputs["Length"], "True": b.math("MULTIPLY", step, power)}, input_type="FLOAT").outputs[0]
+    length = b.math("MULTIPLY", value, view["Frame per Unit"])
+
+    grid = b.node("GeometryNodeMeshGrid", {"Size X": length, "Size Y": line_width, "Vertices X": 2, "Vertices Y": 2})
+    bar = b.translate(grid.outputs["Mesh"], b.xyz(b.math("MULTIPLY", length, 0.5), b.math("MULTIPLY", line_width, 0.5)))
+
+    # A round length exactly, a keyframed one to 2 figures.
+    decimals = b.node("GeometryNodeSwitch", {
+        "Switch": auto, "False": b.math("MAXIMUM", b.math("SUBTRACT", 1.0, log10(value)), 0.0), "True": b.math("MAXIMUM", b.math("MULTIPLY", exponent, -1.0), 0.0),
+    }, input_type="FLOAT").outputs[0]
+    number = b.node("FunctionNodeValueToString", {"Value": value, "Decimals": decimals}).outputs[0]
+    label = b.text(_joined(b, number, " ", unit), size, b.xyz(b.math("MULTIPLY", length, 0.5), b.math("MULTIPLY", size, -0.3)))
+
+    # Nothing when the depth or units are unknown.
+    valid = b.math("GREATER_THAN", view["Frame per Unit"], 0.0)
+    shown = b.node("GeometryNodeSwitch", {"Switch": valid, "True": b.join(bar, label)}, input_type="GEOMETRY").outputs[0]
+    shown = b.store(shown, COLOR_ATTRIBUTE, "FLOAT_COLOR", inputs["Text Color"])
+    material = b.node("GeometryNodeSetMaterial", {"Geometry": shown})
+    material.inputs["Material"].default_value = annotation_material()
+    b.link(material.outputs["Geometry"], b.node("NodeGroupOutput").inputs["Geometry"])
+    arrange(tree)
+    return tree
+
+
+_TEMPLATE_INPUTS = (
+    ("Units Object", "NodeSocketObject", None, "The volume's units object (Units for Geometry Nodes)"),
+    ("Unit", "NodeSocketString", "unitary", "A unit listed in the volume's Data Units, or unitary"),
+    ("Size", "NodeSocketFloat", 1.0, "Diameter of the dot, in Unit"),
+    ("Color", "NodeSocketColor", (1.0, 1.0, 1.0, 1.0), "Scene-linear color"),
+)
+
+
+def annotation_template():
+    """A new Geometry Nodes tree to build an annotation from: a dot Size
+    across at the volume's zoom target or middle, through "yt Annotation View".
+    """
+    tree = _new_group(TEMPLATE_GROUP, _TEMPLATE_INPUTS)
+    b = _Builder(tree)
+    inputs = b.node("NodeGroupInput").outputs
+    view = b.node("GeometryNodeGroup", {}, node_tree=view_node_group())
+    b.link(inputs["Units Object"], view.inputs["Units Object"])
+    b.link(inputs["Unit"], view.inputs["Unit"])
+    radius = b.math("MULTIPLY", b.math("MULTIPLY", inputs["Size"], view.outputs["Frame per Unit"]), 0.5)
+    dot = b.node("GeometryNodeMeshCircle", {"Vertices": 48, "Radius": radius}, fill_type="NGON").outputs["Mesh"]
+    dot = b.translate(dot, view.outputs["Screen Position"])
+    shown = b.node("GeometryNodeSwitch", {"Switch": view.outputs["In Front"], "True": dot}, input_type="GEOMETRY").outputs[0]
+    shown = b.store(shown, COLOR_ATTRIBUTE, "FLOAT_COLOR", inputs["Color"])
+    material = b.node("GeometryNodeSetMaterial", {"Geometry": shown})
+    material.inputs["Material"].default_value = annotation_material()
+    b.link(material.outputs["Geometry"], b.node("NodeGroupOutput").inputs["Geometry"])
+    arrange(tree)
+    return tree
+
+
 def _set_input(modifier, name, value):
     identifier = modifier.node_group.interface.items_tree[name].identifier
     getattr(modifier.properties.inputs, identifier).value = value
@@ -277,10 +469,14 @@ def default_title(volume):
     return f"log₁₀ {field}{units}"
 
 
-def colorbars(annotations):
+def _annotations_with(annotations, group_name):
     return [o for o in annotations.objects if any(
-        m.type == "NODES" and m.node_group is not None and m.node_group.name.startswith(COLORBAR_GROUP) for m in o.modifiers
+        m.type == "NODES" and m.node_group is not None and m.node_group.name.startswith(group_name) for m in o.modifiers
     )]
+
+
+def colorbars(annotations):
+    return _annotations_with(annotations, COLORBAR_GROUP)
 
 
 def add_colorbar(scene, volume):
@@ -296,6 +492,48 @@ def add_colorbar(scene, volume):
     modifier.node_group = colorbar_node_group()
     _set_input(modifier, "Volume", volume)
     _set_input(modifier, "Title", default_title(volume))
+    return obj
+
+
+def default_unit(volume):
+    """The first of `volume`'s Data Units its units object knows, else unitary."""
+    group = volume.get(units.KEY, {})
+    return next((u for u in units.data_units(volume) if group.get(f"scene_per_{u}")), "unitary")
+
+
+def add_field_of_view(scene, volume):
+    """A field-of-view scale bar for `volume` in `scene`'s annotation scene
+    (made if needed), at the bottom right. `volume` needs a units object.
+    """
+    units_object = volume.volume_override.units_object
+    if units_object is None:
+        raise ValueError(f"{volume.name!r} has no units object; add one with Units for Geometry Nodes")
+    annotations = add_annotation_scene(scene)
+    mesh = bpy.data.meshes.new(f"{volume.name} Field of View")
+    obj = bpy.data.objects.new(mesh.name, mesh)
+    obj.location = (0.7, 0.1 + 0.12 * len(_annotations_with(annotations, FOV_GROUP)), 0.0)
+    annotations.collection.objects.link(obj)
+    modifier = obj.modifiers.new(FOV_GROUP, "NODES")
+    modifier.node_group = fov_node_group()
+    _set_input(modifier, "Units Object", units_object)
+    _set_input(modifier, "Unit", default_unit(volume))
+    return obj
+
+
+def add_annotation(scene, volume):
+    """An annotation object in `scene`'s annotation scene (made if needed),
+    with its own copy of the starter tree to edit. `volume` needs a units object.
+    """
+    units_object = volume.volume_override.units_object
+    if units_object is None:
+        raise ValueError(f"{volume.name!r} has no units object; add one with Units for Geometry Nodes")
+    annotations = add_annotation_scene(scene)
+    obj = bpy.data.objects.new(f"{volume.name} Annotation", bpy.data.meshes.new(f"{volume.name} Annotation"))
+    annotations.collection.objects.link(obj)
+    modifier = obj.modifiers.new(TEMPLATE_GROUP, "NODES")
+    modifier.node_group = annotation_template()
+    _set_input(modifier, "Units Object", units_object)
+    _set_input(modifier, "Unit", default_unit(volume))
     return obj
 
 
@@ -317,16 +555,62 @@ class VOLUMEOVERRIDE_OT_add_colorbar(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class VOLUMEOVERRIDE_OT_add_field_of_view(bpy.types.Operator):
+    """Add a scale bar estimating this volume's field of view to the scene's annotation scene"""
+
+    bl_idname = "volume_override.add_field_of_view"
+    bl_label = "Add Field of View"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        props = getattr(obj, "volume_override", None) if obj is not None else None
+        if props is None or not props.is_volume_override:
+            return False
+        if props.units_object is None:
+            cls.poll_message_set("Add a units object first (Units for Geometry Nodes)")
+            return False
+        return True
+
+    def execute(self, context):
+        obj = add_field_of_view(context.scene, context.object)
+        self.report({"INFO"}, f"Added {obj.name!r} to {annotation_scene(context.scene).name!r}; open that scene to place it")
+        return {"FINISHED"}
+
+
+class VOLUMEOVERRIDE_OT_add_annotation(bpy.types.Operator):
+    """Add an annotation with its own Geometry Nodes tree to edit, wired to this volume's units object"""
+
+    bl_idname = "volume_override.add_annotation"
+    bl_label = "Add Annotation"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return VOLUMEOVERRIDE_OT_add_field_of_view.poll(context)
+
+    def execute(self, context):
+        obj = add_annotation(context.scene, context.object)
+        self.report({"INFO"}, f"Added {obj.name!r} to {annotation_scene(context.scene).name!r}; edit its yt Annotation nodes there")
+        return {"FINISHED"}
+
+
+_CLASSES = (VOLUMEOVERRIDE_OT_add_colorbar, VOLUMEOVERRIDE_OT_add_field_of_view, VOLUMEOVERRIDE_OT_add_annotation)
+
+
 def register():
     bpy.types.Scene.yt_annotation_scene = bpy.props.PointerProperty(
         type=bpy.types.Scene, name="Annotation Scene",
-        description="A flat scene laid over the finished frame (x 0-1 across it); holds colorbars",
+        description="A flat scene laid over the finished frame (x 0-1 across it); holds colorbars and scale bars",
     )
-    bpy.utils.register_class(VOLUMEOVERRIDE_OT_add_colorbar)
+    for cls in _CLASSES:
+        bpy.utils.register_class(cls)
 
 
 def unregister():
-    if VOLUMEOVERRIDE_OT_add_colorbar.is_registered:
-        bpy.utils.unregister_class(VOLUMEOVERRIDE_OT_add_colorbar)
+    for cls in reversed(_CLASSES):
+        if cls.is_registered:
+            bpy.utils.unregister_class(cls)
     if hasattr(bpy.types.Scene, SCENE_PROPERTY):
         del bpy.types.Scene.yt_annotation_scene

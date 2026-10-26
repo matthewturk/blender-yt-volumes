@@ -336,6 +336,48 @@ over a number of decades) to draw the opacity. The bar starts from the
 object's origin, so moving or scaling the object places it. Ticks appear
 after the first render has fitted the range.
 
+## Scale bars and your own annotations
+These need the volume's units object (**Units for Geometry Nodes**); the
+buttons beside it add them to the annotation scene.
+
+**Add Field of View** adds a labeled scale bar, from the object's origin to
++x. Its **Length** is in **Unit** (any of the volume's Data Units, or
+`unitary`) and can be keyframed (right-click > Insert Keyframe); at 0 it
+picks a round 1, 2 or 5 × 10ⁿ up to **Auto Max** of the frame.
+
+**Add Annotation** is the starting point for anything else. It adds an
+object with its own editable node tree, a dot **Size** across (in Unit) drawn
+where the volume is on screen. Open it in a Geometry Nodes editor and change
+it. The node doing the work is **yt Annotation View** (Add > Group). Give it
+the **Units Object** and a **Unit**, and it answers, for the volume's zoom
+target or middle, or for any main-scene **Point** with **Use Point** on:
+
+| Output | |
+|---|---|
+| Screen Position | where the point is on the frame, in this object's space: plug it into a Transform's Translation or Set Position |
+| Frame per Unit | on-frame length of one Unit at the point's depth: multiply a length in Unit by it to size a grid, circle or bar |
+| Frame Width | the frame's width in Unit at that depth, e.g. for a Value to String label |
+| Depth | distance along the camera's view axis, in scene units |
+| Scene per Unit | scene units per Unit |
+| In Front | the point is in front of the camera: switch geometry off when it isn't |
+
+For a point, use an Object Info's Location from the main scene (Object Info
+reads other scenes' objects). For a box framing the next 10 kpc of a
+dive, for example: a Quadrilateral (curve) 10 × Frame per Unit wide and
+high, Curve to Mesh with a small Curve Circle as its profile to give the
+outline a width, then a Transform translated by Screen Position. Sizes are
+estimates at the point's depth: in perspective, nearer things look bigger.
+
+The annotation scene renders faces, not bare edges or curves, so turn curves
+into meshes (Fill Curve, or Curve to Mesh with a profile). To color
+geometry, store a color in the `yt_annotation_color` attribute and set the
+**yt Annotation** material, or use any emission material. The raw values
+live on the units object's one vertex, read with Object Info, then Sample
+Index 0 of a Named Attribute: `camera_to_world` (matrix),
+`frame_width_per_depth` and `frame_width_ortho` (the frame's width is
+`depth × per_depth + ortho`), `frame_shift` and `frame_height` (in frame
+widths), `view_center`, and `scene_per_<unit>`.
+
 ## Examples
 
 Each script's docstring has the commands.
