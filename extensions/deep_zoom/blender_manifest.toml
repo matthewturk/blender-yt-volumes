@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "deep_zoom"
-version = "0.1.0"
+version = "0.2.0"
 name = "Deep Zoom"
 tagline = "Author camera paths through deeply nested AMR data"
 maintainer = "Matthew Turk"
