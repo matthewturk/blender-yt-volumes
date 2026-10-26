@@ -19,7 +19,7 @@ depth, and you dive by animating the zoom.
 Zip the folder and use *Edit > Preferences > Get Extensions > Install from
 Disk*:
 
-    cd extensions/deep_zoom && zip -r ../deep_zoom-0.1.0.zip . -x '*__pycache__*'
+    cd extensions/deep_zoom && zip -r ../deep_zoom-0.2.0.zip . -x '*__pycache__*'
 
 It needs nothing beyond what Blender ships (numpy).
 
