@@ -13,6 +13,11 @@ scene = `unitary_to_world` (a 4x4 matrix) applied to unitary - origin, with
 the float64 origin split into float32 `unitary_origin_high` + `_low`. A
 position kept the same way (high + low) loses no precision in Geometry Nodes
 at any zoom; the "yt Unitary to Scene" node group does the arithmetic.
+For annotations it also carries the scene camera's framing
+(`camera_to_world`, `frame_width_per_depth`, `frame_width_ortho`,
+`frame_shift`, `frame_height`) and `view_center`, the scene position the view
+is about; the "yt Annotation View" node group turns them into screen
+positions and sizes.
 The data side comes from yt's unit registry, recorded when the dataset loads;
 a yt_idv scene file carries it as a `dataset` entry in scene.json, or as a
 `dataset.json` member added by `add_units_to_scene_file`.
@@ -32,6 +37,8 @@ _DATASET_MEMBER = "dataset.json"
 _conversions = {}  # (registry hash, unit) -> unitary length in that unit, or None
 ORIGIN_HIGH, ORIGIN_LOW, TO_WORLD = "unitary_origin_high", "unitary_origin_low", "unitary_to_world"
 NODE_GROUP_NAME = "yt Unitary to Scene"
+CAMERA_TO_WORLD, WIDTH_PER_DEPTH, WIDTH_ORTHO, VIEW_CENTER = "camera_to_world", "frame_width_per_depth", "frame_width_ortho", "view_center"
+FRAME_SHIFT, FRAME_HEIGHT = "frame_shift", "frame_height"
 
 
 def dataset_info(ds):
@@ -201,7 +208,9 @@ def update(obj, scene):
     units_object = obj.volume_override.units_object
     if units_object is not None and units_object.type == "MESH":
         _write_attributes(units_object.data, values)
-        _write_transform(units_object.data, unitary_transform(obj, scene))
+        transform = unitary_transform(obj, scene)
+        _write_transform(units_object.data, transform)
+        _write_view(units_object.data, scene, view_center(obj, scene, transform))
 
 
 def _write_attributes(mesh, values):
@@ -258,6 +267,59 @@ def _write_transform(mesh, transform):
     changed |= _set_attribute(mesh, ORIGIN_LOW, "FLOAT_VECTOR", low)
     # Matrix attributes are stored column by column.
     changed |= _set_attribute(mesh, TO_WORLD, "FLOAT4X4", matrix.T)
+    if changed:
+        mesh.update()
+
+
+def framing(scene, camera):
+    """`(per_depth, ortho, shift, height)` of `camera`'s frame: its width in
+    scene units is `per_depth * depth + ortho`, depth along the view axis;
+    `shift` (x, y) and `height` are in frame widths. Panoramic cameras get
+    zero widths.
+    """
+    data, render = camera.data, scene.render
+    aspect = (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y)
+    fit = data.sensor_fit
+    if fit == "AUTO":
+        fit, size = ("HORIZONTAL" if aspect >= 1.0 else "VERTICAL"), data.sensor_width
+    else:
+        size = data.sensor_width if fit == "HORIZONTAL" else data.sensor_height
+    scale = aspect if fit == "VERTICAL" else 1.0  # size spans the frame's height
+    # Shift is in units of the fitted side.
+    shift = (data.shift_x / scale, data.shift_y / scale)
+    if data.type == "PERSP":
+        return size / data.lens * scale, 0.0, shift, 1.0 / aspect
+    if data.type == "ORTHO":
+        # sensor_fit picks the axis ortho_scale spans, as for perspective.
+        return 0.0, data.ortho_scale * scale, shift, 1.0 / aspect
+    return 0.0, 0.0, shift, 1.0 / aspect
+
+
+def view_center(obj, scene, transform):
+    """The scene position volume `obj`'s view is about: its zoom target when
+    zoomed, else the middle of its box.
+    """
+    from . import operators
+
+    zoomed = operators._deep_zoom_params(scene) or obj.volume_override.to_custom_params().get("yt_idv_zoom_target")
+    if zoomed and transform is not None:
+        return transform[2]
+    corners = np.array(operators._empty_cube_bounding_box_local(obj), dtype=np.float64)
+    return (np.array(obj.matrix_world, dtype=np.float64) @ np.append(corners.mean(axis=0), 1.0))[:3]
+
+
+def _write_view(mesh, scene, center):
+    camera = scene.camera
+    if camera is None:
+        matrix, (per_depth, ortho, shift, height) = np.eye(4), (0.0, 0.0, (0.0, 0.0), 1.0)
+    else:
+        matrix, (per_depth, ortho, shift, height) = np.array(camera.matrix_world, dtype=np.float64), framing(scene, camera)
+    changed = _set_attribute(mesh, CAMERA_TO_WORLD, "FLOAT4X4", matrix.T)
+    changed |= _set_attribute(mesh, WIDTH_PER_DEPTH, "FLOAT", per_depth)
+    changed |= _set_attribute(mesh, WIDTH_ORTHO, "FLOAT", ortho)
+    changed |= _set_attribute(mesh, FRAME_SHIFT, "FLOAT_VECTOR", (*shift, 0.0))
+    changed |= _set_attribute(mesh, FRAME_HEIGHT, "FLOAT", height)
+    changed |= _set_attribute(mesh, VIEW_CENTER, "FLOAT_VECTOR", center)
     if changed:
         mesh.update()
 

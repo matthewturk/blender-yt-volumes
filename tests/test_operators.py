@@ -1580,6 +1580,9 @@ def test_a_colorbar_ticks_whole_decades_of_the_fitted_range(clean_scene_with_pro
         annotations.sync(scene, overlay)
         assert overlay.frame_current == 7 and overlay.camera.data.type == "ORTHO"
         assert annotations.add_annotation_scene(scene) == overlay  # one per scene
+        bpy.data.node_groups.remove(bpy.data.node_groups[annotations.VIEW_GROUP])
+        annotations.add_colorbar(scene, volume)
+        assert annotations.VIEW_GROUP in bpy.data.node_groups  # made again for a scene that already exists
 
         with bpy.context.temp_override(scene=overlay, view_layer=overlay.view_layers[0]):
             depsgraph = bpy.context.evaluated_depsgraph_get()
