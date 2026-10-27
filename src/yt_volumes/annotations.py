@@ -59,7 +59,9 @@ def add_annotation_scene(scene):
     if existing is not None:
         return existing
     annotations = bpy.data.scenes.new(f"{scene.name} Annotations")
-    annotations.render.engine = "CYCLES"
+    # Needs the GPU compositor in the main scene; see operators.compatibility_warnings.
+    annotations.render.engine = "BLENDER_EEVEE"
+    annotations.eevee.taa_render_samples = 16
     annotations.cycles.samples = 16
     annotations.cycles.use_denoising = False
     annotations.cycles.max_bounces = 0
