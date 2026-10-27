@@ -543,7 +543,9 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
 
     assert seen_view_transform == ["Standard"]
     assert scene.view_settings.view_transform == "Standard"
-    assert "view_transform" not in capsys.readouterr().out  # no warning needed -- nothing changed
+    out = capsys.readouterr().out
+    assert "view_transform" not in out  # no warning needed -- nothing changed
+    assert f"frame {scene.frame_current} done in " in out  # even without verbose logging
 
 
 def test_render_current_frame_view_transform_warning_ignores_verbose_logging(addon_enabled, monkeypatch, tmp_path, capsys):
@@ -969,6 +971,26 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
     monkeypatch.setattr(operators, "_gpu_backend", lambda: "OPENGL")
     with pytest.raises(RuntimeError, match="Vulkan GPU backend"):
         operators.render_current_frame(bpy.context)
+
+
+@pytest.mark.parametrize("backend, during", [("OPENGL", "CPU"), ("VULKAN", "GPU")])
+def test_only_opengl_gets_the_cpu_compositor(addon_enabled, monkeypatch, tmp_path, backend, during):
+    # Under Vulkan the CPU compositor doesn't restore the window's GPU context
+    # after a nested EEVEE render (the annotation scene), and Blender crashes on the next redraw.
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    scene.render.compositor_device = "GPU"
+    monkeypatch.setattr(operators, "_gpu_backend", lambda: backend)
+    seen = []
+
+    def fake_renderer(request):
+        seen.append(scene.render.compositor_device)
+        return _fake_render_result(request)
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    operators.render_current_frame(bpy.context)
+    assert seen == [during]
+    assert scene.render.compositor_device == "GPU"
 
 
 # --- EEVEE --------------------------------------------------------------------
@@ -1535,7 +1557,7 @@ def test_slot_keyframes_can_be_removed(clean_scene_with_props):
 
 
 def test_the_annotation_scene_is_laid_over_the_render(addon_enabled, monkeypatch, tmp_path):
-    from yt_volumes import annotations, transfer_function_nodes as tfn
+    from yt_volumes import annotations, compositor_build, transfer_function_nodes as tfn
 
     scene = addon_enabled
     scene.render.resolution_x, scene.render.resolution_y = 200, 112
@@ -1553,8 +1575,22 @@ def test_the_annotation_scene_is_laid_over_the_render(addon_enabled, monkeypatch
     bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
     scene.render.filepath = str(tmp_path / "out_")
     monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_GN_TRANSFER_FUNCTION", _fake_render_result)
+    pass1_overlay_muted = []
+    build_pass1 = compositor_build.build_pass1_capture_graph
 
-    operators.render_current_frame(bpy.context)
+    def recording_build_pass1(scene, *args):
+        paths = build_pass1(scene, *args)
+        node = compositor_build.ensure_compositor_tree(scene).nodes.get(compositor_build._node_name("Overlay"))
+        pass1_overlay_muted.append(node and node.mute)
+        return paths
+
+    monkeypatch.setattr(compositor_build, "build_pass1_capture_graph", recording_build_pass1)
+    with operators.render_session(bpy.context):
+        for frame in (1, 2):  # the second reuses the built graph
+            scene.frame_set(frame)
+            operators.render_current_frame(bpy.context)
+    # An unmuted Render Layers node would render the annotation scene in pass 1 too.
+    assert pass1_overlay_muted == [None, True]
 
     image = bpy.data.images.load(str(tmp_path / "out_.png"))
     pixels = np.array(image.pixels[:]).reshape(112, 200, 4)  # bottom row first
@@ -1593,3 +1629,35 @@ def test_a_colorbar_ticks_whole_decades_of_the_fitted_range(clean_scene_with_pro
         assert centers == pytest.approx([0.6 * (d + 2.3) / 4.0 for d in (-2, -1, 0, 1)], abs=1e-4)
     finally:
         annotations.unregister()
+
+
+@pytest.mark.parametrize("engine, device, backend, mode, warns", [
+    ("BLENDER_EEVEE", "CPU", "VULKAN", "SAMPLE_CONSTANT", True),
+    ("BLENDER_EEVEE", "GPU", "VULKAN", "YT_IDV_MAX_INTENSITY", False),
+    ("BLENDER_EEVEE", "GPU", "OPENGL", "YT_IDV_MAX_INTENSITY", True),  # forced onto the CPU compositor
+    ("BLENDER_EEVEE", "GPU", "OPENGL", "SAMPLE_CONSTANT", False),
+    ("CYCLES", "CPU", "VULKAN", "SAMPLE_CONSTANT", False),
+])
+def test_an_eevee_annotation_scene_beside_the_cpu_compositor_warns(addon_enabled, monkeypatch, engine, device, backend, mode, warns):
+    from yt_volumes import annotations, transfer_function_nodes as tfn
+
+    scene = addon_enabled
+    volume = _flagged_cube()
+    volume.volume_override.renderer_mode = mode
+    tfn.add_transfer_function_modifier(volume)
+    annotations.add_colorbar(scene, volume)
+    scene.yt_annotation_scene.render.engine = engine
+    scene.render.compositor_device = device
+    monkeypatch.setattr(operators, "_gpu_backend", lambda: backend)
+
+    assert bool(operators.compatibility_warnings(scene, bpy.context.view_layer)) == warns
+
+
+def test_an_annotation_scene_with_only_its_camera_never_warns(addon_enabled):
+    from yt_volumes import annotations
+
+    scene = addon_enabled
+    _flagged_cube()
+    annotations.add_annotation_scene(scene).render.engine = "BLENDER_EEVEE"
+    scene.render.compositor_device = "CPU"
+    assert operators.compatibility_warnings(scene, bpy.context.view_layer) == []

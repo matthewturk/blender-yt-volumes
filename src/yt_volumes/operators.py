@@ -719,6 +719,27 @@ def load_message(pending):
     return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
 
 
+def compatibility_warnings(scene, view_layer):
+    """Messages for render setups known to crash Blender's UI."""
+    flagged = properties.rendered_volumes(scene, view_layer)
+    uses_yt_idv = any(obj.volume_override.renderer_mode in YT_IDV_RENDERER_MODES for obj in flagged)
+    cpu_compositor = scene.render.compositor_device == "CPU" or (uses_yt_idv and _gpu_backend() != "VULKAN")
+    overlay = annotations.annotation_scene(scene)
+    warnings = []
+    if (
+        overlay is not None and overlay.render.engine.startswith("BLENDER_EEVEE") and cpu_compositor
+        and any(o.type != "CAMERA" for o in overlay.objects)
+    ):
+        # The nested EEVEE render leaves no GPU context active, and only the GPU compositor restores it.
+        warnings.append(
+            f"{overlay.name!r} renders with EEVEE while {scene.name!r} composites on the CPU, which "
+            f"crashes Blender after a frame or two. Switch {overlay.name!r} to Cycles, or set "
+            f"Render Properties > Performance > Compositor > Device to GPU"
+            + (" (needs the Vulkan GPU backend with yt_idv volumes)." if uses_yt_idv else ".")
+        )
+    return warnings
+
+
 _in_pipeline = False  # True while render_current_frame runs, for handlers.render_pre
 
 
@@ -728,8 +749,10 @@ def render_current_frame(context):
     """
     global _in_pipeline
     _in_pipeline = True
+    frame, t0 = context.scene.frame_current, time.monotonic()
     try:
         _render_current_frame(context)
+        _log(f"frame {frame} done in {time.monotonic() - t0:.2f}s")
     finally:
         _in_pipeline = False
 
@@ -792,9 +815,9 @@ def _render_current_frame(context):
                  f"the direct A/B measurement. Set your scene's View Transform to 'Standard' "
                  f"(or 'Raw') yourself to silence this.")
             scene.view_settings.view_transform = "Standard"
-        # The GPU compositor grabs an EGL context, after which yt_idv's own
-        # EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
-        if prev_compositor_device != "CPU":
+        # Under OpenGL the GPU compositor grabs an EGL context, after which
+        # yt_idv's own EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
+        if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
             scene.render.compositor_device = "CPU"
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
@@ -938,6 +961,13 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
 
     def invoke(self, context, event):
         pending = pending_loads(properties.rendered_volumes(context.scene, context.view_layer))
+        warnings = compatibility_warnings(context.scene, context.view_layer)
+        if warnings:
+            return context.window_manager.invoke_confirm(
+                self, event, title="Render with a setup that crashes?",
+                message=" ".join(warnings + ([load_message(pending)] if pending else [])),
+                confirm_text="Render Anyway", icon="ERROR",
+            )
         if pending:
             return context.window_manager.invoke_confirm(
                 self, event, title="Load data to render?", message=load_message(pending),

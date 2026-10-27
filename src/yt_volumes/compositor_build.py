@@ -296,6 +296,9 @@ def build_or_update_views_graph(scene, views, overlay=None):
                 img = _layer_image(source, node_name)
                 if node.image is None or node.image.as_pointer() != img.as_pointer():
                     node.image = img
+        overlay_node = tree.nodes.get(_node_name("Overlay"))
+        if overlay_node is not None and overlay_node.mute:
+            overlay_node.mute = False
         _mute_pass1_file_outputs(tree)
         return tree
 
@@ -421,6 +424,10 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
     # Pass 2 mutes these; unmute so pass 1 writes its EXRs.
     tree.nodes[_node_name("Pass1BeautyOut")].mute = False
     tree.nodes[_node_name("Pass1DepthOut")].mute = False
+    # Every unmuted Render Layers node renders its scene, used or not.
+    overlay = tree.nodes.get(_node_name("Overlay"))
+    if overlay is not None and not overlay.mute:
+        overlay.mute = True
 
     # Both APIs write a 4-digit zero-padded frame number.
     frame_suffix = f"{frame_number:04d}"
