@@ -543,7 +543,9 @@ def test_render_current_frame_leaves_standard_view_transform_alone(addon_enabled
 
     assert seen_view_transform == ["Standard"]
     assert scene.view_settings.view_transform == "Standard"
-    assert "view_transform" not in capsys.readouterr().out  # no warning needed -- nothing changed
+    out = capsys.readouterr().out
+    assert "view_transform" not in out  # no warning needed -- nothing changed
+    assert f"frame {scene.frame_current} done in " in out  # even without verbose logging
 
 
 def test_render_current_frame_view_transform_warning_ignores_verbose_logging(addon_enabled, monkeypatch, tmp_path, capsys):

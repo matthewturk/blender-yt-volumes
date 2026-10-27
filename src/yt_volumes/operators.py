@@ -749,8 +749,10 @@ def render_current_frame(context):
     """
     global _in_pipeline
     _in_pipeline = True
+    frame, t0 = context.scene.frame_current, time.monotonic()
     try:
         _render_current_frame(context)
+        _log(f"frame {frame} done in {time.monotonic() - t0:.2f}s")
     finally:
         _in_pipeline = False
 
