@@ -93,6 +93,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "you'd want)"
         ),
         default=False,
+        update=lambda self, context: _note_flagged(self.is_volume_override),
     )
 
     show_in_viewport: bpy.props.BoolProperty(
@@ -857,9 +858,15 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Object.volume_override = bpy.props.PointerProperty(type=VolumeOverrideProperties)
     bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        handlers.append(_rescan_flags)
+    _flag_scan["objects"] = -1
 
 
 def unregister():
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _rescan_flags in handlers:
+            handlers.remove(_rescan_flags)
     bpy.types.VIEW3D_MT_add.remove(_draw_add_menu)
     del bpy.types.Object.volume_override
     for cls in reversed(CLASSES):
@@ -888,8 +895,34 @@ def _draw_units(layout, obj):
             layout.label(text=f"{unit}: not known yet (render, or Read Units)")
 
 
+# Whether any object in bpy.data is flagged, rescanned whenever the object count changes.
+_flag_scan = {"objects": -1, "any": False}
+
+
+def _note_flagged(flagged):
+    if flagged:
+        _flag_scan["any"] = True
+
+
+def any_flagged():
+    """Whether any object in the file may be flagged; cheap enough for handlers that run on every update."""
+    count = len(bpy.data.objects)
+    if count != _flag_scan["objects"]:
+        _flag_scan["objects"] = count
+        _flag_scan["any"] = any(getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override for obj in bpy.data.objects)
+    return _flag_scan["any"]
+
+
+@bpy.app.handlers.persistent
+def _rescan_flags(*args):
+    # A loaded file or an undo step can bring flags back without changing the object count.
+    _flag_scan["objects"] = -1
+
+
 def flagged_objects(scene):
     """All objects in `scene` flagged for external volume rendering."""
+    if not any_flagged():
+        return []
     return [obj for obj in scene.objects if getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override]
 
 

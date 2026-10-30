@@ -281,7 +281,8 @@ def _replot(name, signature):
 @persistent
 def _on_depsgraph_update(scene, depsgraph):
     # Edits made outside the panel (e.g. the node editor) don't redraw it, so check here.
-    for obj in scene.objects:
-        props = getattr(obj, "volume_override", None)
-        if props is not None and props.is_volume_override and props.show_tf_plot and props.renderer_mode in MODES:
+    from . import properties
+
+    for obj in properties.flagged_objects(scene):
+        if obj.volume_override.show_tf_plot and obj.volume_override.renderer_mode in MODES:
             icon(obj)

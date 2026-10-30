@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yt_volumes"
-version = "0.2.0"
+version = "0.2.1"
 name = "yt-volumes"
 tagline = "Render yt datasets with yt_idv inside Cycles or EEVEE renders"
 maintainer = "Matthew Turk"
