@@ -93,7 +93,7 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
             "you'd want)"
         ),
         default=False,
-        update=lambda self, context: _note_flagged(self.is_volume_override),
+        update=lambda self, context: _note_flagged(self),
     )
 
     show_in_viewport: bpy.props.BoolProperty(
@@ -860,7 +860,7 @@ def register():
     bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
     for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         handlers.append(_rescan_flags)
-    _flag_scan["objects"] = -1
+    _flag_scan["count"] = -1
 
 
 def unregister():
@@ -895,35 +895,45 @@ def _draw_units(layout, obj):
             layout.label(text=f"{unit}: not known yet (render, or Read Units)")
 
 
-# Whether any object in bpy.data is flagged, rescanned whenever the object count changes.
-_flag_scan = {"objects": -1, "any": False}
+# The flagged objects in bpy.data, rescanned whenever the object count changes.
+_flag_scan = {"count": -1, "objects": []}
 
 
-def _note_flagged(flagged):
-    if flagged:
-        _flag_scan["any"] = True
+def _note_flagged(props):
+    if props.is_volume_override and props.id_data not in _flag_scan["objects"]:
+        _flag_scan["objects"].append(props.id_data)
 
 
-def any_flagged():
-    """Whether any object in the file may be flagged; cheap enough for handlers that run on every update."""
-    count = len(bpy.data.objects)
-    if count != _flag_scan["objects"]:
-        _flag_scan["objects"] = count
-        _flag_scan["any"] = any(getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override for obj in bpy.data.objects)
-    return _flag_scan["any"]
+def _rescan():
+    _flag_scan["count"] = len(bpy.data.objects)
+    _flag_scan["objects"] = [obj for obj in bpy.data.objects if getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override]
 
 
 @bpy.app.handlers.persistent
 def _rescan_flags(*args):
-    # A loaded file or an undo step can bring flags back without changing the object count.
-    _flag_scan["objects"] = -1
+    # A loaded file or an undo step can bring flags back, and frees the objects we hold.
+    _flag_scan["count"] = -1
+
+
+def _flagged_in_file():
+    if len(bpy.data.objects) != _flag_scan["count"]:
+        _rescan()
+    try:
+        found = [obj for obj in _flag_scan["objects"] if obj.volume_override.is_volume_override]
+    except ReferenceError:  # deleted, with another object added since the last check
+        _rescan()
+        found = list(_flag_scan["objects"])
+    return sorted(found, key=lambda obj: obj.name)
 
 
 def flagged_objects(scene):
-    """All objects in `scene` flagged for external volume rendering."""
-    if not any_flagged():
+    """All objects in `scene` flagged for external volume rendering, by name."""
+    found = _flagged_in_file()
+    if not found:
         return []
-    return [obj for obj in scene.objects if getattr(obj, "volume_override", None) and obj.volume_override.is_volume_override]
+    # Name lookups and users_scene scan every object; an object's own collections are few.
+    collections = {scene.collection, *scene.collection.children_recursive}
+    return [obj for obj in found if any(c in collections for c in obj.users_collection)]
 
 
 def _renderable(layer_collection):
