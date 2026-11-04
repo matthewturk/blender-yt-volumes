@@ -864,6 +864,9 @@ def _render_current_frame(context):
                     result = render_fn(request)
                 if props.renderer_mode in YT_IDV_RENDERER_MODES:
                     units.record(obj, request.volume.dataset.dataset_id, scene)
+                    report = yt_idv_renderer.opacity_report(request.volume.dataset.dataset_id)
+                    if report is not None:
+                        log(f"{obj.name!r} opacity: " + "; ".join(f"{label} {value}" for label, value in yt_idv_renderer.describe_opacity_report(report)))
                 assert result.alpha_mode == "PREMULTIPLIED"
                 assert result.color_space == "LINEAR"
                 if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":

@@ -544,6 +544,14 @@ def apply_render_settings(props, render):
         if key not in LOOK_SETTINGS:
             raise ConfigError(f"render.yt_idv.{key} is not a volume look setting")
         setattr(props, key, value)
+    bounds = render.get("yt_idv", {})
+    if "tf_log_min" in bounds or "tf_log_max" in bounds:
+        from . import transfer_function_nodes
+
+        # Geometry Nodes slots carry their own Min/Max, which would win over the volume's.
+        tree = transfer_function_nodes.transfer_function_tree(props.id_data)
+        for slot in transfer_function_nodes.slot_nodes(tree) if tree is not None else []:
+            transfer_function_nodes.set_slot_bounds(slot, props.tf_log_min, props.tf_log_max)
 
 
 def _register_extension(path):

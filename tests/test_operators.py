@@ -1661,3 +1661,109 @@ def test_an_annotation_scene_with_only_its_camera_never_warns(addon_enabled):
     annotations.add_annotation_scene(scene).render.engine = "BLENDER_EEVEE"
     scene.render.compositor_device = "CPU"
     assert operators.compatibility_warnings(scene, bpy.context.view_layer) == []
+
+
+def _three_keyed_slots(obj):
+    """Slots 1-3 labelled A, B, C, Blend keyed to show each at frames 1, 11, 21."""
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    tfn.add_transfer_function_modifier(obj)
+    tree = tfn.transfer_function_tree(obj)
+    tfn.add_slot(tree)
+    tfn.add_slot(tree)
+    for node, label in zip(tfn.slot_nodes(tree), "ABC"):
+        node.label = label
+    with bpy.context.temp_override(object=obj):
+        for frame, slot in ((1, 0), (11, 1), (21, 2)):
+            bpy.context.scene.frame_set(frame)
+            obj.volume_override.tf_slot = str(slot)
+            bpy.ops.volume_override.key_tf_slot()
+    return tree
+
+
+def _labels(tree):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    return [n.label for n in tfn.slot_nodes(tree)]
+
+
+def _keys(obj):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    return [tuple(p.co) for p in tfn.blend_fcurve(obj).keyframe_points]
+
+
+def test_duplicating_a_middle_slot_puts_the_copy_after_it(clean_scene_with_props):
+    obj = _flagged_cube()
+    tree = _three_keyed_slots(obj)
+    obj.volume_override.tf_slot = "1"
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.add_tf_slot() == {"FINISHED"}
+
+    assert _labels(tree) == ["A", "B", "B copy", "C"]
+    assert obj.volume_override.tf_active_slot == 2
+    assert _keys(obj) == [(1.0, 1.0), (11.0, 2.0), (21.0, 4.0)]  # still A, B, C
+
+
+def test_moving_a_slot_reorders_it_and_its_keys(clean_scene_with_props):
+    obj = _flagged_cube()
+    tree = _three_keyed_slots(obj)
+    obj.volume_override.tf_slot = "2"
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.move_tf_slot(offset=-1) == {"FINISHED"}
+        assert _labels(tree) == ["A", "C", "B"]
+        assert obj.volume_override.tf_active_slot == 1
+        assert _keys(obj) == [(1.0, 1.0), (11.0, 3.0), (21.0, 2.0)]  # still A, B, C
+        obj.volume_override.tf_slot = "0"
+        assert bpy.ops.volume_override.move_tf_slot(offset=-1) == {"CANCELLED"}  # already first
+
+
+def test_each_slot_has_its_own_range_and_blend_slides_it(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    props = obj.volume_override
+    props.tf_fit_range = False
+    props.tf_log_min, props.tf_log_max = -28.0, -20.0
+    tree = _two_slots(obj)
+    first, second = tfn.slot_nodes(tree)
+    assert tfn.slot_bounds(obj, second) == (-28.0, -20.0)  # the copy takes the original's
+    tfn.set_slot_bounds(second, -26.0, -22.0)
+
+    tfn.set_blend(obj, 1.0)
+    assert props.to_custom_params()["yt_idv_tf_log_min"] == -28.0
+    tfn.set_blend(obj, 1.5)
+    params = props.to_custom_params()
+    assert (params["yt_idv_tf_log_min"], params["yt_idv_tf_log_max"]) == pytest.approx((-27.0, -21.0))
+    props.tf_log_min = -40.0  # the volume's own Min doesn't apply under slots
+    assert props.to_custom_params()["yt_idv_tf_log_min"] == pytest.approx(-27.0)
+
+
+def test_slots_from_an_older_file_take_the_volume_range(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    for slot in tfn.slot_nodes(tree):
+        del slot.node_tree[tfn.LOG_MIN_PROPERTY], slot.node_tree[tfn.LOG_MAX_PROPERTY]
+    obj.volume_override.tf_log_min, obj.volume_override.tf_log_max = -25.0, -21.0
+
+    tfn.ensure_slot_bounds(obj)
+
+    assert [tfn.slot_bounds(obj, s) for s in tfn.slot_nodes(tree)] == [(-25.0, -21.0)] * 2
+    assert all(tfn.LOG_MIN_PROPERTY in s.node_tree for s in tfn.slot_nodes(tree))
+
+
+def test_render_table_bounds_apply_to_every_slot(clean_scene_with_props):
+    from yt_volumes import render_volume, transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    tfn.set_slot_bounds(tfn.slot_nodes(tree)[1], -26.0, -22.0)
+
+    render_volume.apply_render_settings(obj.volume_override, {"yt_idv": {"tf_log_min": -30.0, "tf_log_max": -18.0}})
+
+    assert [tfn.slot_bounds(obj, s) for s in tfn.slot_nodes(tree)] == [(-30.0, -18.0)] * 2

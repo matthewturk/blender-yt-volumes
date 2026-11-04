@@ -114,6 +114,8 @@ _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point dis
 _float_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture
 _yt_tf_applied = {}  # id(component) -> (key, converted) of the yt transfer function it holds
 _exposure_gains = {}  # dataset_id -> the gain auto exposure last chose
+_opacity_reports = {}  # dataset_id -> opacity_report() of the last transfer-function render
+OPAQUE_PIXEL_ALPHA = 0.99  # pixels at least this opaque count as opaque in opacity_report
 
 AUTO_EXPOSURE_TARGET = 0.9  # where auto exposure puts the brightest 0.1% of pixels
 AUTO_EXPOSURE_GAINS = (1e-4, 1e4)  # bounds on the gain, which carries over between frames
@@ -1208,6 +1210,11 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         GL.glDisable(GL.GL_DEPTH_CLAMP)
     image = _clamp_coverage(image)
     image = np.clip(image, 0.0, 1.0)
+    tf_component = next((c for c in scene.components if getattr(c, "render_method", None) == "transfer_function"), None)
+    if tf_component is not None:
+        _opacity_reports[dataset_id] = _opacity_report(tf_component.data, custom_params, image[..., 3])
+    else:
+        _opacity_reports.pop(dataset_id, None)
 
     result = RenderResult(
         rgba=np.ascontiguousarray(image),
@@ -1307,6 +1314,46 @@ def _exposure_factor(image):
         return 1.0  # nothing to expose; leave the gain for the next frame
     peak = float(np.percentile(brightness, 99.9)) or float(brightness.max())  # tiny volumes: their brightest pixel
     return AUTO_EXPOSURE_TARGET / peak
+
+
+def _opacity_report(collection, custom_params, alpha):
+    """What a zoom did to opacity, and how opaque the frame came out."""
+    covered = alpha > 1.0 / 255.0
+    return {
+        "zoom": _zoom_factor(collection),
+        "per_view": bool(custom_params.get("yt_idv_opacity_per_view", True)),
+        "opacity_divisor": _opacity_zoom(collection, custom_params),
+        "covered_fraction": float(covered.mean()) if alpha.size else 0.0,
+        "opaque_fraction": float((alpha >= OPAQUE_PIXEL_ALPHA).mean()) if alpha.size else 0.0,
+        "median_alpha": float(np.median(alpha[covered])) if covered.any() else 0.0,
+    }
+
+
+def opacity_report(dataset_id):
+    """The last transfer-function render's opacity scaling and coverage, or None:
+    `zoom` (lengths in model units over unzoomed), `per_view`, `opacity_divisor`
+    (what the transfer function's opacity was divided by), and the frame's
+    `covered_fraction`, `opaque_fraction` and `median_alpha` of covered pixels.
+    """
+    return _opacity_reports.get(dataset_id)
+
+
+def describe_opacity_report(report):
+    """`opacity_report` as short `(label, value)` pairs for the panel and the log."""
+    pairs = []
+    zoom = report["zoom"]
+    if abs(zoom - 1.0) > 1e-6:
+        pairs.append(("Zoom", f"x{zoom:.3g}"))
+        if report["per_view"]:
+            pairs.append(("Opacity per data length", f"x{zoom:.3g}"))
+        else:
+            pairs.append(("Opacity across view", f"x{1 / zoom:.3g}"))
+    pairs += [
+        ("Last frame covered", f"{report['covered_fraction']:.0%}"),
+        ("Opaque pixels", f"{report['opaque_fraction']:.0%}"),
+        ("Median alpha", f"{report['median_alpha']:.2f}"),
+    ]
+    return pairs
 
 
 def exposure_gain(dataset_id):
@@ -1680,6 +1727,20 @@ def _physical(collection, value):
     if collection._textures_are_normalized:
         return value * (collection.max_val - collection.min_val) + collection.min_val
     return value
+
+
+def fit_bounds(dataset_id, percentile_low, percentile_high):
+    """The log10 `(low, high)` Fit to Data would give a loaded dataset, or None
+    before a transfer-function render has measured its values.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    collections = [] if cached is None else _block_collections(cached[0])
+    # only a measured distribution: measuring reads every block, too slow for a panel draw
+    distribution = getattr(collections[0], "_yt_volumes_value_distribution", None) if collections else None
+    if distribution is None:
+        return None
+    low, high = _percentile_range(distribution, percentile_low, percentile_high)
+    return tuple(float(np.log10(_physical(collections[0], v))) for v in (low, high))
 
 
 def layer_bounds(dataset_id):

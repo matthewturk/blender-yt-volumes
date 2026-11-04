@@ -28,8 +28,11 @@ D, making curve height y an opacity of 10^(D (y - 1)), so 4 decades spans
 points to keep their opacities; ones below 10^-D become transparent.
 
 To animate the look, keep several transfer functions as **slots**. **Edit
-Slot** picks the one the colormap and opacity controls below it change; **+**
-adds a copy of it and **−** removes it. Until Blend is keyframed, picking a
+Slot** picks the one the range, colormap and opacity controls below it
+change; the duplicate button puts a copy of it right after it, **−** removes
+it, and the arrows move it earlier or later. Duplicating and moving keep
+Blend's keyframes on the same slots (a key part-way between two slots follows
+only if both moved together). Until Blend is keyframed, picking a
 slot also shows it. **Blend** (on the modifier, so it can be keyframed or
 driven) chooses what renders: 1 is the first slot, 2 the second, 1.5 halfway;
 going from 1 to 3 passes through 2. To animate, pick a slot, go to a frame and
@@ -42,7 +45,10 @@ Opacity blends linearly when the slots being blended are linear, and in log
 space (over the largest of their decades) when any is log, so a structure fades
 in by decades instead of all at once. Color is weighted by opacity, so a slot
 that is transparent at a value doesn't tint the other there. Each slot is a
-nested node group with its own Color Ramp, opacity curve and decades; a
+nested node group with its own Min/Max (log10), Color Ramp, opacity curve and
+decades. Between slots Blend slides the range too, so a keyframed slot
+checkpoints the whole look; with Fit to Data on, every slot uses the fitted
+range instead. A
 transfer function made before slots existed becomes the first slot when you
 add one. Opacity curve points can't be keyframed in Blender, which is what
 slots work around.
@@ -50,7 +56,9 @@ slots work around.
 The transfer function's x runs linearly in log10 of the value. With **Fit to
 Data** (on by default) it spans the data between the **Low %** and **High %**
 percentiles by volume (10 and 100); off, Min/Max (log10) set it in the field's
-own units. yt Layers uses the same range settings. The ramp's color is weighted by the opacity curve, as in
+own units (each slot's, for the Geometry Nodes transfer function), and the panel
+shows what Fit to Data would give, with a button to use it. yt Layers uses the
+same range settings. The ramp's color is weighted by the opacity curve, as in
 yt, so what is transparent doesn't glow. **Opacity Scale** multiplies emission
 and opacity per box width of path: thin or small structures need it large.
 While zoomed, **Opacity Per View** (on by default, also for the yt modes' Ray

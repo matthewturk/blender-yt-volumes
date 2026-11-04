@@ -98,3 +98,36 @@ def test_the_table_image_holds_the_rendered_values(volume):
     np.testing.assert_allclose(pixels[0, :, 0], tf.funcs[3].x, rtol=1e-6)  # log10 values on top
     np.testing.assert_allclose(pixels[-1], np.stack([c.y for c in tf.funcs], axis=-1), rtol=1e-6)
     assert bpy.data.images[tf_plot.plot_image_name(volume)].size[0] == tf_plot.WIDTH * tf_plot.IMAGE_DPI // 100
+
+
+def test_log_opacity_plots_on_a_log_axis(volume):
+    props = volume.volume_override
+    props.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    props.tf_fit_range = False
+    transfer_function_nodes.add_transfer_function_modifier(volume)
+    tree = transfer_function_nodes.find_node(volume, transfer_function_nodes.ALPHA_NODE_NAME).id_data
+    linear = tf_plot._signature(volume)
+    transfer_function_nodes.set_opacity_decades(tree, 4.0)
+    bpy.context.view_layer.update()
+
+    assert tf_plot.opacity_decades(volume) == 4.0
+    assert tf_plot._signature(volume) != linear  # replots though each opacity is kept
+    tf = tf_plot.transfer_function(volume)
+    shown = tf_plot._for_display(tf, 4.0)
+    expected = transfer_function_nodes._opacity_to_height(tf_plot._for_display(tf).funcs[3].y, 4.0)
+    np.testing.assert_allclose(shown.funcs[3].y, expected)
+    assert shown.funcs[3].y[-1] == pytest.approx(1.0 + np.log10(0.8) / 4.0, abs=0.01)
+    assert tf_plot.plot(volume) is None
+
+
+def test_opacity_decades_follow_the_blended_slots(volume):
+    transfer_function_nodes.add_transfer_function_modifier(volume)
+    tree = transfer_function_nodes.transfer_function_tree(volume)
+    transfer_function_nodes.add_slot(tree)
+    slots = transfer_function_nodes.slot_nodes(tree)
+    transfer_function_nodes.set_opacity_decades(slots[1].node_tree, 3.0)
+
+    transfer_function_nodes.set_blend(volume, 1.0)
+    assert transfer_function_nodes.opacity_decades(volume) == 0.0
+    transfer_function_nodes.set_blend(volume, 1.5)
+    assert transfer_function_nodes.opacity_decades(volume) == 3.0

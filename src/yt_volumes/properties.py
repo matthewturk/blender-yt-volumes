@@ -193,12 +193,12 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     )
     tf_percentile_low: bpy.props.FloatProperty(
         name="Low %",
-        description="Percentile of the data, by volume, at the transfer function's low end",
+        description="Percentile of the data, by volume, at the transfer function's low end; with Fit to Data off, only for the preview of its range",
         default=10.0, min=0.0, max=100.0,
     )
     tf_percentile_high: bpy.props.FloatProperty(
         name="High %",
-        description="Percentile of the data, by volume, at the transfer function's high end; 100 keeps the densest cell (the top layer sits a little inside it)",
+        description="Percentile of the data, by volume, at the transfer function's high end; 100 keeps the densest cell (the top layer sits a little inside it); with Fit to Data off, only for the preview of its range",
         default=100.0, min=0.0, max=100.0,
     )
     tf_log_min: bpy.props.FloatProperty(
@@ -469,6 +469,8 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         """
         params = {"renderer_mode": self.renderer_mode}
         params.update({f"yt_idv_{name}": getattr(self, name) for name in LOOK_SETTINGS})
+        if self.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
+            params["yt_idv_tf_log_min"], params["yt_idv_tf_log_max"] = transfer_function_nodes.blended_bounds(self.id_data)
         if self.colormap_range_set:
             params["yt_idv_cmap_range"] = tuple(self.colormap_range)
         if self.yt_idv_volume_provider:
@@ -532,7 +534,8 @@ _MODE_SETTINGS = {
     ),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
     "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "opacity_per_view", "auto_exposure"),
-    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", "opacity_per_view", *_TF_RANGE, "auto_exposure"),
+    # Min and Max are each slot's, drawn with it.
+    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", "opacity_per_view", *_TF_RANGE[:3], "auto_exposure"),
 }
 # Modes that color with a colormap over a fitted range (Rescale Colormap, Colormap Range).
 _COLORMAP_RANGE_MODES = ("YT_IDV_MAX_INTENSITY", "YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_PROJECTION")
@@ -547,7 +550,8 @@ def _draw_gn_transfer_function(layout, obj):
         low, high = np.log10(fit["physical_range"])
         layout.label(text=f"log10 range: {low:.2f} to {high:.2f} {fit['units']}")
     elif not props.tf_fit_range:
-        low, high = props.tf_log_min, props.tf_log_max
+        slot = transfer_function_nodes.active_slot(obj)
+        low, high = transfer_function_nodes.slot_bounds(obj, slot) if slot is not None else (props.tf_log_min, props.tf_log_max)
     else:
         low = high = None
     ramp, curve = transfer_function_nodes.find_nodes(obj)
@@ -564,8 +568,12 @@ def _draw_gn_transfer_function(layout, obj):
     row.prop(props, "tf_slot", text="")
     if slots:
         row.prop(transfer_function_nodes.active_slot(obj), "label", text="", placeholder="Name")
-    row.operator("volume_override.add_tf_slot", text="", icon="ADD")
+    row.operator("volume_override.add_tf_slot", text="", icon="DUPLICATE")
     row.operator("volume_override.remove_tf_slot", text="", icon="REMOVE")
+    if len(slots) > 1:
+        row.operator("volume_override.move_tf_slot", text="", icon="TRIA_UP").offset = -1
+        row.operator("volume_override.move_tf_slot", text="", icon="TRIA_DOWN").offset = 1
+    _draw_slot_bounds(layout, obj)
     if ramp is not None:
         row = layout.row(align=True)
         row.label(text="Colormap")
@@ -592,6 +600,24 @@ def _draw_gn_transfer_function(layout, obj):
         # The ramp and curve run 0-1 across the range; this places a zoomed-in view.
         layout.label(text=f"0 = {low:.2f}, 0.5 = {(low + high) / 2:.2f}, 1 = {high:.2f} (log10)")
         layout.label(text=f"0.01 along = {(high - low) / 100:.3g} decades")
+
+
+def _draw_slot_bounds(layout, obj):
+    """The edited slot's Min and Max, or a note that Fit to Data overrides them."""
+    props = obj.volume_override
+    slot = transfer_function_nodes.active_slot(obj)
+    if props.tf_fit_range:
+        layout.label(text="Range: Fit to Data (slot Min/Max unused)", icon="INFO")
+        return
+    col = layout.column(align=True)
+    if slot is None or slot.node_tree is None or transfer_function_nodes.LOG_MIN_PROPERTY not in slot.node_tree:
+        # a pre-slot group, or a slot from before slots had bounds
+        col.prop(props, "tf_log_min")
+        col.prop(props, "tf_log_max")
+    else:
+        col.prop(slot.node_tree, f'["{transfer_function_nodes.LOG_MIN_PROPERTY}"]', text="Min (log10)")
+        col.prop(slot.node_tree, f'["{transfer_function_nodes.LOG_MAX_PROPERTY}"]', text="Max (log10)")
+    _draw_fit_preview(layout, props)
 
 
 def _slot_name(slots, index):
@@ -655,6 +681,36 @@ def _draw_tf_plot(layout, obj):
         layout.label(text="Plotting the transfer function...")
 
 
+def _draw_fit_preview(layout, props):
+    """What Fit to Data would span, with Min and Max set by hand."""
+    from . import yt_idv_renderer
+
+    bounds = yt_idv_renderer.fit_bounds(props.dataset_uuid, props.tf_percentile_low, props.tf_percentile_high)
+    if bounds is None:
+        return
+    box = layout.box()
+    box.label(text="Fit to Data would use:")
+    _draw_pairs(box, (("Min (log10)", f"{bounds[0]:.3f}"), ("Max (log10)", f"{bounds[1]:.3f}")))
+    box.operator("volume_override.use_fit_range")
+
+
+def _draw_pairs(layout, pairs):
+    """`(label, value)` pairs as two columns."""
+    for label, value in pairs:
+        split = layout.split(factor=0.6)
+        split.label(text=label)
+        split.label(text=value)
+
+
+def _draw_opacity_report(layout, props):
+    """The last render's zoom scaling of opacity, and how opaque its frame was."""
+    from . import yt_idv_renderer
+
+    report = yt_idv_renderer.opacity_report(props.dataset_uuid)
+    if report is not None:
+        _draw_pairs(layout.box(), yt_idv_renderer.describe_opacity_report(report))
+
+
 def _draw_look(layout, props):
     layout.prop(props, "renderer_mode")
     if props.renderer_mode == "SAMPLE_CONSTANT":
@@ -667,8 +723,6 @@ def _draw_look(layout, props):
         row = col.row()
         if name in ("tf_log_min", "tf_log_max"):
             row.enabled = not props.tf_fit_range
-        elif name in ("tf_percentile_low", "tf_percentile_high"):
-            row.enabled = props.tf_fit_range
         elif name == "tf_camera_fade_decades":
             row.enabled = props.tf_camera_fade
         elif name in ("tf_opaque_above", "tf_opaque_edge"):
@@ -680,6 +734,10 @@ def _draw_look(layout, props):
             gain = yt_idv_renderer.exposure_gain(props.dataset_uuid)
             if gain is not None:
                 col.label(text=f"Exposure: x{gain:.3g} on the transfer function")
+        if name == "opacity_per_view":
+            _draw_opacity_report(col, props)
+        if name == "tf_log_max" and not props.tf_fit_range and props.renderer_mode != "YT_IDV_GN_TRANSFER_FUNCTION":
+            _draw_fit_preview(col, props)
     if props.renderer_mode in _COLORMAP_RANGE_MODES:
         box.prop(props, "rescale_colormap")
         row = box.row(align=True)
@@ -840,6 +898,30 @@ def _draw_add_menu(self, context):
     self.layout.operator(VOLUMEOVERRIDE_OT_add_volume.bl_idname, icon="VOLUME_DATA")
 
 
+class VOLUMEOVERRIDE_OT_use_fit_range(bpy.types.Operator):
+    """Set Min and Max (the edited slot's, for a Geometry Nodes transfer function) to the range Fit to Data would use"""
+
+    bl_idname = "volume_override.use_fit_range"
+    bl_label = "Use Fitted Range"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from . import yt_idv_renderer
+
+        props = context.object.volume_override
+        bounds = yt_idv_renderer.fit_bounds(props.dataset_uuid, props.tf_percentile_low, props.tf_percentile_high)
+        if bounds is None:
+            self.report({"ERROR"}, "Render once first: the data's values aren't measured yet")
+            return {"CANCELLED"}
+        slot = transfer_function_nodes.active_slot(context.object)
+        if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION" and slot is not None:
+            transfer_function_nodes.set_slot_bounds(slot, *bounds)
+            context.object.update_tag()
+        else:
+            props.tf_log_min, props.tf_log_max = bounds
+        return {"FINISHED"}
+
+
 CLASSES = (
     *transfer_function_nodes.CLASSES,
     VOLUMEOVERRIDE_OT_add_volume,
@@ -848,6 +930,7 @@ CLASSES = (
     VOLUMEOVERRIDE_UL_custom_params,
     VOLUMEOVERRIDE_OT_add_custom_param,
     VOLUMEOVERRIDE_OT_remove_custom_param,
+    VOLUMEOVERRIDE_OT_use_fit_range,
     VOLUMEOVERRIDE_PT_object_panel,
 )
 
