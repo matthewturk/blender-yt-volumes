@@ -59,6 +59,73 @@ def test_flagged_objects_filters_by_flag(clean_scene):
     assert names == {"Flagged"}
 
 
+def _flag(name, scene):
+    obj = bpy.data.objects.new(name, None)
+    scene.collection.objects.link(obj)
+    obj.volume_override.is_volume_override = True
+    return obj
+
+
+def test_flagged_objects_follows_renames_deletes_and_unflags(clean_scene):
+    scene = clean_scene
+    a, b = _flag("A", scene), _flag("B", scene)
+    assert properties.flagged_objects(scene) == [a, b]
+
+    a.name = "C"
+    assert [o.name for o in properties.flagged_objects(scene)] == ["B", "C"]
+
+    # Swapping names keeps the object count, and "A" now names an unflagged object.
+    plain = bpy.data.objects.new("plain", None)
+    scene.collection.objects.link(plain)
+    properties.flagged_objects(scene)
+    a.name, plain.name = "A", "C"
+    assert [o.name for o in properties.flagged_objects(scene)] == ["A", "B"]
+
+    b.volume_override.is_volume_override = False
+    assert [o.name for o in properties.flagged_objects(scene)] == ["A"]
+
+    bpy.data.objects.remove(a)
+    assert properties.flagged_objects(scene) == []
+
+
+def test_flagged_objects_survives_a_delete_and_add_between_calls(clean_scene):
+    scene = clean_scene
+    a = _flag("A", scene)
+    assert properties.flagged_objects(scene) == [a]
+    bpy.data.objects.remove(a)
+    b = _flag("B", scene)
+    assert properties.flagged_objects(scene) == [b]
+
+
+def test_flagged_objects_skips_objects_outside_the_scene(clean_scene):
+    scene = clean_scene
+    v = _flag("V", scene)
+    scene.collection.objects.unlink(v)
+    assert properties.flagged_objects(scene) == []
+    child = bpy.data.collections.new("child")
+    scene.collection.children.link(child)
+    child.objects.link(v)
+    assert properties.flagged_objects(scene) == [v]
+
+
+def test_flagged_objects_is_per_scene(clean_scene):
+    other = bpy.data.scenes.new("Other")
+    v = _flag("V", other)
+    assert properties.flagged_objects(clean_scene) == []
+    assert properties.flagged_objects(other) == [v]
+
+
+def test_flagged_objects_rescans_after_loading_a_file(clean_scene, tmp_path):
+    _flag("V", clean_scene)
+    path = str(tmp_path / "flagged.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.data.objects.new("plain", None)  # same object count as the saved file
+    assert properties.flagged_objects(bpy.context.scene) == []
+    bpy.ops.wm.open_mainfile(filepath=path)
+    assert [o.name for o in properties.flagged_objects(bpy.context.scene)] == ["V"]
+
+
 def test_renderer_modes_keep_the_numbers_saved_files_use(clean_scene):
     obj = bpy.data.objects.new("V", None)
     numbers = {}
