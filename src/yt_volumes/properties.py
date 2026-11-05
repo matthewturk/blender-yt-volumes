@@ -827,6 +827,7 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col = layout.column()
         col.enabled = props.is_volume_override
         _draw_look(col, props)
+        col.prop(context.scene, "yt_volumes_smooth_edges")
         if props.renderer_mode.startswith("YT_IDV_"):
             from . import viewer_link
 

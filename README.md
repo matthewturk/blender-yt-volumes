@@ -397,6 +397,29 @@ Each script's docstring has the commands.
 | `examples/shells_tf.py` | yt transfer functions that follow the camera |
 | `examples/cosmology_halos.toml` + `make_cosmology_halos_blend.py` | an Enzo cosmology run in physical time with yt_astro_analysis halos as spheres (needs `yt_astro_analysis`) |
 
+## Smooth Surface Edges
+The Z pass holds one depth per pixel, so the volume is either clipped at a
+surface or not in each pixel. Along a surface's outline that leaves a
+stair-step against the antialiased surface, and behind a material that
+mixes in a Transparent BSDF, EEVEE's default **Dithered** render method
+writes the surface's depth for a random share of pixels, so the volume
+behind it comes out speckled.
+
+**Smooth Surface Edges** (in the Volume Override panel; a scene setting,
+`smooth_edges` under `[blender]` in a config) adds a Cryptomatte object pass
+to the render. Cryptomatte is accumulated over every sample, so it says how
+much of each pixel an object covers. Wherever a pixel's neighbours span two
+depths, the volume is blended between its values in front of and behind the
+nearer surface by that coverage. Outlines then match a supersampled render,
+and the volume behind a dithered surface shows through by the surface's
+opacity. It costs a fraction of a second per 1080p frame (the extra pass
+and the blend); the volume isn't rendered again.
+
+It takes the volume from neighbouring pixels up to 3 pixels away, so a volume
+that changes sharply within that distance is blurred slightly along
+outlines. A **Blended** material writes no depth at all, so the volume always
+draws over it, with or without this setting.
+
 ## Known limitations
 
 - A solid fully enclosed by a volume, with volume both in front of and behind
@@ -457,6 +480,7 @@ src/yt_volumes/
     render_series.py       batch rendering of a time series
     external_render.py     the renderer interface contract (dataclasses)
     compositor_build.py    compositor graphs for the two passes
+    edge_blend.py          Smooth Surface Edges: blending the volume by Cryptomatte coverage
     viewport_preview.py    Show in Viewport
     viewer.py, viewer_main.py, viewer_link.py   the yt_idv viewer window
     transfer_function_nodes.py, tf_plot.py      the Geometry Nodes transfer function, its plot

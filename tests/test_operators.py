@@ -1578,8 +1578,8 @@ def test_the_annotation_scene_is_laid_over_the_render(addon_enabled, monkeypatch
     pass1_overlay_muted = []
     build_pass1 = compositor_build.build_pass1_capture_graph
 
-    def recording_build_pass1(scene, *args):
-        paths = build_pass1(scene, *args)
+    def recording_build_pass1(scene, *args, **kwargs):
+        paths = build_pass1(scene, *args, **kwargs)
         node = compositor_build.ensure_compositor_tree(scene).nodes.get(compositor_build._node_name("Overlay"))
         pass1_overlay_muted.append(node and node.mute)
         return paths
@@ -1767,3 +1767,66 @@ def test_render_table_bounds_apply_to_every_slot(clean_scene_with_props):
     render_volume.apply_render_settings(obj.volume_override, {"yt_idv": {"tf_log_min": -30.0, "tf_log_max": -18.0}})
 
     assert [tfn.slot_bounds(obj, s) for s in tfn.slot_nodes(tree)] == [(-30.0, -18.0)] * 2
+
+
+@pytest.mark.parametrize("engine", ["CYCLES", "BLENDER_EEVEE"])
+def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, tmp_path, engine):
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x, scene.render.resolution_y = 32, 24
+    scene.render.engine = engine
+    scene.cycles.samples = 4
+    scene.eevee.taa_render_samples = 4
+    cam = _add_camera(scene, "PERSP", lens=50.0)
+    cam.location = (0.0, -6.0, 0.0)
+    cam.rotation_euler = (np.pi / 2, 0.0, 0.0)
+    bpy.ops.object.empty_add(type="CUBE")
+    bpy.context.active_object.volume_override.is_volume_override = True
+    bpy.context.active_object.volume_override.renderer_mode = "SAMPLE_CONSTANT"
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.6, location=(0.4, -1.2, 0.2))
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
+    scene.yt_volumes_smooth_edges = True
+    view_layer = bpy.context.view_layer
+    assert not view_layer.use_pass_cryptomatte_object
+
+    seen = []
+
+    def recording_blend(rgba, depth, ids, coverage, **kwargs):
+        seen.append((ids, coverage))
+        out = real_blend(rgba, depth, ids, coverage, **kwargs)
+        changed.append(int((out != rgba).any(-1).sum()))
+        return out
+
+    real_blend, changed = edge_blend.blend, []
+    monkeypatch.setattr(edge_blend, "blend", recording_blend)
+    operators.render_current_frame(bpy.context)
+
+    ids, coverage = seen[0]
+    assert ids.shape == coverage.shape == (24, 32, 6)  # 3 Cryptomatte layers of 2 ranks
+    sphere = (coverage > 0.99) & (ids != 0)  # EEVEE also gives the world an entry, id 0
+    assert sphere.any() and np.unique(ids[sphere]).size == 1  # one object, its id read intact
+    assert changed[0] > 0  # the sphere's outline
+    assert not view_layer.use_pass_cryptomatte_object  # restored
+
+
+def test_smooth_surface_edges_off_adds_no_pass(addon_enabled, monkeypatch, tmp_path):
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x, scene.render.resolution_y = 16, 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    bpy.ops.object.empty_add(type="CUBE")
+    bpy.context.active_object.volume_override.is_volume_override = True
+    bpy.context.active_object.volume_override.renderer_mode = "SAMPLE_CONSTANT"
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
+    monkeypatch.setattr(edge_blend, "blend", lambda *a, **k: pytest.fail("blend called with the setting off"))
+
+    operators.render_current_frame(bpy.context)
+
+    from yt_volumes import compositor_build
+
+    tree = compositor_build.ensure_compositor_tree(scene)
+    assert not compositor_build._cryptomatte_outputs(tree)

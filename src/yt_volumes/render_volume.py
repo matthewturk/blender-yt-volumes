@@ -45,6 +45,7 @@ DEFAULTS = {
         "samples": None,
         "device": "OPTIX",  # Cycles only
         "engine": "CYCLES",  # or "BLENDER_EEVEE" (needs Blender's Vulkan GPU backend)
+        "smooth_edges": None,  # the scene's Smooth Surface Edges; default: the .blend's
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
@@ -515,6 +516,8 @@ def _configure_blender(config):
     if blender["resolution"]:
         scene.render.resolution_x, scene.render.resolution_y = blender["resolution"]
     scene.render.image_settings.file_format = "PNG"
+    if blender["smooth_edges"] is not None:
+        scene.yt_volumes_smooth_edges = bool(blender["smooth_edges"])
     configure_engine(scene, blender)
     return scene, temp_work_dir
 
