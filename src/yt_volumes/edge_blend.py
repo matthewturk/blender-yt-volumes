@@ -19,6 +19,7 @@ RADIUS = 3  # pixels each side of an edge pixel to take the front and back volum
 DEPTH_RATIO = 1.01  # a neighbourhood spans an edge when its depths differ by more than this factor
 COVERAGE_EPSILON = 0.005  # pixels this close to fully covered or uncovered are left alone
 CHUNK = 20000  # edge pixels per vectorized batch, bounding memory
+CRYPTOMATTE_DEPTH = 2  # objects per pixel: one EXR layer, and the blend's window uses only the top two
 _IMAGE_PREFIX = "vo_crypto_tmp"
 
 

@@ -1791,6 +1791,7 @@ def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, 
     scene.yt_volumes_smooth_edges = True
     view_layer = bpy.context.view_layer
     assert not view_layer.use_pass_cryptomatte_object
+    view_layer.pass_cryptomatte_depth = 6
 
     seen = []
 
@@ -1805,11 +1806,12 @@ def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, 
     operators.render_current_frame(bpy.context)
 
     ids, coverage = seen[0]
-    assert ids.shape == coverage.shape == (24, 32, 6)  # 3 Cryptomatte layers of 2 ranks
+    assert ids.shape == coverage.shape == (24, 32, 2)  # one Cryptomatte layer of 2 ranks
     sphere = (coverage > 0.99) & (ids != 0)  # EEVEE also gives the world an entry, id 0
     assert sphere.any() and np.unique(ids[sphere]).size == 1  # one object, its id read intact
     assert changed[0] > 0  # the sphere's outline
     assert not view_layer.use_pass_cryptomatte_object  # restored
+    assert view_layer.pass_cryptomatte_depth == 6
 
 
 def test_smooth_surface_edges_off_adds_no_pass(addon_enabled, monkeypatch, tmp_path):

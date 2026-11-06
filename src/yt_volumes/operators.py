@@ -623,6 +623,7 @@ class render_session:
         self._saved = {
             "use_pass_z": view_layer.use_pass_z,
             "use_pass_cryptomatte_object": view_layer.use_pass_cryptomatte_object,
+            "pass_cryptomatte_depth": view_layer.pass_cryptomatte_depth,
             "use_persistent_data": scene.render.use_persistent_data,
             "compositor_device": scene.render.compositor_device,
             "view_transform": scene.view_settings.view_transform,
@@ -645,6 +646,8 @@ class render_session:
         view_layer.use_pass_z = self._saved["use_pass_z"]
         if view_layer.use_pass_cryptomatte_object != self._saved["use_pass_cryptomatte_object"]:
             view_layer.use_pass_cryptomatte_object = self._saved["use_pass_cryptomatte_object"]
+        if view_layer.pass_cryptomatte_depth != self._saved["pass_cryptomatte_depth"]:
+            view_layer.pass_cryptomatte_depth = self._saved["pass_cryptomatte_depth"]
         scene.render.use_persistent_data = self._saved["use_persistent_data"]
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
@@ -833,6 +836,9 @@ def _render_current_frame(context):
     smooth_edges = edge_blend.enabled(scene)
     if smooth_edges and not prev_use_cryptomatte:
         view_layer.use_pass_cryptomatte_object = True
+    prev_cryptomatte_depth = view_layer.pass_cryptomatte_depth
+    if smooth_edges and prev_cryptomatte_depth != edge_blend.CRYPTOMATTE_DEPTH:
+        view_layer.pass_cryptomatte_depth = edge_blend.CRYPTOMATTE_DEPTH
     cryptomatte_layers = edge_blend.layer_count(view_layer) if smooth_edges else 0
 
     # Keeps Cycles' BVH/geometry cache between the two passes and across frames.
@@ -964,6 +970,8 @@ def _render_current_frame(context):
             view_layer.use_pass_z = prev_use_pass_z
             if view_layer.use_pass_cryptomatte_object != prev_use_cryptomatte:
                 view_layer.use_pass_cryptomatte_object = prev_use_cryptomatte
+            if view_layer.pass_cryptomatte_depth != prev_cryptomatte_depth:
+                view_layer.pass_cryptomatte_depth = prev_cryptomatte_depth
             scene.render.compositor_device = prev_compositor_device
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
