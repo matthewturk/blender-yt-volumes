@@ -783,6 +783,15 @@ def load_message(pending):
     return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
 
 
+def _free_cycles_session(scene):
+    """Drop Cycles' persistent session before yt_idv loads data; the next render rebuilds it."""
+    # A session kept alive across the load holds about 0.6 GB more GPU memory for as
+    # long as it lives (measured on dd0087), enough to exhaust a 6 GB card in pass 2.
+    if scene.render.engine == "CYCLES" and scene.render.use_persistent_data:
+        scene.render.use_persistent_data = False
+        scene.render.use_persistent_data = True
+
+
 def _needs_cpu_compositor(scene, uses_yt_idv):
     """Whether a render with yt_idv volumes must composite on the CPU."""
     # Under OpenGL the GPU compositor grabs an EGL context, after which yt_idv's
@@ -945,6 +954,7 @@ def _render_current_frame(context, write_still=True):
                 )
                 loading = contextlib.nullcontext()
                 if props.renderer_mode in YT_IDV_RENDERER_MODES and yt_idv_renderer.needs_load(request):
+                    _free_cycles_session(scene)
                     source = os.path.basename(request.volume.dataset.dataset_path or "") or "the sample dataset"
                     loading = _loading_notice(
                         context, f"Loading {source} for {obj.name!r}; Blender will be unresponsive for a while"

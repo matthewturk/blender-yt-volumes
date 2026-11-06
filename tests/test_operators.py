@@ -1955,3 +1955,23 @@ def test_a_cycles_render_with_an_eevee_annotation_scene_warns(addon_enabled, mon
     monkeypatch.setattr(operators, "_gpu_backend", lambda: "VULKAN")
 
     assert operators.compatibility_warnings(scene, bpy.context.view_layer)
+
+
+def test_a_cycles_session_is_dropped_before_yt_idv_loads(addon_enabled, monkeypatch, tmp_path):
+    from yt_volumes import yt_idv_renderer
+
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    toggles = []
+    monkeypatch.setattr(yt_idv_renderer, "needs_load", lambda request: not toggles)
+    real = operators._free_cycles_session
+
+    def recording(scene):
+        toggles.append(scene.render.use_persistent_data)
+        real(scene)
+
+    monkeypatch.setattr(operators, "_free_cycles_session", recording)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    operators.render_current_frame(bpy.context)
+    operators.render_current_frame(bpy.context)  # already loaded: no drop
+    assert toggles == [True]
