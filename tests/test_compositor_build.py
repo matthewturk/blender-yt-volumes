@@ -608,3 +608,26 @@ def test_volume_layers_go_to_the_compositor_in_memory_reusing_one_image(clean_sc
     pixels = np.empty(len(image.pixels), dtype=np.float32)
     image.pixels.foreach_get(pixels)
     np.testing.assert_allclose(pixels.reshape(4, 6, 4)[..., 0], 0.25)
+
+
+def _exr_codecs(node):
+    if hasattr(node, "file_output_items"):
+        return [item.format.exr_codec for item in node.file_output_items]
+    return [node.format.exr_codec]
+
+
+def test_pass1_outputs_write_uncompressed_exrs_even_on_older_graphs(clean_scene, tmp_path):
+    scene = clean_scene
+    bpy.context.view_layer.use_pass_z = True
+    bpy.context.view_layer.use_pass_cryptomatte_object = True
+    tree = cb.ensure_compositor_tree(scene)
+    cb.build_pass1_capture_graph(scene, str(tmp_path), 1, cryptomatte_layers=1)
+    names = [cb._node_name(n) for n in ("Pass1BeautyOut", "Pass1DepthOut", "Pass1CryptoOut00")]
+    assert all(_exr_codecs(tree.nodes[n]) == ["NONE"] for n in names)
+
+    for n in names:  # as a graph built before outputs were uncompressed
+        node = tree.nodes[n]
+        for image_format in ([i.format for i in node.file_output_items] if hasattr(node, "file_output_items") else [node.format]):
+            image_format.exr_codec = "ZIP"
+    cb.build_pass1_capture_graph(scene, str(tmp_path), 1, cryptomatte_layers=1)
+    assert all(_exr_codecs(tree.nodes[n]) == ["NONE"] for n in names)

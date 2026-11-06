@@ -238,12 +238,21 @@ def _configure_single_file_output(node, directory, name_prefix):
         item.override_node_format = True
         item.format.file_format = "OPEN_EXR"
         item.format.color_depth = "32"
-        return node.inputs[0]
-    node.base_path = directory
-    node.format.file_format = "OPEN_EXR"
-    node.format.color_depth = "32"
-    node.file_slots[0].path = name_prefix
+    else:
+        node.base_path = directory
+        node.format.file_format = "OPEN_EXR"
+        node.format.color_depth = "32"
+        node.file_slots[0].path = name_prefix
+    _write_uncompressed(node)
     return node.inputs[0]
+
+
+def _write_uncompressed(node):
+    """Skip EXR compression on a pass-1 File Output: its files are read once and deleted."""
+    formats = [item.format for item in node.file_output_items] if hasattr(node, "file_output_items") else [node.format]
+    for image_format in formats:
+        if image_format.exr_codec != "NONE":
+            image_format.exr_codec = "NONE"
 
 
 _VOLUME_ORDER_KEY = "vo_volume_order"
@@ -406,6 +415,7 @@ def _redirect_single_file_output(node, directory):
         node.directory = directory
     else:
         node.base_path = directory
+    _write_uncompressed(node)  # nodes built by older versions compress
 
 
 def build_pass1_capture_graph(scene, output_dir, frame_number, cryptomatte_layers=0):

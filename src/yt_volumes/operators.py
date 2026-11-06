@@ -13,6 +13,7 @@ produce this frame's depth and composite a volume render made from it.
   and write the final output.
 """
 
+import concurrent.futures
 import contextlib
 import dataclasses
 import math
@@ -623,6 +624,7 @@ class render_session:
         self._saved = {
             "use_pass_z": view_layer.use_pass_z,
             "use_pass_cryptomatte_object": view_layer.use_pass_cryptomatte_object,
+            "pass_cryptomatte_depth": view_layer.pass_cryptomatte_depth,
             "use_persistent_data": scene.render.use_persistent_data,
             "compositor_device": scene.render.compositor_device,
             "view_transform": scene.view_settings.view_transform,
@@ -645,6 +647,8 @@ class render_session:
         view_layer.use_pass_z = self._saved["use_pass_z"]
         if view_layer.use_pass_cryptomatte_object != self._saved["use_pass_cryptomatte_object"]:
             view_layer.use_pass_cryptomatte_object = self._saved["use_pass_cryptomatte_object"]
+        if view_layer.pass_cryptomatte_depth != self._saved["pass_cryptomatte_depth"]:
+            view_layer.pass_cryptomatte_depth = self._saved["pass_cryptomatte_depth"]
         scene.render.use_persistent_data = self._saved["use_persistent_data"]
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
@@ -653,13 +657,40 @@ class render_session:
         return False  # never swallow exceptions
 
 
-def _pass2_render_overrides(scene):
+def _smoothed_layer(name, rgba, depth, cryptomatte, log):
+    """`rgba` blended by `edge_blend.blend` and decoded to linear, for a background thread."""
+    start = time.monotonic()
+    layer = compositor_build.display_to_linear(edge_blend.blend(rgba, depth, *cryptomatte))
+    log(f"smoothed surface edges for {name!r} ({time.monotonic() - start:.2f}s, in the background)")
+    return layer
+
+
+# Not use_shadows or use_raytracing: toggling use_shadows recompiles every
+# material on the first pass 2 (about 25 s), and use_raytracing may too.
+_EEVEE_PASS2_SETTINGS = (
+    ("taa_render_samples", 1),
+    ("shadow_pool_size", "16"),
+    ("use_fast_gi", False),
+    ("use_volumetric_shadows", False),
+    ("volumetric_samples", 1),
+)
+
+
+def _pass2_render_overrides(scene, view_layer=None):
     """(owner, property, value) settings that make pass 2's discarded scene
     render as cheap as possible for the scene's engine.
     """
     engine = scene.render.engine
     if engine.startswith("BLENDER_EEVEE"):
-        return [(scene.eevee, "taa_render_samples", 1)]
+        # EEVEE keeps no cache between renders, so these cost nothing to toggle;
+        # they shrink the GPU memory the discarded render allocates.
+        overrides = [
+            (scene.eevee, name, value) for name, value in _EEVEE_PASS2_SETTINGS
+            if hasattr(scene.eevee, name)
+        ]
+        if view_layer is not None and view_layer.use_pass_cryptomatte_object:
+            overrides.append((view_layer, "use_pass_cryptomatte_object", False))
+        return overrides
     if engine == "CYCLES":
         # toggling use_denoising too makes the next pass 1 re-sync, costing what it saves
         return [(scene.cycles, "samples", 1)]
@@ -833,6 +864,9 @@ def _render_current_frame(context):
     smooth_edges = edge_blend.enabled(scene)
     if smooth_edges and not prev_use_cryptomatte:
         view_layer.use_pass_cryptomatte_object = True
+    prev_cryptomatte_depth = view_layer.pass_cryptomatte_depth
+    if smooth_edges and prev_cryptomatte_depth != edge_blend.CRYPTOMATTE_DEPTH:
+        view_layer.pass_cryptomatte_depth = edge_blend.CRYPTOMATTE_DEPTH
     cryptomatte_layers = edge_blend.layer_count(view_layer) if smooth_edges else 0
 
     # Keeps Cycles' BVH/geometry cache between the two passes and across frames.
@@ -858,6 +892,7 @@ def _render_current_frame(context):
         if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
             scene.render.compositor_device = "CPU"
     viewports = _solid_viewports(context) if _active_render_session is None else []
+    background = concurrent.futures.ThreadPoolExecutor(1)
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
@@ -870,10 +905,12 @@ def _render_current_frame(context):
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
             bpy.ops.render.render(write_still=False)
-        log(f"pass1 wrote beauty exists={os.path.exists(beauty_path)} depth exists={os.path.exists(depth_path)}")
-
         # With Stereo 3D, pass 1 writes each eye's EXRs with the view's file suffix.
         views = render_views(scene)
+        for suffix in (view[1] if view else "" for view in views):
+            log(f"pass1 wrote{' ' + suffix.lstrip('_') if suffix else ''} beauty exists="
+                f"{os.path.exists(_with_suffix(beauty_path, suffix))} depth exists="
+                f"{os.path.exists(_with_suffix(depth_path, suffix))}")
         frame_params = build_frame_params(scene)
         view_layers = {}
         for view_index, view in enumerate(views):
@@ -920,12 +957,22 @@ def _render_current_frame(context):
                 if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                     props.colormap_range = result.cmap_range
                     props.colormap_range_set = True
-                rgba = result.rgba
                 if cryptomatte is not None:
-                    with step(f"smooth surface edges for {obj.name!r}"):
-                        rgba = edge_blend.blend(rgba, depth_buffer.data, *cryptomatte)
-                # handed to the compositor in memory, read as linear
-                volume_layers.append((obj.name, compositor_build.display_to_linear(rgba)))
+                    # blended in the background while the next view's volume renders
+                    volume_layers.append((obj.name, background.submit(
+                        _smoothed_layer, obj.name, result.rgba, depth_buffer.data, cryptomatte, log,
+                    )))
+                else:
+                    # handed to the compositor in memory, read as linear
+                    volume_layers.append((obj.name, compositor_build.display_to_linear(result.rgba)))
+
+        if smooth_edges:
+            with step("wait for smooth surface edges"):
+                for layers in view_layers.values():
+                    layers[:] = [
+                        (name, layer.result() if isinstance(layer, concurrent.futures.Future) else layer)
+                        for name, layer in layers
+                    ]
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between
@@ -942,7 +989,7 @@ def _render_current_frame(context):
                 for name, suffix in (view or (None, "") for view in views)
             }, overlay)
         # The engine renders the scene even with no Render Layers node, then discards it.
-        overrides = _pass2_render_overrides(scene)
+        overrides = _pass2_render_overrides(scene, view_layer)
         saved = [(owner, name, getattr(owner, name)) for owner, name, _ in overrides]
         for owner, name, value in overrides:
             if getattr(owner, name) != value:
@@ -964,11 +1011,14 @@ def _render_current_frame(context):
             view_layer.use_pass_z = prev_use_pass_z
             if view_layer.use_pass_cryptomatte_object != prev_use_cryptomatte:
                 view_layer.use_pass_cryptomatte_object = prev_use_cryptomatte
+            if view_layer.pass_cryptomatte_depth != prev_cryptomatte_depth:
+                view_layer.pass_cryptomatte_depth = prev_cryptomatte_depth
             scene.render.compositor_device = prev_compositor_device
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
             compositor_build.restore_passthrough(scene)
         _restore_viewports(viewports)
+        background.shutdown(cancel_futures=True)  # waits for a running blend before its inputs go
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 

@@ -10,6 +10,7 @@ of the pixel the nearer surface covers.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import bpy
 import numpy as np
@@ -18,7 +19,9 @@ SCENE_PROPERTY = "yt_volumes_smooth_edges"
 RADIUS = 3  # pixels each side of an edge pixel to take the front and back volume from
 DEPTH_RATIO = 1.01  # a neighbourhood spans an edge when its depths differ by more than this factor
 COVERAGE_EPSILON = 0.005  # pixels this close to fully covered or uncovered are left alone
-CHUNK = 20000  # edge pixels per vectorized batch, bounding memory
+CHUNK = 5000  # edge pixels per vectorized batch, bounding memory
+WORKERS = min(4, os.cpu_count() or 1)  # batches run in parallel: numpy releases the GIL; more threads don't help
+CRYPTOMATTE_DEPTH = 2  # objects per pixel: one EXR layer, and the blend's window uses only the top two
 _IMAGE_PREFIX = "vo_crypto_tmp"
 
 
@@ -116,7 +119,8 @@ def blend(rgba, depth, ids, coverage, radius=RADIUS, ratio=DEPTH_RATIO):
     top_ids = np.pad(ids[..., :2], edge_pad, mode="edge").reshape(-1, 2)
     top_coverage = np.pad(coverage[..., :2], edge_pad, mode="edge").reshape(-1, 2)
     out = rgba.copy()
-    for start in range(0, len(ys), CHUNK):
+
+    def blend_batch(start):
         y, x = ys[start:start + CHUNK], xs[start:start + CHUNK]
         window = (y * width + x)[:, None] + offsets  # (n, k*k): the window's top-left is the pixel minus radius
         window_depth = np.take(depth_pad, window)
@@ -151,4 +155,7 @@ def blend(rgba, depth, ids, coverage, radius=RADIUS, ratio=DEPTH_RATIO):
         partial = (w > COVERAGE_EPSILON) & (w < 1.0 - COVERAGE_EPSILON)
         w = w[partial, None]
         out[y[partial], x[partial]] = w * front[partial] + (1.0 - w) * back[partial]
+
+    with ThreadPoolExecutor(WORKERS) as pool:
+        list(pool.map(blend_batch, range(0, len(ys), CHUNK)))  # list() re-raises a batch's exception
     return out

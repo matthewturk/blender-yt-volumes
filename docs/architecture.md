@@ -13,8 +13,10 @@ and `yt_idv_renderer.py` (registration, zoom, depth clip).
    `compositor_build.build_pass1_capture_graph`) to do nothing but write
    Combined and Z to full-float EXR via File Output nodes. Flagged objects
    are Empties, which never render, so nothing needs hiding. With Smooth
-   Surface Edges it also turns on `use_pass_cryptomatte_object` and writes
-   each Cryptomatte layer (`CryptoObject00`, ...) the same way.
+   Surface Edges it also turns on `use_pass_cryptomatte_object`, sets the
+   Cryptomatte depth to 2 objects per pixel (one layer, `CryptoObject00`) and
+   writes it the same way. These EXRs are written uncompressed, since each is
+   read once and deleted.
 2. It reads the Z EXR back into a `DepthBuffer` (`operators.read_depth_buffer`),
    and any Cryptomatte layers into per-pixel `(ids, coverage)` ranks
    (`edge_blend.read_cryptomatte`, loaded Non-Color and Channel Packed so the

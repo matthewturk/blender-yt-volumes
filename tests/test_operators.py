@@ -1791,6 +1791,7 @@ def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, 
     scene.yt_volumes_smooth_edges = True
     view_layer = bpy.context.view_layer
     assert not view_layer.use_pass_cryptomatte_object
+    view_layer.pass_cryptomatte_depth = 6
 
     seen = []
 
@@ -1805,11 +1806,12 @@ def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, 
     operators.render_current_frame(bpy.context)
 
     ids, coverage = seen[0]
-    assert ids.shape == coverage.shape == (24, 32, 6)  # 3 Cryptomatte layers of 2 ranks
+    assert ids.shape == coverage.shape == (24, 32, 2)  # one Cryptomatte layer of 2 ranks
     sphere = (coverage > 0.99) & (ids != 0)  # EEVEE also gives the world an entry, id 0
     assert sphere.any() and np.unique(ids[sphere]).size == 1  # one object, its id read intact
     assert changed[0] > 0  # the sphere's outline
     assert not view_layer.use_pass_cryptomatte_object  # restored
+    assert view_layer.pass_cryptomatte_depth == 6
 
 
 def test_smooth_surface_edges_off_adds_no_pass(addon_enabled, monkeypatch, tmp_path):
@@ -1852,3 +1854,63 @@ def test_solid_viewports_switches_shaded_viewports_and_restores_them():
 
 def test_solid_viewports_without_windows_does_nothing():
     assert operators._solid_viewports(types.SimpleNamespace(window_manager=None)) == []
+
+
+def test_pass2_drops_cryptomatte_for_eevee_but_not_cycles(clean_scene):
+    view_layer = bpy.context.view_layer
+    view_layer.use_pass_cryptomatte_object = True
+    clean_scene.render.engine = "BLENDER_EEVEE"
+    assert (view_layer, "use_pass_cryptomatte_object", False) in operators._pass2_render_overrides(clean_scene, view_layer)
+    clean_scene.render.engine = "CYCLES"  # toggling a pass would invalidate Cycles' persistent data
+    assert all(owner != view_layer for owner, _, _ in operators._pass2_render_overrides(clean_scene, view_layer))
+
+
+def test_stereo_smooth_edges_blends_the_left_eye_while_the_right_eye_renders(addon_enabled, monkeypatch, tmp_path):
+    import dataclasses
+    import threading
+
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "Standard"
+    _add_camera(scene, "PERSP", lens=50.0)
+    _stereo(scene)
+    _flagged_cube()
+    scene.yt_volumes_smooth_edges = True
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    scene.render.filepath = str(tmp_path / "out_")
+    right_eye_rendering = threading.Event()
+    overlapped = []
+
+    def fake_renderer(request):
+        if request.frame.view_index == 1:
+            right_eye_rendering.set()
+        rgba = np.zeros(request.depth.data.shape + (4,), dtype="float32")
+        rgba[..., request.frame.view_index * 2] = rgba[..., 3] = 1.0
+        return dataclasses.replace(_fake_render_result(request), rgba=rgba)
+
+    def slow_left_blend(rgba, depth, ids, coverage, **kwargs):
+        if rgba[0, 0, 0] == 1.0:  # the left eye's
+            overlapped.append(right_eye_rendering.wait(10))
+        return rgba
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    monkeypatch.setattr(edge_blend, "blend", slow_left_blend)
+
+    operators.render_current_frame(bpy.context)
+
+    assert overlapped == [True]
+    for suffix, channel in (("_L", 0), ("_R", 2)):
+        pixel = np.array(bpy.data.images.load(str(tmp_path / f"out_{suffix}.png")).pixels[:4])
+        assert pixel[channel] > 0.9 and pixel[2 - channel] < 0.1, suffix
+
+
+def test_pass2_shrinks_eevee_without_settings_that_recompile_materials(clean_scene):
+    clean_scene.render.engine = "BLENDER_EEVEE"
+    clean_scene.eevee.shadow_pool_size = "512"
+    names = {name: value for owner, name, value in operators._pass2_render_overrides(clean_scene) if owner == clean_scene.eevee}
+    assert names["taa_render_samples"] == 1 and names["shadow_pool_size"] == "16" and names["use_fast_gi"] is False
+    assert "use_shadows" not in names and "use_raytracing" not in names
