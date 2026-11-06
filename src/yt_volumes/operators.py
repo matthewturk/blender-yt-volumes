@@ -665,15 +665,30 @@ def _smoothed_layer(name, rgba, depth, cryptomatte, log):
     return layer
 
 
+# Not use_shadows or use_raytracing: toggling use_shadows recompiles every
+# material on the first pass 2 (about 25 s), and use_raytracing may too.
+_EEVEE_PASS2_SETTINGS = (
+    ("taa_render_samples", 1),
+    ("shadow_pool_size", "16"),
+    ("use_fast_gi", False),
+    ("use_volumetric_shadows", False),
+    ("volumetric_samples", 1),
+)
+
+
 def _pass2_render_overrides(scene, view_layer=None):
     """(owner, property, value) settings that make pass 2's discarded scene
     render as cheap as possible for the scene's engine.
     """
     engine = scene.render.engine
     if engine.startswith("BLENDER_EEVEE"):
-        overrides = [(scene.eevee, "taa_render_samples", 1)]
+        # EEVEE keeps no cache between renders, so these cost nothing to toggle;
+        # they shrink the GPU memory the discarded render allocates.
+        overrides = [
+            (scene.eevee, name, value) for name, value in _EEVEE_PASS2_SETTINGS
+            if hasattr(scene.eevee, name)
+        ]
         if view_layer is not None and view_layer.use_pass_cryptomatte_object:
-            # EEVEE keeps no cache between renders, so dropping a pass costs nothing
             overrides.append((view_layer, "use_pass_cryptomatte_object", False))
         return overrides
     if engine == "CYCLES":

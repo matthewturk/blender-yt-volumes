@@ -1906,3 +1906,11 @@ def test_stereo_smooth_edges_blends_the_left_eye_while_the_right_eye_renders(add
     for suffix, channel in (("_L", 0), ("_R", 2)):
         pixel = np.array(bpy.data.images.load(str(tmp_path / f"out_{suffix}.png")).pixels[:4])
         assert pixel[channel] > 0.9 and pixel[2 - channel] < 0.1, suffix
+
+
+def test_pass2_shrinks_eevee_without_settings_that_recompile_materials(clean_scene):
+    clean_scene.render.engine = "BLENDER_EEVEE"
+    clean_scene.eevee.shadow_pool_size = "512"
+    names = {name: value for owner, name, value in operators._pass2_render_overrides(clean_scene) if owner == clean_scene.eevee}
+    assert names["taa_render_samples"] == 1 and names["shadow_pool_size"] == "16" and names["use_fast_gi"] is False
+    assert "use_shadows" not in names and "use_raytracing" not in names
