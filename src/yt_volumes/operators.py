@@ -612,7 +612,7 @@ class render_session:
         with operators.render_session(context):
             for frame in frames:
                 scene.frame_set(frame)
-                bpy.ops.render.volume_override(animation=False)
+                bpy.ops.render.volume_override(animation=False, write_still=True)
     """
 
     def __init__(self, context):
@@ -783,11 +783,20 @@ def load_message(pending):
     return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
 
 
+def _needs_cpu_compositor(scene, uses_yt_idv):
+    """Whether a render with yt_idv volumes must composite on the CPU."""
+    # Under OpenGL the GPU compositor grabs an EGL context, after which yt_idv's
+    # own EGL context fails with EGL_BAD_ACCESS. With Cycles, pass 2's GPU
+    # compositor beside yt_idv's data can run out of GPU memory, and Blender
+    # crashes on the failed Vulkan allocation (1080p on a 6 GB card).
+    return uses_yt_idv and (_gpu_backend() != "VULKAN" or scene.render.engine == "CYCLES")
+
+
 def compatibility_warnings(scene, view_layer):
     """Messages for render setups known to crash Blender's UI."""
     flagged = properties.rendered_volumes(scene, view_layer)
     uses_yt_idv = any(obj.volume_override.renderer_mode in YT_IDV_RENDERER_MODES for obj in flagged)
-    cpu_compositor = scene.render.compositor_device == "CPU" or (uses_yt_idv and _gpu_backend() != "VULKAN")
+    cpu_compositor = scene.render.compositor_device == "CPU" or _needs_cpu_compositor(scene, uses_yt_idv)
     overlay = annotations.annotation_scene(scene)
     warnings = []
     if (
@@ -807,21 +816,22 @@ def compatibility_warnings(scene, view_layer):
 _in_pipeline = False  # True while render_current_frame runs, for handlers.render_pre
 
 
-def render_current_frame(context):
+def render_current_frame(context, write_still=True):
     """Runs the full two-pass pipeline for `scene.frame_current`. Restores
     scene settings (unless a `render_session` is active) even if a step raises.
+    With `write_still` False the result is only in the Render Result image.
     """
     global _in_pipeline
     _in_pipeline = True
     frame, t0 = context.scene.frame_current, time.monotonic()
     try:
-        _render_current_frame(context)
+        _render_current_frame(context, write_still)
         _log(f"frame {frame} done in {time.monotonic() - t0:.2f}s")
     finally:
         _in_pipeline = False
 
 
-def _render_current_frame(context):
+def _render_current_frame(context, write_still=True):
     scene = context.scene
     if scene.camera is None:
         raise RuntimeError("Scene has no active camera")
@@ -887,9 +897,7 @@ def _render_current_frame(context):
                  f"the direct A/B measurement. Set your scene's View Transform to 'Standard' "
                  f"(or 'Raw') yourself to silence this.")
             scene.view_settings.view_transform = "Standard"
-        # Under OpenGL the GPU compositor grabs an EGL context, after which
-        # yt_idv's own EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
-        if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
+        if prev_compositor_device != "CPU" and _needs_cpu_compositor(scene, uses_yt_idv):
             scene.render.compositor_device = "CPU"
     viewports = _solid_viewports(context) if _active_render_session is None else []
     background = concurrent.futures.ThreadPoolExecutor(1)
@@ -995,8 +1003,8 @@ def _render_current_frame(context):
             if getattr(owner, name) != value:
                 setattr(owner, name, value)
         try:
-            with step(f"pass2 render (bpy.ops.render.render, write_still=True), engine={scene.render.engine}"):
-                bpy.ops.render.render(write_still=True)
+            with step(f"pass2 render (bpy.ops.render.render, write_still={write_still}), engine={scene.render.engine}"):
+                bpy.ops.render.render(write_still=write_still)
         finally:
             for owner, name, value in saved:
                 if getattr(owner, name) != value:
@@ -1004,7 +1012,10 @@ def _render_current_frame(context):
         base = bpy.path.abspath(scene.render.filepath)
         extension = scene.render.file_extension if scene.render.use_file_extension else ""
         outputs = [base + (view[1] if view else "") + extension for view in views]
-        log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
+        if write_still:
+            log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
+        else:
+            log("pass2 done; the result is in the Render Result image (nothing written to disk)")
     finally:
         # An active render_session restores these once at the end instead.
         if _active_render_session is None:
@@ -1039,7 +1050,7 @@ def _show_render_result(context):
         _log(f"could not show Render Result ({exc}) -- output was still written to disk/Render Result")
 
 
-def _render_numbered_frame(context):
+def _render_numbered_frame(context, write_still=True):
     """`render_current_frame` writing to Blender's numbered path for the
     frame, as Render Animation names its files.
     """
@@ -1048,7 +1059,7 @@ def _render_numbered_frame(context):
     # the pipeline saves with write_still, which uses the output path as is
     render.filepath = os.path.splitext(render.frame_path())[0] if render.use_file_extension else render.frame_path()
     try:
-        render_current_frame(context)
+        render_current_frame(context, write_still)
     finally:
         render.filepath = saved
 
@@ -1061,6 +1072,9 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     animation: bpy.props.BoolProperty(name="Animation", default=False)
+    # Like render.render: a single frame (F12) stays in Render Result unless asked;
+    # an animation always saves its frames.
+    write_still: bpy.props.BoolProperty(name="Write Still", default=False)
     _timer = None
     _frame_iter = None
     _session = None
@@ -1084,11 +1098,11 @@ class VOLUMEOVERRIDE_OT_render(bpy.types.Operator):
     def execute(self, context):
         if not properties.rendered_volumes(context.scene, context.view_layer):
             # F12 is always remapped here; fall back to a normal render.
-            return bpy.ops.render.render("INVOKE_DEFAULT", animation=self.animation)
+            return bpy.ops.render.render("INVOKE_DEFAULT", animation=self.animation, write_still=self.write_still)
 
         if not self.animation:
             try:
-                _render_numbered_frame(context)
+                _render_numbered_frame(context, write_still=self.write_still)
             except Exception as exc:
                 self.report({"ERROR"}, f"Volume override render failed: {exc}")
                 return {"CANCELLED"}

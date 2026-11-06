@@ -98,7 +98,7 @@ try:
             scene.frame_set(frame)
             # Must be set per frame: the add-on's output is not auto-numbered.
             scene.render.filepath = os.path.join(OUT_DIR, f"{FRAME_PREFIX}{frame:04d}")
-            result = bpy.ops.render.volume_override(animation=False)
+            result = bpy.ops.render.volume_override(animation=False, write_still=True)
             print(f"[render_headless] frame {frame}: {result} -> {scene.render.filepath}.png")
 except KeyboardInterrupt:
     # Frames finished so far are already on disk; nothing to clean up.
