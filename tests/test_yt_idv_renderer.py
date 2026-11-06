@@ -715,6 +715,34 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
     assert result3 is not result1
 
 
+class _NoGL:
+    def __getattr__(self, name):
+        return (lambda *args, **kwargs: None) if name.startswith("gl") else 0
+
+
+def test_reused_result_brings_back_its_own_opacity_report(monkeypatch, _clean_yir_state):
+    render_size = 4
+    fake_scene = _FakeYtIdvScene()
+    fake_scene.components = [types.SimpleNamespace(render_method="transfer_function", data=None)]
+
+    class _FakeRc:
+        def run(self):
+            return np.ones((render_size, render_size, 4), dtype=np.float32)
+
+    monkeypatch.setattr(yir, "_get_volume_scene", lambda request, rsize: (_FakeRc(), fake_scene, _FakeDataset(), False))
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera, model_shift=None: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
+    monkeypatch.setattr(yir, "_opacity_report", lambda collection, params, alpha: {"covered_fraction": 1.0})
+    import OpenGL
+    monkeypatch.setattr(OpenGL, "GL", _NoGL())  # another test may have left a GL context current
+
+    request = _request_with(render_size=render_size)
+    yir._render_with_yt_idv(request, lambda component, params: None)
+    yir._opacity_reports["obj"] = {"covered_fraction": 0.0}  # a render at another size reported since
+    yir._render_with_yt_idv(request, lambda component, params: None)
+    assert yir.opacity_report("obj") == {"covered_fraction": 1.0}
+
+
 def test_render_with_yt_idv_retries_after_a_failed_render(monkeypatch, _clean_yir_state):
     render_size = 4
 

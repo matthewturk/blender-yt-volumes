@@ -567,6 +567,34 @@ def _sorted_far_to_near(scene, flagged):
 
 _active_render_session = None  # set by render_session.__enter__/__exit__ below
 
+_HEAVY_SHADING = {"MATERIAL", "RENDERED"}
+
+
+def _solid_viewports(context):
+    """Switch shown 3D viewports in Material Preview or Rendered shading to
+    Solid; returns `(shading, type)` pairs for `_restore_viewports`.
+    """
+    # A shaded viewport makes Stereo 3D EEVEE renders several times slower.
+    saved = []
+    wm = getattr(context, "window_manager", None)
+    for window in getattr(wm, "windows", ()):
+        for area in window.screen.areas:
+            for space in area.spaces:
+                if space.type == "VIEW_3D" and space.shading.type in _HEAVY_SHADING:
+                    saved.append((space.shading, space.shading.type))
+                    space.shading.type = "SOLID"
+    if saved:
+        _log(f"switched {len(saved)} shaded viewport(s) to Solid while rendering")
+    return saved
+
+
+def _restore_viewports(saved):
+    for shading, shading_type in saved:
+        try:
+            shading.type = shading_type
+        except ReferenceError:  # its screen was closed meanwhile
+            pass
+
 
 class render_session:
     """Context manager for multi-frame renders: captures the scene settings
@@ -599,6 +627,7 @@ class render_session:
             "compositor_device": scene.render.compositor_device,
             "view_transform": scene.view_settings.view_transform,
         }
+        self._viewports = _solid_viewports(self._context)
         global _active_render_session
         _active_render_session = self
         # Sweep once per run; KeyError means the add-on isn't registered.
@@ -620,6 +649,7 @@ class render_session:
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
         compositor_build.restore_passthrough(scene)
+        _restore_viewports(self._viewports)
         return False  # never swallow exceptions
 
 
@@ -827,6 +857,7 @@ def _render_current_frame(context):
         # yt_idv's own EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
         if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
             scene.render.compositor_device = "CPU"
+    viewports = _solid_viewports(context) if _active_render_session is None else []
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
@@ -923,8 +954,10 @@ def _render_current_frame(context):
             for owner, name, value in saved:
                 if getattr(owner, name) != value:
                     setattr(owner, name, value)
-        log(f"pass2 done; final output at {scene.render.frame_path()!r} "
-            f"(Render Result image also holds it -- see _show_render_result)")
+        base = bpy.path.abspath(scene.render.filepath)
+        extension = scene.render.file_extension if scene.render.use_file_extension else ""
+        outputs = [base + (view[1] if view else "") + extension for view in views]
+        log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
     finally:
         # An active render_session restores these once at the end instead.
         if _active_render_session is None:
@@ -935,6 +968,7 @@ def _render_current_frame(context):
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
             compositor_build.restore_passthrough(scene)
+        _restore_viewports(viewports)
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 

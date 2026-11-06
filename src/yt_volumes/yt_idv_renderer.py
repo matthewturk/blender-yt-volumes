@@ -108,7 +108,7 @@ NEAR_FRACTION = 1e-3
 _dataset_cache = {}  # dataset name -> (ds, data_source)
 _render_context_cache = {}  # backend -> rc
 _volume_scene_cache = {}  # dataset_id -> (scene, ds, backend)
-_render_result_cache = {}  # (dataset_id, render_size) -> last RenderResult
+_render_result_cache = {}  # (dataset_id, render_size) -> (last RenderResult, its opacity report)
 _depth_textures = {}  # (id(component), shape) -> its external depth-clip Texture2D
 _DISTRIBUTION_BINS = 2048  # log10 bins behind percentiles and the per-point distribution
 _float_tf_textures = {}  # id(component) -> its float32 TransferFunctionTexture
@@ -1138,8 +1138,14 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     depth_hash = _depth_hash(request.depth)
     needs_render = _render_signature_changed(dataset_id, request, render_size, volume_changed, render_mode, depth_hash)
     if not needs_render:
-        cached_result = _render_result_cache.get((dataset_id, render_size))
-        if cached_result is not None:
+        cached = _render_result_cache.get((dataset_id, render_size))
+        if cached is not None:
+            # Another size (a viewport preview, the other eye) may have reported since.
+            cached_result, report = cached
+            if report is None:
+                _opacity_reports.pop(dataset_id, None)
+            else:
+                _opacity_reports[dataset_id] = report
             return cached_result
         # No cached result yet; render anyway.
     # Dropped up front so a render that raises can't leave a stale result to reuse.
@@ -1222,7 +1228,7 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
         color_space="LINEAR",
         cmap_range=_component_cmap_range(scene),
     )
-    _render_result_cache[(dataset_id, render_size)] = result
+    _render_result_cache[(dataset_id, render_size)] = (result, _opacity_reports.get(dataset_id))
     _record_render_signature(dataset_id, signed_request, render_size, render_mode, depth_hash)
     return result
 

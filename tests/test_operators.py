@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import bpy
 import numpy as np
+import types
+
 import pytest
 from mathutils import Vector
 
@@ -1830,3 +1832,23 @@ def test_smooth_surface_edges_off_adds_no_pass(addon_enabled, monkeypatch, tmp_p
 
     tree = compositor_build.ensure_compositor_tree(scene)
     assert not compositor_build._cryptomatte_outputs(tree)
+
+
+def _stub_viewport_context(*shading_types):
+    spaces = [types.SimpleNamespace(type="VIEW_3D", shading=types.SimpleNamespace(type=t)) for t in shading_types]
+    spaces.append(types.SimpleNamespace(type="IMAGE_EDITOR"))
+    area = types.SimpleNamespace(spaces=spaces)
+    window = types.SimpleNamespace(screen=types.SimpleNamespace(areas=[area]))
+    return types.SimpleNamespace(window_manager=types.SimpleNamespace(windows=[window])), spaces
+
+
+def test_solid_viewports_switches_shaded_viewports_and_restores_them():
+    context, spaces = _stub_viewport_context("MATERIAL", "RENDERED", "WIREFRAME", "SOLID")
+    saved = operators._solid_viewports(context)
+    assert [s.shading.type for s in spaces[:4]] == ["SOLID", "SOLID", "WIREFRAME", "SOLID"]
+    operators._restore_viewports(saved)
+    assert [s.shading.type for s in spaces[:4]] == ["MATERIAL", "RENDERED", "WIREFRAME", "SOLID"]
+
+
+def test_solid_viewports_without_windows_does_nothing():
+    assert operators._solid_viewports(types.SimpleNamespace(window_manager=None)) == []
