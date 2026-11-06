@@ -45,6 +45,7 @@ DEFAULTS = {
         "samples": None,
         "device": "OPTIX",  # Cycles only
         "engine": "CYCLES",  # or "BLENDER_EEVEE" (needs Blender's Vulkan GPU backend)
+        "smooth_edges": None,  # the scene's Smooth Surface Edges; default: the .blend's
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
@@ -515,6 +516,8 @@ def _configure_blender(config):
     if blender["resolution"]:
         scene.render.resolution_x, scene.render.resolution_y = blender["resolution"]
     scene.render.image_settings.file_format = "PNG"
+    if blender["smooth_edges"] is not None:
+        scene.yt_volumes_smooth_edges = bool(blender["smooth_edges"])
     configure_engine(scene, blender)
     return scene, temp_work_dir
 
@@ -544,6 +547,14 @@ def apply_render_settings(props, render):
         if key not in LOOK_SETTINGS:
             raise ConfigError(f"render.yt_idv.{key} is not a volume look setting")
         setattr(props, key, value)
+    bounds = render.get("yt_idv", {})
+    if "tf_log_min" in bounds or "tf_log_max" in bounds:
+        from . import transfer_function_nodes
+
+        # Geometry Nodes slots carry their own Min/Max, which would win over the volume's.
+        tree = transfer_function_nodes.transfer_function_tree(props.id_data)
+        for slot in transfer_function_nodes.slot_nodes(tree) if tree is not None else []:
+            transfer_function_nodes.set_slot_bounds(slot, props.tf_log_min, props.tf_log_max)
 
 
 def _register_extension(path):

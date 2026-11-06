@@ -9,7 +9,7 @@ Blender's addons folder) or as an extension (`blender_manifest.toml`).
 bl_info = {
     "name": "yt-volumes",
     "author": "Matthew Turk",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (3, 6, 0),
     "location": "Properties > Object > Volume Override; Render menu",
     "description": (
@@ -19,7 +19,7 @@ bl_info = {
     "category": "Render",
 }
 
-from . import annotations, change_tracking, compositor_build, external_render, grid_overlay, handlers, operators, properties, sample_renderers, scene_sync, tf_plot, units, viewer_link, viewport_preview  # noqa: E402,F401
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, grid_overlay, handlers, operators, properties, sample_renderers, scene_sync, tf_plot, units, viewer_link, viewport_preview  # noqa: E402,F401
 
 
 def register():
@@ -33,9 +33,11 @@ def register():
     tf_plot.register()
     units.register()
     annotations.register()
+    edge_blend.register()
 
 
 def unregister():
+    edge_blend.unregister()
     annotations.unregister()
     units.unregister()
     tf_plot.unregister()

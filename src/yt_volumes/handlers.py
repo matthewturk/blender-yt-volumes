@@ -59,7 +59,18 @@ def _render_done(*_args):
     _warned[0] = False
 
 
+@persistent
+def _slot_bounds_on_load(*_args):
+    from . import transfer_function_nodes
+
+    for obj in bpy.data.objects:
+        props = getattr(obj, "volume_override", None)
+        if props is not None and props.is_volume_override:
+            transfer_function_nodes.ensure_slot_bounds(obj)
+
+
 def register_handlers():
+    bpy.app.handlers.load_post.append(_slot_bounds_on_load)
     bpy.app.handlers.render_pre.append(_warn_plain_render)
     bpy.app.handlers.render_complete.append(_render_done)
     bpy.app.handlers.render_cancel.append(_render_done)
@@ -71,6 +82,8 @@ def unregister_handlers():
             handlers.remove(_render_done)
     if _warn_plain_render in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.remove(_warn_plain_render)
+    if _slot_bounds_on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_slot_bounds_on_load)
 
 
 def register_keymaps():

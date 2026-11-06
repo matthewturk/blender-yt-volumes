@@ -24,7 +24,7 @@ import time
 import bpy
 import mathutils
 
-from . import annotations, change_tracking, compositor_build, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -567,6 +567,34 @@ def _sorted_far_to_near(scene, flagged):
 
 _active_render_session = None  # set by render_session.__enter__/__exit__ below
 
+_HEAVY_SHADING = {"MATERIAL", "RENDERED"}
+
+
+def _solid_viewports(context):
+    """Switch shown 3D viewports in Material Preview or Rendered shading to
+    Solid; returns `(shading, type)` pairs for `_restore_viewports`.
+    """
+    # A shaded viewport makes Stereo 3D EEVEE renders several times slower.
+    saved = []
+    wm = getattr(context, "window_manager", None)
+    for window in getattr(wm, "windows", ()):
+        for area in window.screen.areas:
+            for space in area.spaces:
+                if space.type == "VIEW_3D" and space.shading.type in _HEAVY_SHADING:
+                    saved.append((space.shading, space.shading.type))
+                    space.shading.type = "SOLID"
+    if saved:
+        _log(f"switched {len(saved)} shaded viewport(s) to Solid while rendering")
+    return saved
+
+
+def _restore_viewports(saved):
+    for shading, shading_type in saved:
+        try:
+            shading.type = shading_type
+        except ReferenceError:  # its screen was closed meanwhile
+            pass
+
 
 class render_session:
     """Context manager for multi-frame renders: captures the scene settings
@@ -594,10 +622,12 @@ class render_session:
         view_layer = self._context.view_layer
         self._saved = {
             "use_pass_z": view_layer.use_pass_z,
+            "use_pass_cryptomatte_object": view_layer.use_pass_cryptomatte_object,
             "use_persistent_data": scene.render.use_persistent_data,
             "compositor_device": scene.render.compositor_device,
             "view_transform": scene.view_settings.view_transform,
         }
+        self._viewports = _solid_viewports(self._context)
         global _active_render_session
         _active_render_session = self
         # Sweep once per run; KeyError means the add-on isn't registered.
@@ -613,10 +643,13 @@ class render_session:
         scene = self._context.scene
         view_layer = self._context.view_layer
         view_layer.use_pass_z = self._saved["use_pass_z"]
+        if view_layer.use_pass_cryptomatte_object != self._saved["use_pass_cryptomatte_object"]:
+            view_layer.use_pass_cryptomatte_object = self._saved["use_pass_cryptomatte_object"]
         scene.render.use_persistent_data = self._saved["use_persistent_data"]
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
         compositor_build.restore_passthrough(scene)
+        _restore_viewports(self._viewports)
         return False  # never swallow exceptions
 
 
@@ -796,6 +829,11 @@ def _render_current_frame(context):
     prev_use_pass_z = view_layer.use_pass_z
     if not prev_use_pass_z:
         view_layer.use_pass_z = True
+    prev_use_cryptomatte = view_layer.use_pass_cryptomatte_object
+    smooth_edges = edge_blend.enabled(scene)
+    if smooth_edges and not prev_use_cryptomatte:
+        view_layer.use_pass_cryptomatte_object = True
+    cryptomatte_layers = edge_blend.layer_count(view_layer) if smooth_edges else 0
 
     # Keeps Cycles' BVH/geometry cache between the two passes and across frames.
     prev_use_persistent_data = scene.render.use_persistent_data
@@ -819,14 +857,16 @@ def _render_current_frame(context):
         # yt_idv's own EGL context fails with EGL_BAD_ACCESS; use the CPU compositor.
         if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
             scene.render.compositor_device = "CPU"
+    viewports = _solid_viewports(context) if _active_render_session is None else []
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
         # --- Pass 1: beauty + Z from the scene's engine ----------------------
         with step("pass1 build compositor graph"):
             beauty_path, depth_path = compositor_build.build_pass1_capture_graph(
-                scene, frame_dir, scene.frame_current,
+                scene, frame_dir, scene.frame_current, cryptomatte_layers=cryptomatte_layers,
             )
+        cryptomatte_paths = compositor_build.cryptomatte_paths(frame_dir, scene.frame_current, cryptomatte_layers)
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
             bpy.ops.render.render(write_still=False)
@@ -840,6 +880,10 @@ def _render_current_frame(context):
             name, suffix = view or (None, "")
             with step(f"read_depth_buffer{suffix}"):
                 depth_buffer = read_depth_buffer(scene, _with_suffix(depth_path, suffix))
+            cryptomatte = None
+            if cryptomatte_paths:
+                with step(f"read_cryptomatte{suffix}"):
+                    cryptomatte = edge_blend.read_cryptomatte([_with_suffix(p, suffix) for p in cryptomatte_paths])
             camera_params = build_camera_params(scene, scene.camera, name)
             frame_params = dataclasses.replace(frame_params, view_index=view_index)
 
@@ -864,6 +908,9 @@ def _render_current_frame(context):
                     result = render_fn(request)
                 if props.renderer_mode in YT_IDV_RENDERER_MODES:
                     units.record(obj, request.volume.dataset.dataset_id, scene)
+                    report = yt_idv_renderer.opacity_report(request.volume.dataset.dataset_id)
+                    if report is not None:
+                        log(f"{obj.name!r} opacity: " + "; ".join(f"{label} {value}" for label, value in yt_idv_renderer.describe_opacity_report(report)))
                 assert result.alpha_mode == "PREMULTIPLIED"
                 assert result.color_space == "LINEAR"
                 if props.renderer_mode == "YT_IDV_GN_TRANSFER_FUNCTION":
@@ -873,8 +920,12 @@ def _render_current_frame(context):
                 if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                     props.colormap_range = result.cmap_range
                     props.colormap_range_set = True
+                rgba = result.rgba
+                if cryptomatte is not None:
+                    with step(f"smooth surface edges for {obj.name!r}"):
+                        rgba = edge_blend.blend(rgba, depth_buffer.data, *cryptomatte)
                 # handed to the compositor in memory, read as linear
-                volume_layers.append((obj.name, compositor_build.display_to_linear(result.rgba)))
+                volume_layers.append((obj.name, compositor_build.display_to_linear(rgba)))
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between
@@ -903,16 +954,21 @@ def _render_current_frame(context):
             for owner, name, value in saved:
                 if getattr(owner, name) != value:
                     setattr(owner, name, value)
-        log(f"pass2 done; final output at {scene.render.frame_path()!r} "
-            f"(Render Result image also holds it -- see _show_render_result)")
+        base = bpy.path.abspath(scene.render.filepath)
+        extension = scene.render.file_extension if scene.render.use_file_extension else ""
+        outputs = [base + (view[1] if view else "") + extension for view in views]
+        log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
     finally:
         # An active render_session restores these once at the end instead.
         if _active_render_session is None:
             view_layer.use_pass_z = prev_use_pass_z
+            if view_layer.use_pass_cryptomatte_object != prev_use_cryptomatte:
+                view_layer.use_pass_cryptomatte_object = prev_use_cryptomatte
             scene.render.compositor_device = prev_compositor_device
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
             compositor_build.restore_passthrough(scene)
+        _restore_viewports(viewports)
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 

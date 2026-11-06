@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import bpy
 import numpy as np
+import types
+
 import pytest
 from mathutils import Vector
 
@@ -1578,8 +1580,8 @@ def test_the_annotation_scene_is_laid_over_the_render(addon_enabled, monkeypatch
     pass1_overlay_muted = []
     build_pass1 = compositor_build.build_pass1_capture_graph
 
-    def recording_build_pass1(scene, *args):
-        paths = build_pass1(scene, *args)
+    def recording_build_pass1(scene, *args, **kwargs):
+        paths = build_pass1(scene, *args, **kwargs)
         node = compositor_build.ensure_compositor_tree(scene).nodes.get(compositor_build._node_name("Overlay"))
         pass1_overlay_muted.append(node and node.mute)
         return paths
@@ -1661,3 +1663,192 @@ def test_an_annotation_scene_with_only_its_camera_never_warns(addon_enabled):
     annotations.add_annotation_scene(scene).render.engine = "BLENDER_EEVEE"
     scene.render.compositor_device = "CPU"
     assert operators.compatibility_warnings(scene, bpy.context.view_layer) == []
+
+
+def _three_keyed_slots(obj):
+    """Slots 1-3 labelled A, B, C, Blend keyed to show each at frames 1, 11, 21."""
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj.volume_override.renderer_mode = "YT_IDV_GN_TRANSFER_FUNCTION"
+    tfn.add_transfer_function_modifier(obj)
+    tree = tfn.transfer_function_tree(obj)
+    tfn.add_slot(tree)
+    tfn.add_slot(tree)
+    for node, label in zip(tfn.slot_nodes(tree), "ABC"):
+        node.label = label
+    with bpy.context.temp_override(object=obj):
+        for frame, slot in ((1, 0), (11, 1), (21, 2)):
+            bpy.context.scene.frame_set(frame)
+            obj.volume_override.tf_slot = str(slot)
+            bpy.ops.volume_override.key_tf_slot()
+    return tree
+
+
+def _labels(tree):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    return [n.label for n in tfn.slot_nodes(tree)]
+
+
+def _keys(obj):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    return [tuple(p.co) for p in tfn.blend_fcurve(obj).keyframe_points]
+
+
+def test_duplicating_a_middle_slot_puts_the_copy_after_it(clean_scene_with_props):
+    obj = _flagged_cube()
+    tree = _three_keyed_slots(obj)
+    obj.volume_override.tf_slot = "1"
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.add_tf_slot() == {"FINISHED"}
+
+    assert _labels(tree) == ["A", "B", "B copy", "C"]
+    assert obj.volume_override.tf_active_slot == 2
+    assert _keys(obj) == [(1.0, 1.0), (11.0, 2.0), (21.0, 4.0)]  # still A, B, C
+
+
+def test_moving_a_slot_reorders_it_and_its_keys(clean_scene_with_props):
+    obj = _flagged_cube()
+    tree = _three_keyed_slots(obj)
+    obj.volume_override.tf_slot = "2"
+
+    with bpy.context.temp_override(object=obj):
+        assert bpy.ops.volume_override.move_tf_slot(offset=-1) == {"FINISHED"}
+        assert _labels(tree) == ["A", "C", "B"]
+        assert obj.volume_override.tf_active_slot == 1
+        assert _keys(obj) == [(1.0, 1.0), (11.0, 3.0), (21.0, 2.0)]  # still A, B, C
+        obj.volume_override.tf_slot = "0"
+        assert bpy.ops.volume_override.move_tf_slot(offset=-1) == {"CANCELLED"}  # already first
+
+
+def test_each_slot_has_its_own_range_and_blend_slides_it(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    props = obj.volume_override
+    props.tf_fit_range = False
+    props.tf_log_min, props.tf_log_max = -28.0, -20.0
+    tree = _two_slots(obj)
+    first, second = tfn.slot_nodes(tree)
+    assert tfn.slot_bounds(obj, second) == (-28.0, -20.0)  # the copy takes the original's
+    tfn.set_slot_bounds(second, -26.0, -22.0)
+
+    tfn.set_blend(obj, 1.0)
+    assert props.to_custom_params()["yt_idv_tf_log_min"] == -28.0
+    tfn.set_blend(obj, 1.5)
+    params = props.to_custom_params()
+    assert (params["yt_idv_tf_log_min"], params["yt_idv_tf_log_max"]) == pytest.approx((-27.0, -21.0))
+    props.tf_log_min = -40.0  # the volume's own Min doesn't apply under slots
+    assert props.to_custom_params()["yt_idv_tf_log_min"] == pytest.approx(-27.0)
+
+
+def test_slots_from_an_older_file_take_the_volume_range(clean_scene_with_props):
+    from yt_volumes import transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    for slot in tfn.slot_nodes(tree):
+        del slot.node_tree[tfn.LOG_MIN_PROPERTY], slot.node_tree[tfn.LOG_MAX_PROPERTY]
+    obj.volume_override.tf_log_min, obj.volume_override.tf_log_max = -25.0, -21.0
+
+    tfn.ensure_slot_bounds(obj)
+
+    assert [tfn.slot_bounds(obj, s) for s in tfn.slot_nodes(tree)] == [(-25.0, -21.0)] * 2
+    assert all(tfn.LOG_MIN_PROPERTY in s.node_tree for s in tfn.slot_nodes(tree))
+
+
+def test_render_table_bounds_apply_to_every_slot(clean_scene_with_props):
+    from yt_volumes import render_volume, transfer_function_nodes as tfn
+
+    obj = _flagged_cube()
+    tree = _two_slots(obj)
+    tfn.set_slot_bounds(tfn.slot_nodes(tree)[1], -26.0, -22.0)
+
+    render_volume.apply_render_settings(obj.volume_override, {"yt_idv": {"tf_log_min": -30.0, "tf_log_max": -18.0}})
+
+    assert [tfn.slot_bounds(obj, s) for s in tfn.slot_nodes(tree)] == [(-30.0, -18.0)] * 2
+
+
+@pytest.mark.parametrize("engine", ["CYCLES", "BLENDER_EEVEE"])
+def test_smooth_surface_edges_blends_by_cryptomatte(addon_enabled, monkeypatch, tmp_path, engine):
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x, scene.render.resolution_y = 32, 24
+    scene.render.engine = engine
+    scene.cycles.samples = 4
+    scene.eevee.taa_render_samples = 4
+    cam = _add_camera(scene, "PERSP", lens=50.0)
+    cam.location = (0.0, -6.0, 0.0)
+    cam.rotation_euler = (np.pi / 2, 0.0, 0.0)
+    bpy.ops.object.empty_add(type="CUBE")
+    bpy.context.active_object.volume_override.is_volume_override = True
+    bpy.context.active_object.volume_override.renderer_mode = "SAMPLE_CONSTANT"
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.6, location=(0.4, -1.2, 0.2))
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
+    scene.yt_volumes_smooth_edges = True
+    view_layer = bpy.context.view_layer
+    assert not view_layer.use_pass_cryptomatte_object
+
+    seen = []
+
+    def recording_blend(rgba, depth, ids, coverage, **kwargs):
+        seen.append((ids, coverage))
+        out = real_blend(rgba, depth, ids, coverage, **kwargs)
+        changed.append(int((out != rgba).any(-1).sum()))
+        return out
+
+    real_blend, changed = edge_blend.blend, []
+    monkeypatch.setattr(edge_blend, "blend", recording_blend)
+    operators.render_current_frame(bpy.context)
+
+    ids, coverage = seen[0]
+    assert ids.shape == coverage.shape == (24, 32, 6)  # 3 Cryptomatte layers of 2 ranks
+    sphere = (coverage > 0.99) & (ids != 0)  # EEVEE also gives the world an entry, id 0
+    assert sphere.any() and np.unique(ids[sphere]).size == 1  # one object, its id read intact
+    assert changed[0] > 0  # the sphere's outline
+    assert not view_layer.use_pass_cryptomatte_object  # restored
+
+
+def test_smooth_surface_edges_off_adds_no_pass(addon_enabled, monkeypatch, tmp_path):
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x, scene.render.resolution_y = 16, 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    bpy.ops.object.empty_add(type="CUBE")
+    bpy.context.active_object.volume_override.is_volume_override = True
+    bpy.context.active_object.volume_override.renderer_mode = "SAMPLE_CONSTANT"
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path)
+    monkeypatch.setattr(edge_blend, "blend", lambda *a, **k: pytest.fail("blend called with the setting off"))
+
+    operators.render_current_frame(bpy.context)
+
+    from yt_volumes import compositor_build
+
+    tree = compositor_build.ensure_compositor_tree(scene)
+    assert not compositor_build._cryptomatte_outputs(tree)
+
+
+def _stub_viewport_context(*shading_types):
+    spaces = [types.SimpleNamespace(type="VIEW_3D", shading=types.SimpleNamespace(type=t)) for t in shading_types]
+    spaces.append(types.SimpleNamespace(type="IMAGE_EDITOR"))
+    area = types.SimpleNamespace(spaces=spaces)
+    window = types.SimpleNamespace(screen=types.SimpleNamespace(areas=[area]))
+    return types.SimpleNamespace(window_manager=types.SimpleNamespace(windows=[window])), spaces
+
+
+def test_solid_viewports_switches_shaded_viewports_and_restores_them():
+    context, spaces = _stub_viewport_context("MATERIAL", "RENDERED", "WIREFRAME", "SOLID")
+    saved = operators._solid_viewports(context)
+    assert [s.shading.type for s in spaces[:4]] == ["SOLID", "SOLID", "WIREFRAME", "SOLID"]
+    operators._restore_viewports(saved)
+    assert [s.shading.type for s in spaces[:4]] == ["MATERIAL", "RENDERED", "WIREFRAME", "SOLID"]
+
+
+def test_solid_viewports_without_windows_does_nothing():
+    assert operators._solid_viewports(types.SimpleNamespace(window_manager=None)) == []

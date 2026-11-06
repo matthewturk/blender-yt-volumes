@@ -367,6 +367,33 @@ def _mute_pass1_file_outputs(tree):
     depth_out = tree.nodes.get(_node_name("Pass1DepthOut"))
     if depth_out is not None:
         depth_out.mute = True
+    for node in _cryptomatte_outputs(tree):
+        node.mute = True
+
+
+def _cryptomatte_outputs(tree):
+    return [n for n in tree.nodes if n.name.startswith(_node_name("Pass1CryptoOut"))]
+
+
+def cryptomatte_paths(output_dir, frame_number, layers):
+    """Pass 1's Cryptomatte layer EXRs for this frame."""
+    return [os.path.join(output_dir, f"vo_crypto{i:02d}_{frame_number:04d}.exr") for i in range(layers)]
+
+
+def _update_cryptomatte_outputs(tree, render_layers, output_dir, layers):
+    """Write Cryptomatte layers 0 to `layers` - 1 alongside depth, muting the rest."""
+    for i in range(layers):
+        name = _node_name(f"Pass1CryptoOut{i:02d}")
+        node = tree.nodes.get(name)
+        if node is None:
+            node = tree.nodes.new("CompositorNodeOutputFile")
+            node.name = name
+            socket = _configure_single_file_output(node, output_dir, f"vo_crypto{i:02d}_")
+            tree.links.new(render_layers.outputs[f"CryptoObject{i:02d}"], socket)
+        else:
+            _redirect_single_file_output(node, output_dir)
+    for node in _cryptomatte_outputs(tree):
+        node.mute = int(node.name[-2:]) >= layers
 
 
 def _redirect_single_file_output(node, directory):
@@ -381,9 +408,11 @@ def _redirect_single_file_output(node, directory):
         node.base_path = directory
 
 
-def build_pass1_capture_graph(scene, output_dir, frame_number):
+def build_pass1_capture_graph(scene, output_dir, frame_number, cryptomatte_layers=0):
     """Pass-1 graph: Render Layers -> File Output for Combined and Depth
-    (full-float EXRs). Requires `view_layer.use_pass_z = True`.
+    (full-float EXRs), and the first `cryptomatte_layers` Cryptomatte object
+    layers (see `cryptomatte_paths`). Requires `view_layer.use_pass_z = True`,
+    and `use_pass_cryptomatte_object` for Cryptomatte.
 
     Returns (beauty_path, depth_path) for this frame. Built once; later calls
     only repoint the output directory, to avoid invalidating Cycles'
@@ -421,6 +450,7 @@ def build_pass1_capture_graph(scene, output_dir, frame_number):
         _redirect_single_file_output(tree.nodes[_node_name("Pass1BeautyOut")], output_dir)
         _redirect_single_file_output(tree.nodes[_node_name("Pass1DepthOut")], output_dir)
 
+    _update_cryptomatte_outputs(tree, render_layers, output_dir, cryptomatte_layers)
     # Pass 2 mutes these; unmute so pass 1 writes its EXRs.
     tree.nodes[_node_name("Pass1BeautyOut")].mute = False
     tree.nodes[_node_name("Pass1DepthOut")].mute = False

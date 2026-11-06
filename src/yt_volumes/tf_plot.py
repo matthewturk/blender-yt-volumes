@@ -85,7 +85,7 @@ def transfer_function(obj):
 
         rgba = transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get())
         fit = props.tf_fit_range and yir.gn_tf_fit(props.dataset_uuid)
-        bounds = tuple(np.log10(fit["physical_range"])) if fit else (props.tf_log_min, props.tf_log_max)
+        bounds = tuple(np.log10(fit["physical_range"])) if fit else transfer_function_nodes.blended_bounds(obj)
         tf = yt.ColorTransferFunction(bounds, nbins=len(rgba), grey_opacity=True)
         for channel, values in zip(tf.funcs, np.asarray(rgba).T):
             channel.y[:] = values
@@ -93,12 +93,23 @@ def transfer_function(obj):
     return None
 
 
-def _for_display(tf):
+def opacity_decades(obj):
+    """Decades of `obj`'s log opacity scale, 0 if linear or not a Geometry Nodes TF."""
+    from . import transfer_function_nodes
+
+    if obj.volume_override.renderer_mode != "YT_IDV_GN_TRANSFER_FUNCTION":
+        return 0.0
+    return transfer_function_nodes.opacity_decades(obj)
+
+
+def _for_display(tf, decades=0.0):
     """`tf` resampled to PLOT_BINS bins, keeping each bin's maximum so thin
     layers stay visible, with colors brighter than 1 (Brightness Ramp) scaled
-    into range.
+    into range. With `decades` > 0, opacity becomes the log curve's height.
     """
     import yt
+
+    from . import transfer_function_nodes
 
     low, high = tf.x_bounds
     shown = yt.ColorTransferFunction((low, high), nbins=PLOT_BINS, grey_opacity=True)
@@ -107,6 +118,7 @@ def _for_display(tf):
     for source, target in zip(tf.funcs, shown.funcs):
         target.y[:] = np.maximum.reduceat(source.y, np.minimum(edges[:-1], len(source.y) - 1))
     shown.funcs[3].y = np.minimum(shown.funcs[3].y, 1.0)  # an opaque end's opacity is far above 1
+    shown.funcs[3].y = transfer_function_nodes._opacity_to_height(shown.funcs[3].y, decades)
     brightest = max(float(channel.y.max()) for channel in shown.funcs[:3])
     if brightest > 1.0:
         for channel in shown.funcs[:3]:
@@ -114,23 +126,35 @@ def _for_display(tf):
     return shown
 
 
-def render(tf, dpi=100):
+def _opacity_ticks(axes, decades):
+    """Label the opacity axis, whose image rows run 0 to PLOT_BINS, in opacity."""
+    from matplotlib.ticker import FixedLocator, FuncFormatter
+
+    if decades <= 0:
+        axes.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y / PLOT_BINS:.2f}"))
+        return
+    powers = np.arange(int(np.floor(decades)) + 1)
+    powers = powers[:: max(1, int(np.ceil(len(powers) / 6)))]
+    axes.yaxis.set_major_locator(FixedLocator(PLOT_BINS * (1.0 - powers / decades)))
+    axes.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{10.0 ** (decades * (y / PLOT_BINS - 1.0)):g}"))
+    axes.set_ylabel("opacity (log)", fontsize=8)
+
+
+def render(tf, dpi=100, decades=0.0):
     """`(HEIGHT, WIDTH, 4)` float RGBA (times `dpi / 100`) of yt's `show()` plot
-    of `tf`, top row first.
+    of `tf`, top row first; opacity on a log axis over `decades` if > 0.
     """
     import matplotlib
 
     matplotlib.use("Agg")  # show() draws on pyplot's current figure; never open a window
     from matplotlib import pyplot
-    from matplotlib.ticker import FuncFormatter
 
     figure = pyplot.figure(figsize=(WIDTH / 100, HEIGHT / 100), dpi=dpi)
     try:
-        _for_display(tf).show()
+        _for_display(tf, decades).show()
         axes = figure.axes[0]
         axes.set_aspect("auto")
-        # show() labels the opacity axis in image rows rather than 0 to 1.
-        axes.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y / PLOT_BINS:.2f}"))
+        _opacity_ticks(axes, decades)  # show() labels the opacity axis in image rows
         low, high = tf.x_bounds
         axes.set_title(f"log10 {low:.4f} to {high:.4f}", fontsize=9)
         figure.tight_layout()
@@ -145,12 +169,13 @@ def plot(obj):
     tf = transfer_function(obj)
     if tf is None:
         return "no transfer function to show (set the yt Transfer Function)"
-    pixels = render(tf)
+    decades = opacity_decades(obj)
+    pixels = render(tf, decades=decades)
     preview = _preview(obj, create=True)
     preview.image_size = (WIDTH, HEIGHT)
     preview.image_pixels_float.foreach_set(pixels[::-1].ravel())  # bottom row first
     if obj.name in _with_images:
-        _write_images(obj, tf)
+        _write_images(obj, tf, decades)
     return None
 
 
@@ -189,8 +214,8 @@ def _set_image(name, pixels):
     return image
 
 
-def _write_images(obj, tf):
-    _set_image(plot_image_name(obj), render(tf, dpi=IMAGE_DPI))
+def _write_images(obj, tf, decades):
+    _set_image(plot_image_name(obj), render(tf, dpi=IMAGE_DPI, decades=decades))
     _set_image(table_image_name(obj), table_pixels(tf))
 
 
@@ -242,7 +267,8 @@ def _signature(obj):
             table = hash(transfer_function_nodes.sample(obj, bpy.context.evaluated_depsgraph_get()).tobytes())
         except ValueError:
             table = "unsampled"
-    return repr((look, fitted, table))
+    # Changing the scale keeps each point's opacity, so the table alone may not change.
+    return repr((look, fitted, table, opacity_decades(obj)))
 
 
 def icon(obj):

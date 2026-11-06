@@ -715,6 +715,34 @@ def test_render_with_yt_idv_skips_rc_run_when_nothing_changed_but_rerenders_on_c
     assert result3 is not result1
 
 
+class _NoGL:
+    def __getattr__(self, name):
+        return (lambda *args, **kwargs: None) if name.startswith("gl") else 0
+
+
+def test_reused_result_brings_back_its_own_opacity_report(monkeypatch, _clean_yir_state):
+    render_size = 4
+    fake_scene = _FakeYtIdvScene()
+    fake_scene.components = [types.SimpleNamespace(render_method="transfer_function", data=None)]
+
+    class _FakeRc:
+        def run(self):
+            return np.ones((render_size, render_size, 4), dtype=np.float32)
+
+    monkeypatch.setattr(yir, "_get_volume_scene", lambda request, rsize: (_FakeRc(), fake_scene, _FakeDataset(), False))
+    monkeypatch.setattr(yir, "_cycles_depth_to_yt_idv_window_depth", lambda request, camera, model_shift=None: np.zeros((render_size, render_size), dtype=np.float32))
+    monkeypatch.setattr(yir, "set_external_depth_clip", lambda scene, depth: None)
+    monkeypatch.setattr(yir, "_opacity_report", lambda collection, params, alpha: {"covered_fraction": 1.0})
+    import OpenGL
+    monkeypatch.setattr(OpenGL, "GL", _NoGL())  # another test may have left a GL context current
+
+    request = _request_with(render_size=render_size)
+    yir._render_with_yt_idv(request, lambda component, params: None)
+    yir._opacity_reports["obj"] = {"covered_fraction": 0.0}  # a render at another size reported since
+    yir._render_with_yt_idv(request, lambda component, params: None)
+    assert yir.opacity_report("obj") == {"covered_fraction": 1.0}
+
+
 def test_render_with_yt_idv_retries_after_a_failed_render(monkeypatch, _clean_yir_state):
     render_size = 4
 
@@ -1929,3 +1957,42 @@ def test_projection_colormap_range_is_remembered_per_unzoomed_length():
     assert (projection.cmap_min, projection.cmap_max) == pytest.approx((2e-9, 4e-6))
     mip = types.SimpleNamespace(render_method="max_intensity", data=data, cmap_min=0.1, cmap_max=0.9)
     assert yir._component_cmap_range(types.SimpleNamespace(components=[mip])) == (0.1, 0.9)
+
+
+def test_opacity_report_shows_the_zoom_scaling_and_coverage():
+    collection = types.SimpleNamespace(_yt_volumes_base_transform=(np.zeros(3), 1.0), applied_scale_ratio=1e-3)
+    alpha = np.zeros((10, 10), dtype=np.float32)
+    alpha[:2] = 1.0  # 20% opaque
+    alpha[2:4] = 0.3  # 20% partly covered
+
+    report = yir._opacity_report(collection, {}, alpha)
+
+    assert report["zoom"] == pytest.approx(1e3) and report["opacity_divisor"] == 1.0
+    assert report["covered_fraction"] == pytest.approx(0.4) and report["opaque_fraction"] == pytest.approx(0.2)
+    assert report["median_alpha"] == pytest.approx(0.65)
+    assert yir.describe_opacity_report(report)[:2] == [("Zoom", "x1e+03"), ("Opacity per data length", "x1e+03")]
+
+    report = yir._opacity_report(collection, {"yt_idv_opacity_per_view": False}, alpha)
+    assert report["opacity_divisor"] == pytest.approx(1e3)
+    assert yir.describe_opacity_report(report)[1] == ("Opacity across view", "x0.001")
+
+
+def test_opacity_report_without_a_zoom_only_describes_the_frame():
+    collection = types.SimpleNamespace(applied_scale_ratio=1.0)
+    pairs = yir.describe_opacity_report(yir._opacity_report(collection, {}, np.zeros((4, 4), dtype=np.float32)))
+    assert pairs == [("Last frame covered", "0%"), ("Opaque pixels", "0%"), ("Median alpha", "0.00")]
+
+
+def test_fit_bounds_previews_the_fit_from_the_measured_values(monkeypatch):
+    edges = np.linspace(-4.0, 0.0, 5)  # normalized values 1e-4 .. 1, one decade per bin
+    collection = types.SimpleNamespace(
+        _textures_are_normalized=False, _yt_volumes_value_distribution=(edges, np.ones(4), np.ones(4)),
+    )
+    monkeypatch.setattr(yir, "_volume_scene_cache", {"d": ("scene", None, None)})
+    monkeypatch.setattr(yir, "_block_collections", lambda scene: [collection])
+
+    assert yir.fit_bounds("d", 0.0, 100.0) == pytest.approx((-4.0, 0.0))
+    assert yir.fit_bounds("d", 50.0, 100.0)[0] == pytest.approx(-2.0)
+    del collection._yt_volumes_value_distribution
+    assert yir.fit_bounds("d", 0.0, 100.0) is None  # not measured: never measured during a panel draw
+    assert yir.fit_bounds("other", 0.0, 100.0) is None

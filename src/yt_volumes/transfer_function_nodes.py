@@ -32,6 +32,8 @@ SLOT_PREFIX = "TF Slot "  # main-tree group nodes "TF Slot 1", "TF Slot 2", ... 
 BLEND_INPUT = "Blend"  # modifier input: 1 is the first slot, 2 the second, ...
 _OLD_BLEND_NODE_NAME = "TF Blend"  # a Value node before Blend was a modifier input
 COLORMAP_PROPERTY = "yt_colormap"  # on a slot's group: the colormap its ramp was loaded from
+# On a slot's group: log10 of the field at its ramp's 0 and 1, used with Fit to Data off.
+LOG_MIN_PROPERTY, LOG_MAX_PROPERTY = "yt_tf_log_min", "yt_tf_log_max"
 VALUE_NODE_NAME = "TF Value"
 MIX_PREFIX = "TF Mix "  # generated nodes, rebuilt when slots change
 MIX_EPSILON = 1e-6  # where every blended slot is transparent, color falls back to the plain cross-fade
@@ -347,9 +349,17 @@ def _convert_to_slots(tree):
     rebuild_mix(tree)
 
 
+def _renumber(tree, ordered):
+    """Name `tree`'s slot nodes "TF Slot 1", "TF Slot 2", ... in `ordered`'s order."""
+    for i, node in enumerate(ordered):
+        node.name = f"{SLOT_PREFIX}tmp{i}"  # names are unique, so clear them all first
+    for i, node in enumerate(ordered, 1):
+        node.name = f"{SLOT_PREFIX}{i}"
+
+
 def add_slot(tree, copy_index=None):
-    """Append a slot to `tree`, a copy of slot `copy_index` (0-based) or the
-    starter; returns the new slot's 0-based index.
+    """Add a slot to `tree`: a copy of slot `copy_index` (0-based) right after
+    it, or the starter at the end. Returns the new slot's 0-based index.
     """
     _convert_to_slots(tree)
     slots = slot_nodes(tree)
@@ -360,9 +370,37 @@ def add_slot(tree, copy_index=None):
         source = slots[copy_index]
         slot_tree = source.node_tree.copy()
         label = f"{source.label} copy" if source.label else ""
-    _add_slot_node(tree, slot_tree, label)
+    node = _add_slot_node(tree, slot_tree, label)
+    index = len(slots) if copy_index is None else copy_index + 1
+    _renumber(tree, slots[:index] + [node] + slots[index:])
     rebuild_mix(tree)
-    return len(slots)
+    return index
+
+
+def move_slot(tree, index, offset):
+    """Swap slot `index` (0-based) with its neighbour `offset` (-1 or 1) away;
+    returns its new index, unchanged at either end.
+    """
+    slots = slot_nodes(tree)
+    target = index + offset
+    if not 0 <= target < len(slots):
+        return index
+    slots[index], slots[target] = slots[target], slots[index]
+    _renumber(tree, slots)
+    rebuild_mix(tree)
+    return target
+
+
+def remap_blend_keys(obj, remap):
+    """Apply `remap` to each Blend keyframe's value (and its handles)."""
+    fcurve = blend_fcurve(obj)
+    if fcurve is None:
+        return
+    for point in fcurve.keyframe_points:
+        for attr in ("co", "handle_left", "handle_right"):
+            x, y = getattr(point, attr)
+            setattr(point, attr, (x, remap(y)))
+    fcurve.update()
 
 
 def remove_slot(tree, index):
@@ -374,11 +412,7 @@ def remove_slot(tree, index):
     tree.nodes.remove(slots[index])
     if slot_tree is not None and slot_tree.users == 0:
         bpy.data.node_groups.remove(slot_tree)
-    remaining = slot_nodes(tree)
-    for i, node in enumerate(remaining):
-        node.name = f"{SLOT_PREFIX}tmp{i}"
-    for i, node in enumerate(remaining, 1):
-        node.name = f"{SLOT_PREFIX}{i}"
+    _renumber(tree, slot_nodes(tree))
     rebuild_mix(tree)
 
 
@@ -423,6 +457,26 @@ def _height_to_opacity(y, decades):
     if decades <= 0:
         return y
     return np.where(y > LOG_OPACITY_FLOOR, 10.0 ** (decades * (y - 1.0)), 0.0)
+
+
+def opacity_decades(obj):
+    """Decades of `obj`'s output opacity scale (0 is linear): the largest of
+    the slots the current Blend weights, as `rebuild_mix` blends them.
+    """
+    tree = transfer_function_tree(obj)
+    if tree is None:
+        return 0.0
+    slots = slot_nodes(tree)
+    if not slots:
+        node = tree.nodes.get(DECADES_NODE_NAME)
+        return node.outputs[0].default_value if node is not None else 0.0
+    position = min(max(blend_value(obj), 1.0), float(len(slots)))
+    decades = [0.0]
+    for i, slot in enumerate(slots, 1):
+        node = slot.node_tree.nodes.get(DECADES_NODE_NAME) if slot.node_tree is not None else None
+        if node is not None and abs(position - i) < 1.0:
+            decades.append(node.outputs[0].default_value)
+    return max(decades)
 
 
 def _opacity_to_height(alpha, decades):
@@ -626,7 +680,50 @@ def add_transfer_function_modifier(obj):
     modifier.node_group = build_node_group()
     _drive_from(obj, modifier, SIZE_INPUT, "empty_display_size")
     _drive_from(obj, modifier, TYPE_INPUT, "empty_display_type")
+    ensure_slot_bounds(obj)
     return modifier
+
+
+def _volume_bounds(obj):
+    props = obj.volume_override
+    return props.tf_log_min, props.tf_log_max
+
+
+def ensure_slot_bounds(obj):
+    """Give each of `obj`'s slots without its own Min/Max the volume's."""
+    tree = transfer_function_tree(obj)
+    for slot in slot_nodes(tree) if tree is not None else []:
+        slot_tree = slot.node_tree
+        if slot_tree is not None and LOG_MIN_PROPERTY not in slot_tree:
+            slot_tree[LOG_MIN_PROPERTY], slot_tree[LOG_MAX_PROPERTY] = _volume_bounds(obj)
+
+
+def slot_bounds(obj, slot):
+    """log10 `(low, high)` of `slot` (a slot group node); the volume's if unset."""
+    low, high = _volume_bounds(obj)
+    slot_tree = slot.node_tree
+    if slot_tree is None:
+        return low, high
+    return float(slot_tree.get(LOG_MIN_PROPERTY, low)), float(slot_tree.get(LOG_MAX_PROPERTY, high))
+
+
+def blended_bounds(obj):
+    """log10 `(low, high)` with Fit to Data off: the slots' bounds weighted as
+    Blend weights them, so the range slides between slots; the volume's
+    without slots.
+    """
+    tree = transfer_function_tree(obj)
+    slots = slot_nodes(tree) if tree is not None else []
+    if not slots:
+        return _volume_bounds(obj)
+    position = min(max(blend_value(obj), 1.0), float(len(slots)))
+    weights = [max(0.0, 1.0 - abs(position - i)) for i in range(1, len(slots) + 1)]
+    bounds = np.array([slot_bounds(obj, slot) for slot in slots])
+    return tuple(float(v) for v in np.dot(weights, bounds) / sum(weights))
+
+
+def set_slot_bounds(slot, low, high):
+    slot.node_tree[LOG_MIN_PROPERTY], slot.node_tree[LOG_MAX_PROPERTY] = float(low), float(high)
 
 
 def transfer_function_tree(obj):
@@ -957,7 +1054,7 @@ class VOLUMEOVERRIDE_OT_set_tf_blend_easing(bpy.types.Operator):
 
 
 class VOLUMEOVERRIDE_OT_add_tf_slot(bpy.types.Operator):
-    """Add a transfer function slot, a copy of the one shown, to blend to"""
+    """Duplicate the slot being edited, placing the copy right after it"""
 
     bl_idname = "volume_override.add_tf_slot"
     bl_label = "Add Transfer Function Slot"
@@ -971,8 +1068,40 @@ class VOLUMEOVERRIDE_OT_add_tf_slot(bpy.types.Operator):
         obj = context.object
         tree = transfer_function_tree(obj)
         _convert_to_slots(tree)
+        ensure_slot_bounds(obj)
         current = slot_nodes(tree).index(active_slot(obj))
+        # Keys past the original now point one later, so the animation shows the same slots.
+        remap_blend_keys(obj, lambda b: b + 1.0 if b > current + 1.0 else b)
         select_slot(obj, add_slot(tree, copy_index=current))
+        obj.update_tag()
+        return {"FINISHED"}
+
+
+class VOLUMEOVERRIDE_OT_move_tf_slot(bpy.types.Operator):
+    """Move the slot being edited earlier or later in the blend order"""
+
+    bl_idname = "volume_override.move_tf_slot"
+    bl_label = "Move Transfer Function Slot"
+    bl_options = {"REGISTER", "UNDO"}
+
+    offset: bpy.props.IntProperty(default=1, min=-1, max=1)
+
+    @classmethod
+    def poll(cls, context):
+        tree = transfer_function_tree(context.object) if context.object is not None else None
+        return tree is not None and len(slot_nodes(tree)) > 1
+
+    def execute(self, context):
+        obj = context.object
+        tree = transfer_function_tree(obj)
+        index = slot_nodes(tree).index(active_slot(obj))
+        target = move_slot(tree, index, self.offset)
+        if target == index:
+            return {"CANCELLED"}
+        # Keys at or between the two swapped slots follow them; others can't.
+        a, b = sorted((index + 1.0, target + 1.0))
+        remap_blend_keys(obj, lambda v: a + b - v if a <= v <= b else v)
+        select_slot(obj, target)
         obj.update_tag()
         return {"FINISHED"}
 
@@ -1005,6 +1134,7 @@ CLASSES = (
     VOLUMEOVERRIDE_OT_set_opacity_curve_scale,
     VOLUMEOVERRIDE_OT_add_tf_slot,
     VOLUMEOVERRIDE_OT_remove_tf_slot,
+    VOLUMEOVERRIDE_OT_move_tf_slot,
     VOLUMEOVERRIDE_OT_key_tf_slot,
     VOLUMEOVERRIDE_OT_remove_tf_slot_key,
     VOLUMEOVERRIDE_OT_goto_tf_slot_key,

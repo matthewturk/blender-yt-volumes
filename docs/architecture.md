@@ -12,11 +12,18 @@ and `yt_idv_renderer.py` (registration, zoom, depth clip).
    `view_layer.use_pass_z = True`, its compositor set (by
    `compositor_build.build_pass1_capture_graph`) to do nothing but write
    Combined and Z to full-float EXR via File Output nodes. Flagged objects
-   are Empties, which never render, so nothing needs hiding.
-2. It reads the Z EXR back into a `DepthBuffer` (`operators.read_depth_buffer`).
+   are Empties, which never render, so nothing needs hiding. With Smooth
+   Surface Edges it also turns on `use_pass_cryptomatte_object` and writes
+   each Cryptomatte layer (`CryptoObject00`, ...) the same way.
+2. It reads the Z EXR back into a `DepthBuffer` (`operators.read_depth_buffer`),
+   and any Cryptomatte layers into per-pixel `(ids, coverage)` ranks
+   (`edge_blend.read_cryptomatte`, loaded Non-Color and Channel Packed so the
+   float-encoded ids survive).
 3. It builds one `RenderRequest` per flagged object (camera, the depth buffer,
    the object's transform, bounding box and look, the frame) and calls the
-   renderer for that object's `renderer_mode`. Each `RenderResult.rgba` goes
+   renderer for that object's `renderer_mode`. With Cryptomatte,
+   `edge_blend.blend` then blends each result across depth edges by the
+   nearer object's coverage. Each `RenderResult.rgba` goes
    into its own float Image datablock, reused every frame, which the
    compositor reads directly.
 4. It rebuilds the compositor (`compositor_build.build_or_update_graph`) as
