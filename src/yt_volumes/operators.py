@@ -13,6 +13,7 @@ produce this frame's depth and composite a volume render made from it.
   and write the final output.
 """
 
+import concurrent.futures
 import contextlib
 import dataclasses
 import math
@@ -656,6 +657,14 @@ class render_session:
         return False  # never swallow exceptions
 
 
+def _smoothed_layer(name, rgba, depth, cryptomatte, log):
+    """`rgba` blended by `edge_blend.blend` and decoded to linear, for a background thread."""
+    start = time.monotonic()
+    layer = compositor_build.display_to_linear(edge_blend.blend(rgba, depth, *cryptomatte))
+    log(f"smoothed surface edges for {name!r} ({time.monotonic() - start:.2f}s, in the background)")
+    return layer
+
+
 def _pass2_render_overrides(scene, view_layer=None):
     """(owner, property, value) settings that make pass 2's discarded scene
     render as cheap as possible for the scene's engine.
@@ -868,6 +877,7 @@ def _render_current_frame(context):
         if prev_compositor_device != "CPU" and _gpu_backend() != "VULKAN":
             scene.render.compositor_device = "CPU"
     viewports = _solid_viewports(context) if _active_render_session is None else []
+    background = concurrent.futures.ThreadPoolExecutor(1)
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
@@ -930,12 +940,22 @@ def _render_current_frame(context):
                 if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                     props.colormap_range = result.cmap_range
                     props.colormap_range_set = True
-                rgba = result.rgba
                 if cryptomatte is not None:
-                    with step(f"smooth surface edges for {obj.name!r}"):
-                        rgba = edge_blend.blend(rgba, depth_buffer.data, *cryptomatte)
-                # handed to the compositor in memory, read as linear
-                volume_layers.append((obj.name, compositor_build.display_to_linear(rgba)))
+                    # blended in the background while the next view's volume renders
+                    volume_layers.append((obj.name, background.submit(
+                        _smoothed_layer, obj.name, result.rgba, depth_buffer.data, cryptomatte, log,
+                    )))
+                else:
+                    # handed to the compositor in memory, read as linear
+                    volume_layers.append((obj.name, compositor_build.display_to_linear(result.rgba)))
+
+        if smooth_edges:
+            with step("wait for smooth surface edges"):
+                for layers in view_layers.values():
+                    layers[:] = [
+                        (name, layer.result() if isinstance(layer, concurrent.futures.Future) else layer)
+                        for name, layer in layers
+                    ]
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between
@@ -981,6 +1001,7 @@ def _render_current_frame(context):
             scene.render.use_persistent_data = prev_use_persistent_data
             compositor_build.restore_passthrough(scene)
         _restore_viewports(viewports)
+        background.shutdown(cancel_futures=True)  # waits for a running blend before its inputs go
         shutil.rmtree(frame_dir, ignore_errors=True)
 
 

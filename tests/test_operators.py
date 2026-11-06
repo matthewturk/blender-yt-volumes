@@ -1863,3 +1863,46 @@ def test_pass2_drops_cryptomatte_for_eevee_but_not_cycles(clean_scene):
     assert (view_layer, "use_pass_cryptomatte_object", False) in operators._pass2_render_overrides(clean_scene, view_layer)
     clean_scene.render.engine = "CYCLES"  # toggling a pass would invalidate Cycles' persistent data
     assert all(owner != view_layer for owner, _, _ in operators._pass2_render_overrides(clean_scene, view_layer))
+
+
+def test_stereo_smooth_edges_blends_the_left_eye_while_the_right_eye_renders(addon_enabled, monkeypatch, tmp_path):
+    import dataclasses
+    import threading
+
+    from yt_volumes import edge_blend
+
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 16
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    scene.view_settings.view_transform = "Standard"
+    _add_camera(scene, "PERSP", lens=50.0)
+    _stereo(scene)
+    _flagged_cube()
+    scene.yt_volumes_smooth_edges = True
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    scene.render.filepath = str(tmp_path / "out_")
+    right_eye_rendering = threading.Event()
+    overlapped = []
+
+    def fake_renderer(request):
+        if request.frame.view_index == 1:
+            right_eye_rendering.set()
+        rgba = np.zeros(request.depth.data.shape + (4,), dtype="float32")
+        rgba[..., request.frame.view_index * 2] = rgba[..., 3] = 1.0
+        return dataclasses.replace(_fake_render_result(request), rgba=rgba)
+
+    def slow_left_blend(rgba, depth, ids, coverage, **kwargs):
+        if rgba[0, 0, 0] == 1.0:  # the left eye's
+            overlapped.append(right_eye_rendering.wait(10))
+        return rgba
+
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", fake_renderer)
+    monkeypatch.setattr(edge_blend, "blend", slow_left_blend)
+
+    operators.render_current_frame(bpy.context)
+
+    assert overlapped == [True]
+    for suffix, channel in (("_L", 0), ("_R", 2)):
+        pixel = np.array(bpy.data.images.load(str(tmp_path / f"out_{suffix}.png")).pixels[:4])
+        assert pixel[channel] > 0.9 and pixel[2 - channel] < 0.1, suffix
