@@ -890,10 +890,12 @@ def _render_current_frame(context):
         log(f"pass1 will write beauty={beauty_path!r} depth={depth_path!r}")
         with step(f"pass1 render (bpy.ops.render.render), engine={scene.render.engine}"):
             bpy.ops.render.render(write_still=False)
-        log(f"pass1 wrote beauty exists={os.path.exists(beauty_path)} depth exists={os.path.exists(depth_path)}")
-
         # With Stereo 3D, pass 1 writes each eye's EXRs with the view's file suffix.
         views = render_views(scene)
+        for suffix in (view[1] if view else "" for view in views):
+            log(f"pass1 wrote{' ' + suffix.lstrip('_') if suffix else ''} beauty exists="
+                f"{os.path.exists(_with_suffix(beauty_path, suffix))} depth exists="
+                f"{os.path.exists(_with_suffix(depth_path, suffix))}")
         frame_params = build_frame_params(scene)
         view_layers = {}
         for view_index, view in enumerate(views):
