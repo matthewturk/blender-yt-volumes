@@ -656,13 +656,17 @@ class render_session:
         return False  # never swallow exceptions
 
 
-def _pass2_render_overrides(scene):
+def _pass2_render_overrides(scene, view_layer=None):
     """(owner, property, value) settings that make pass 2's discarded scene
     render as cheap as possible for the scene's engine.
     """
     engine = scene.render.engine
     if engine.startswith("BLENDER_EEVEE"):
-        return [(scene.eevee, "taa_render_samples", 1)]
+        overrides = [(scene.eevee, "taa_render_samples", 1)]
+        if view_layer is not None and view_layer.use_pass_cryptomatte_object:
+            # EEVEE keeps no cache between renders, so dropping a pass costs nothing
+            overrides.append((view_layer, "use_pass_cryptomatte_object", False))
+        return overrides
     if engine == "CYCLES":
         # toggling use_denoising too makes the next pass 1 re-sync, costing what it saves
         return [(scene.cycles, "samples", 1)]
@@ -948,7 +952,7 @@ def _render_current_frame(context):
                 for name, suffix in (view or (None, "") for view in views)
             }, overlay)
         # The engine renders the scene even with no Render Layers node, then discards it.
-        overrides = _pass2_render_overrides(scene)
+        overrides = _pass2_render_overrides(scene, view_layer)
         saved = [(owner, name, getattr(owner, name)) for owner, name, _ in overrides]
         for owner, name, value in overrides:
             if getattr(owner, name) != value:

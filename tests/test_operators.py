@@ -1854,3 +1854,12 @@ def test_solid_viewports_switches_shaded_viewports_and_restores_them():
 
 def test_solid_viewports_without_windows_does_nothing():
     assert operators._solid_viewports(types.SimpleNamespace(window_manager=None)) == []
+
+
+def test_pass2_drops_cryptomatte_for_eevee_but_not_cycles(clean_scene):
+    view_layer = bpy.context.view_layer
+    view_layer.use_pass_cryptomatte_object = True
+    clean_scene.render.engine = "BLENDER_EEVEE"
+    assert (view_layer, "use_pass_cryptomatte_object", False) in operators._pass2_render_overrides(clean_scene, view_layer)
+    clean_scene.render.engine = "CYCLES"  # toggling a pass would invalidate Cycles' persistent data
+    assert all(owner != view_layer for owner, _, _ in operators._pass2_render_overrides(clean_scene, view_layer))
