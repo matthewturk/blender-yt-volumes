@@ -783,6 +783,20 @@ def load_message(pending):
     return f"This loads {loads}. Blender is unresponsive until it finishes, which can take minutes for large data."
 
 
+CYCLES_STATES_ENV = "CYCLES_CONCURRENT_STATES_MAX"
+CYCLES_STATES_MAX = 262144
+
+
+def _limit_cycles_states(scene):
+    """Cap Cycles' GPU path-state pool unless the user set the variable themselves."""
+    # Cycles sizes the pool to the GPU (about a million states on an RTX 2060, ~1.7 GB),
+    # not the scene. Capped, the pipeline's renders measured the same speed with
+    # 1.7 GB less GPU memory. It's read from the process environment, so it also
+    # applies to later Cycles renders in this Blender session.
+    if scene.render.engine == "CYCLES":
+        os.environ.setdefault(CYCLES_STATES_ENV, str(CYCLES_STATES_MAX))
+
+
 def _free_cycles_session(scene):
     """Drop Cycles' persistent session before yt_idv loads data; the next render rebuilds it."""
     # A session kept alive across the load holds about 0.6 GB more GPU memory for as
@@ -889,6 +903,7 @@ def _render_current_frame(context, write_still=True):
     cryptomatte_layers = edge_blend.layer_count(view_layer) if smooth_edges else 0
 
     # Keeps Cycles' BVH/geometry cache between the two passes and across frames.
+    _limit_cycles_states(scene)
     prev_use_persistent_data = scene.render.use_persistent_data
     if not prev_use_persistent_data:
         scene.render.use_persistent_data = True

@@ -1975,3 +1975,18 @@ def test_a_cycles_session_is_dropped_before_yt_idv_loads(addon_enabled, monkeypa
     operators.render_current_frame(bpy.context)
     operators.render_current_frame(bpy.context)  # already loaded: no drop
     assert toggles == [True]
+
+
+def test_cycles_renders_cap_the_path_state_pool_unless_set(addon_enabled, monkeypatch, tmp_path):
+    import os
+
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    monkeypatch.delenv(operators.CYCLES_STATES_ENV, raising=False)
+    operators.render_current_frame(bpy.context)
+    assert os.environ[operators.CYCLES_STATES_ENV] == str(operators.CYCLES_STATES_MAX)
+
+    monkeypatch.setenv(operators.CYCLES_STATES_ENV, "4096")  # the user's own value wins
+    operators.render_current_frame(bpy.context)
+    assert os.environ[operators.CYCLES_STATES_ENV] == "4096"
