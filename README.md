@@ -134,7 +134,8 @@ either way. What can differ:
   care taken not to invalidate it) doesn't apply to EEVEE.
 
 For faster renders and less GPU memory, see
-[docs/render-speed.md](docs/render-speed.md).
+[docs/render-speed.md](docs/render-speed.md). For meshes or imported models
+alongside the volume, see [docs/adding-models.md](docs/adding-models.md).
 
 ## Batch rendering from a config file
 `render_volume` renders a yt dataset into an existing `.blend` without a
