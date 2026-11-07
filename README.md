@@ -133,6 +133,9 @@ either way. What can differ:
   the OptiX denoiser are Cycles-only. Cycles' persistent-data cache (and the
   care taken not to invalidate it) doesn't apply to EEVEE.
 
+For faster renders and less GPU memory, see
+[docs/render-speed.md](docs/render-speed.md).
+
 ## Batch rendering from a config file
 `render_volume` renders a yt dataset into an existing `.blend` without a
 custom harness: one TOML file names the dataset (plus optional subset), the
