@@ -643,10 +643,10 @@ def render(config):
                 scene.frame_set(frame)
                 if config["zoom"]["target"] is not None:
                     volume.volume_override.zoom_level = zoom_level_at(config["zoom"], frame)
-                # The add-on's output isn't auto-numbered.
-                scene.render.filepath = f"{prefix}{frame:04d}"
+                # the operator numbers the frame, as Render Animation does
+                scene.render.filepath = prefix
                 bpy.ops.render.volume_override(animation=False, write_still=True)
-                written.append(f"{scene.render.filepath}.png")
+                written.append(scene.render.frame_path(frame=frame))
                 print(f"[render_volume] frame {frame} -> {written[-1]}", flush=True)
     finally:
         if temp_work_dir:
