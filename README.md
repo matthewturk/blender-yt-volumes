@@ -426,9 +426,10 @@ draws over it, with or without this setting.
 
 ## Known limitations
 
-- A solid fully enclosed by a volume, with volume both in front of and behind
-  it along a ray, clips the volume only at its near face; the volume behind
-  it still shows. Only one depth per pixel reaches yt_idv.
+- Only one depth per pixel reaches yt_idv, so a semi-transparent surface
+  either hides the volume behind it or doesn't, per pixel; the volume can't
+  show partly through it. Opaque surfaces, including ones inside a volume,
+  clip it correctly.
 - Two volumes that overlap in depth are layered as whole objects, farthest
   first, not blended along each ray.
 - No lighting or shadows pass between Blender and the volume: the volume is
