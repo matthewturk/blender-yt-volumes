@@ -645,7 +645,7 @@ def render(config):
                     volume.volume_override.zoom_level = zoom_level_at(config["zoom"], frame)
                 # The add-on's output isn't auto-numbered.
                 scene.render.filepath = f"{prefix}{frame:04d}"
-                bpy.ops.render.volume_override(animation=False)
+                bpy.ops.render.volume_override(animation=False, write_still=True)
                 written.append(f"{scene.render.filepath}.png")
                 print(f"[render_volume] frame {frame} -> {written[-1]}", flush=True)
     finally:

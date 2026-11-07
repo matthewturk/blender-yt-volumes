@@ -436,13 +436,14 @@ def test_render_operator_runs_pipeline_when_something_flagged(registered_render_
     box.volume_override.is_volume_override = True
 
     called = []
-    monkeypatch.setattr(operators, "render_current_frame", lambda *a, **k: called.append(True))
+    monkeypatch.setattr(operators, "render_current_frame", lambda context, write_still=True: called.append(write_still))
     monkeypatch.setattr(operators, "_show_render_result", lambda *a, **k: None)
 
     result = bpy.ops.render.volume_override(animation=False)
+    bpy.ops.render.volume_override(animation=False, write_still=True)
 
     assert result == {"FINISHED"}
-    assert called == [True]
+    assert called == [False, True]  # F12 keeps the frame in Render Result, like Blender's own F12
 
 
 # --- view_transform forced to Standard for yt_idv modes (AgX washout fix) ---
@@ -975,12 +976,18 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
         operators.render_current_frame(bpy.context)
 
 
-@pytest.mark.parametrize("backend, during", [("OPENGL", "CPU"), ("VULKAN", "GPU")])
-def test_only_opengl_gets_the_cpu_compositor(addon_enabled, monkeypatch, tmp_path, backend, during):
-    # Under Vulkan the CPU compositor doesn't restore the window's GPU context
-    # after a nested EEVEE render (the annotation scene), and Blender crashes on the next redraw.
+@pytest.mark.parametrize("engine, backend, during", [
+    # Under Vulkan the CPU compositor doesn't restore the window's GPU context after
+    # a nested EEVEE render (the annotation scene), and Blender crashes on the next redraw.
+    ("BLENDER_EEVEE", "VULKAN", "GPU"),
+    # Cycles' pass 2 on the GPU compositor beside yt_idv's data can exhaust GPU memory.
+    ("CYCLES", "VULKAN", "CPU"),
+    ("CYCLES", "OPENGL", "CPU"),
+])
+def test_the_cpu_compositor_for_opengl_and_cycles(addon_enabled, monkeypatch, tmp_path, engine, backend, during):
     scene = addon_enabled
     _setup_yt_idv_scene(scene, tmp_path)
+    scene.render.engine = engine
     scene.render.compositor_device = "GPU"
     monkeypatch.setattr(operators, "_gpu_backend", lambda: backend)
     seen = []
@@ -1914,3 +1921,72 @@ def test_pass2_shrinks_eevee_without_settings_that_recompile_materials(clean_sce
     names = {name: value for owner, name, value in operators._pass2_render_overrides(clean_scene) if owner == clean_scene.eevee}
     assert names["taa_render_samples"] == 1 and names["shadow_pool_size"] == "16" and names["use_fast_gi"] is False
     assert "use_shadows" not in names and "use_raytracing" not in names
+
+
+def test_a_frame_rendered_without_write_still_saves_nothing(addon_enabled, monkeypatch, tmp_path):
+    scene = addon_enabled
+    scene.render.resolution_x = scene.render.resolution_y = 8
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 1
+    _add_camera(scene, "PERSP", lens=50.0)
+    _flagged_cube()
+    bpy.context.preferences.addons["yt_volumes"].preferences.work_dir = str(tmp_path / "work")
+    scene.render.filepath = str(tmp_path / "out_")
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+
+    operators.render_current_frame(bpy.context, write_still=False)
+    assert not list(tmp_path.glob("out_*"))
+    operators.render_current_frame(bpy.context)
+    assert list(tmp_path.glob("out_*.png"))
+
+
+def test_a_cycles_render_with_an_eevee_annotation_scene_warns(addon_enabled, monkeypatch):
+    # Cycles with yt_idv composites on the CPU, which crashes beside a nested EEVEE render.
+    from yt_volumes import annotations, transfer_function_nodes as tfn
+
+    scene = addon_enabled
+    volume = _flagged_cube()
+    volume.volume_override.renderer_mode = "YT_IDV_MAX_INTENSITY"
+    tfn.add_transfer_function_modifier(volume)
+    annotations.add_colorbar(scene, volume)
+    scene.yt_annotation_scene.render.engine = "BLENDER_EEVEE"
+    scene.render.engine = "CYCLES"
+    scene.render.compositor_device = "GPU"
+    monkeypatch.setattr(operators, "_gpu_backend", lambda: "VULKAN")
+
+    assert operators.compatibility_warnings(scene, bpy.context.view_layer)
+
+
+def test_a_cycles_session_is_dropped_before_yt_idv_loads(addon_enabled, monkeypatch, tmp_path):
+    from yt_volumes import yt_idv_renderer
+
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    toggles = []
+    monkeypatch.setattr(yt_idv_renderer, "needs_load", lambda request: not toggles)
+    real = operators._free_cycles_session
+
+    def recording(scene):
+        toggles.append(scene.render.use_persistent_data)
+        real(scene)
+
+    monkeypatch.setattr(operators, "_free_cycles_session", recording)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    operators.render_current_frame(bpy.context)
+    operators.render_current_frame(bpy.context)  # already loaded: no drop
+    assert toggles == [True]
+
+
+def test_cycles_renders_cap_the_path_state_pool_unless_set(addon_enabled, monkeypatch, tmp_path):
+    import os
+
+    scene = addon_enabled
+    _setup_yt_idv_scene(scene, tmp_path)
+    monkeypatch.setitem(operators.RENDERER_MODES, "YT_IDV_MAX_INTENSITY", _fake_render_result)
+    monkeypatch.delenv(operators.CYCLES_STATES_ENV, raising=False)
+    operators.render_current_frame(bpy.context)
+    assert os.environ[operators.CYCLES_STATES_ENV] == str(operators.CYCLES_STATES_MAX)
+
+    monkeypatch.setenv(operators.CYCLES_STATES_ENV, "4096")  # the user's own value wins
+    operators.render_current_frame(bpy.context)
+    assert os.environ[operators.CYCLES_STATES_ENV] == "4096"
