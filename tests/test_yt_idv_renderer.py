@@ -6,6 +6,7 @@ installed (optional `ytidv` group), so tests needing them absent force it via
 sys.modules.
 """
 
+import dataclasses
 import math
 import sys
 import types
@@ -151,9 +152,9 @@ def test_bbox_local_min_extent_guards_degenerate_axis_to_avoid_divide_by_zero():
     np.testing.assert_allclose(extent, [1.0, 1.0, 1.0])  # guarded, not 0
 
 
-def test_registered_camera_kwargs_rejects_non_persp():
+def test_registered_camera_kwargs_rejects_ortho():
     camera = _persp_camera(projection="ORTHO")
-    with pytest.raises(NotImplementedError, match="perspective-only"):
+    with pytest.raises(NotImplementedError, match="PERSP and PANO"):
         yir._registered_camera_kwargs(camera, _identity_volume(), _FakeDataset(), 100, 100)
 
 
@@ -1996,3 +1997,88 @@ def test_fit_bounds_previews_the_fit_from_the_measured_values(monkeypatch):
     del collection._yt_volumes_value_distribution
     assert yir.fit_bounds("d", 0.0, 100.0) is None  # not measured: never measured during a panel draw
     assert yir.fit_bounds("other", 0.0, 100.0) is None
+
+
+def _pano_camera(rays, **overrides):
+    from yt_volumes.external_render import PanoramicLensParams
+
+    panorama = PanoramicLensParams(
+        panorama_type="EQUIRECTANGULAR", fisheye_lens_mm=10.5, fisheye_fov_rad=3.14,
+        fisheye_polynomial_k0=0.0, fisheye_polynomial_k1=0.0, fisheye_polynomial_k2=0.0,
+        fisheye_polynomial_k3=0.0, fisheye_polynomial_k4=0.0,
+        latitude_min_rad=-1.57, latitude_max_rad=1.57, longitude_min_rad=-3.14, longitude_max_rad=3.14,
+        central_cylindrical_radius=0.0, central_cylindrical_range_u_min=0.0,
+        central_cylindrical_range_u_max=0.0, central_cylindrical_range_v_min=0.0,
+        central_cylindrical_range_v_max=0.0, ray_directions=rays,
+    )
+    return _persp_camera(projection="PANO", lens_mm=None, panorama=panorama, **overrides)
+
+
+def test_registered_camera_kwargs_gives_panoramas_a_ray_table():
+    camera = _pano_camera(np.zeros((4, 8, 3), "f4"), matrix_world=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]])
+    kwargs = yir._registered_camera_kwargs(camera, _identity_volume(), _FakeDataset(), 8, 4)
+    assert kwargs["projection_type"] == "ray_table"
+    assert "fov" not in kwargs
+    persp = yir._registered_camera_kwargs(_persp_camera(), _identity_volume(), _FakeDataset(), 8, 4)
+    assert persp["projection_type"] == "perspective"
+
+
+def test_panorama_window_depth_is_model_distance_over_far_plane():
+    # every ray looks down -Z; the 2x2x2 cube maps to the unit cube, so model
+    # distances are half of world distances
+    rays = np.zeros((2, 3, 3), "f4")
+    rays[..., 2] = -1.0
+    rays[0, 0] = 0.0  # a pixel with no ray
+    depth = np.full((2, 3), 4.0, "f4")
+    depth[1, 2] = 1e10
+    request = RenderRequest(
+        camera=_pano_camera(rays),
+        depth=DepthBuffer(data=depth, depth_convention="EUCLIDEAN", no_hit_value=1e10,
+                          row_order="BOTTOM_LEFT_ORIGIN", units="meters"),
+        volume=_identity_volume(),
+        frame=FrameParams(frame_number=1, scene_time_seconds=0.0),
+    )
+
+    class _Camera:
+        far_plane = 8.0
+
+    window = yir._cycles_depth_to_yt_idv_window_depth(request, _Camera())
+    # rows come back top-down
+    np.testing.assert_allclose(window, [[0.25, 0.25, 1.0], [1.0, 0.25, 0.25]])
+
+
+def test_render_signature_leaves_out_the_ray_table():
+    rays = np.ones((2, 3, 3), "f4")
+    request = RenderRequest(
+        camera=_pano_camera(rays),
+        depth=DepthBuffer(data=np.ones((2, 3), "f4"), depth_convention="EUCLIDEAN", no_hit_value=1e10,
+                          row_order="BOTTOM_LEFT_ORIGIN", units="meters"),
+        volume=_identity_volume(),
+        frame=FrameParams(frame_number=1, scene_time_seconds=0.0),
+    )
+    signature = yir._render_signature(request, (3, 2))
+    assert signature["camera"]["panorama"]["ray_directions"] is None
+    assert request.camera.panorama.ray_directions is rays
+
+
+def test_panorama_window_depth_measures_from_each_rays_origin():
+    # an eye 0.1 to the side: Z is the distance from the camera, the depth is along the ray
+    rays = np.zeros((1, 1, 3), "f4")
+    rays[..., 2] = -1.0
+    origins = np.full((1, 1, 3), (0.1, 0.0, 0.0), "f4")
+    depth = np.full((1, 1), np.hypot(0.1, 4.0), "f4")
+    camera = _pano_camera(rays)
+    camera = dataclasses.replace(camera, panorama=dataclasses.replace(camera.panorama, ray_origins=origins))
+    request = RenderRequest(
+        camera=camera,
+        depth=DepthBuffer(data=depth, depth_convention="EUCLIDEAN", no_hit_value=1e10,
+                          row_order="BOTTOM_LEFT_ORIGIN", units="meters"),
+        volume=_identity_volume(),
+        frame=FrameParams(frame_number=1, scene_time_seconds=0.0),
+    )
+
+    class _Camera:
+        far_plane = 8.0
+
+    window = yir._cycles_depth_to_yt_idv_window_depth(request, _Camera())
+    np.testing.assert_allclose(window, [[0.25]], rtol=1e-5)  # 4 along the ray = 2 in model space

@@ -63,6 +63,9 @@ def viewer_config(scene, obj, width, height, pose_path, camera_path):
     volume = operators.build_volume_params(obj)
     camera = dataclasses.asdict(operators.build_camera_params(scene, scene.camera))
     del camera["panorama"], camera["dof"]
+    if camera["projection"] == "PANO":
+        # the viewer is perspective-only: look from the panorama's position
+        camera.update(projection="PERSP", lens_mm=scene.camera.data.lens)
     return {
         "dataset_path": volume.dataset.dataset_path,
         "dataset_kind": volume.dataset.dataset_kind,

@@ -76,22 +76,24 @@ A renderer is a callable `RenderRequest -> RenderResult`, registered in
     pixel plus its depth back to a unique world point.
     `scripts/verify_camera_projection.py` checks it against a real Cycles
     render to under 0.55 px.
-  - `panorama` (PANO only): Cycles' panorama fields, passed through as is.
-    Equirectangular is verified by `scripts/verify_pano_equirect.py`, with
-    camera-local forward = -Z, up = +Y:
-    ```
-    theta = atan2(x, -z);  u = (theta / (2*pi) + 0.5) % 1.0
-    phi = asin(y / length((x, y, z)));  v_from_top = 0.5 - phi / pi
-    ```
-    The other panorama types are documented from Cycles' camera model but
-    not verified.
+  - `panorama` (PANO only): Cycles' panorama fields, plus
+    `ray_directions` and `ray_origins`, each pixel's camera-space ray as
+    Cycles traces it (per eye with spherical stereo). `pano_rays` ports
+    Cycles' lens and stereo code to numpy, and `tests/test_pano_rays.py`
+    checks it against rays Cycles renders (the camera inside a sphere whose
+    material writes the ray direction to an AOV, with the Position pass).
+    The tables are cached until the lens, stereo settings or resolution
+    change; yt_idv renders them with its `ray_table` projection. A
+    panorama's Z pass is the distance from the camera, not planar
+    (`depth_convention` `"EUCLIDEAN"`); with stereo that isn't the distance
+    along a ray, which starts at its eye.
   - `dof`: aperture and focus distance. A focus object is resolved to its
     Euclidean distance from the camera, which hasn't been checked against
     Cycles' own DOF.
 - **`DepthBuffer`**: the Z pass as `(resolution_y, resolution_x)` float32.
   `scripts/verify_zpass.py` measures its conventions on a real render:
-  depth is **planar** (distance along the view axis, not along the ray),
-  background pixels are exactly `1e10`, rows are **bottom-left origin**, and
+  depth is **planar** (distance along the view axis, not along the ray;
+  panoramas are the exception), background pixels are exactly `1e10`, rows are **bottom-left origin**, and
   values are in Blender units (times `unit_settings.scale_length` for meters).
 - **`VolumeObjectParams`**: the object's `matrix_world`, `bounding_box_local`,
   `custom_params` (the look) and `dataset` (`DatasetParams`).
@@ -171,7 +173,7 @@ branch is exercised by the pip `bpy` the tests use.
 
 `sample_renderers.constant_density_renderer()` (Renderer: `SAMPLE_CONSTANT`)
 exercises the whole contract without yt_idv: it builds per-pixel rays from
-`CameraParams` (PERSP, ORTHO, equirectangular), intersects them with the
+`CameraParams` (PERSP, ORTHO, and PANO through `ray_directions`), intersects them with the
 volume's box, clips at the depth buffer, and outputs path length times a
 constant. Use it to test pipeline changes in seconds.
 

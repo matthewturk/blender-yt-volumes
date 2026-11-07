@@ -14,23 +14,20 @@ from dataclasses import dataclass, field
 class PanoramicLensParams:
     """Raw Cycles panorama fields; set only for PANO cameras.
 
-    Verified for EQUIRECTANGULAR against Cycles
-    (scripts/verify_pano_equirect.py), in camera-local space (forward = -Z,
-    up = +Y, right = +X):
+    `ray_directions` is each pixel's ray as Cycles traces it (`pano_rays`),
+    for every panorama type and setting:
+    `(resolution_y, resolution_x, 3)` float32 unit vectors in camera space
+    (forward = -Z, up = +Y, right = +X), rows bottom first, (0, 0, 0) where
+    a pixel has no ray. None when the pipeline didn't supply it.
+    `ray_origins` (same shape, Blender units) is where each ray starts,
+    relative to the camera in camera space; None when every ray starts at
+    the camera. A stereo eye has its own directions and origins.
 
-        theta = atan2(x, -z)               # longitude
-        u = (theta / (2*pi) + 0.5) % 1.0   # u=0.5 at forward
-        phi = asin(y / length((x, y, z)))  # latitude
-        v_from_top = 0.5 - phi / pi        # v=0 at up (+Y)
-
-    and inversely:
+    For EQUIRECTANGULAR (u, v from the top-left corner, in [0, 1]):
 
         theta = (u - 0.5) * 2*pi
         phi = (0.5 - v_from_top) * pi
         direction = (sin(theta)*cos(phi), sin(phi), -cos(theta)*cos(phi))
-
-    The fisheye, mirrorball, and cylindrical sub-types are not verified; see
-    Cycles' `kernel/camera/projection.h`.
     """
 
     panorama_type: str  # "EQUIRECTANGULAR" | "FISHEYE_EQUIDISTANT" | "FISHEYE_EQUISOLID" | "FISHEYE_LENS_POLYNOMIAL" | "MIRRORBALL" | "CENTRAL_CYLINDRICAL" | "EQUIANGULAR_CUBEMAP_FACE"
@@ -50,6 +47,8 @@ class PanoramicLensParams:
     central_cylindrical_range_u_max: float
     central_cylindrical_range_v_min: float
     central_cylindrical_range_v_max: float
+    ray_directions: "numpy.ndarray | None" = None
+    ray_origins: "numpy.ndarray | None" = None
 
 
 @dataclass
@@ -96,7 +95,9 @@ class CameraParams:
 @dataclass
 class DepthBuffer:
     data: "numpy.ndarray"  # shape (resolution_y, resolution_x), float32
-    depth_convention: str  # "EUCLIDEAN" | "PLANAR" -- see scripts/verify_zpass.py
+    # "PLANAR" (along the view axis) for PERSP/ORTHO, "EUCLIDEAN" (distance
+    # from the camera) for PANO -- see scripts/verify_zpass.py
+    depth_convention: str
     no_hit_value: float  # sentinel for background/sky pixels; must NOT
     #                       be treated as a real occluder
     row_order: str  # "TOP_LEFT_ORIGIN" | "BOTTOM_LEFT_ORIGIN"

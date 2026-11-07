@@ -25,7 +25,7 @@ import time
 import bpy
 import mathutils
 
-from . import annotations, change_tracking, compositor_build, edge_blend, external_render, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, pano_rays, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -245,7 +245,8 @@ def build_camera_params(scene, camera_obj, view=None):
     cam = camera_obj.data
     render = scene.render
     matrix_world, shift_x = camera_obj.matrix_world, cam.shift_x
-    if view is not None:
+    # with spherical stereo the camera stays put and each ray carries its eye
+    if view is not None and not pano_rays.uses_spherical_stereo(scene, cam):
         matrix_world, shift_x = stereo_eye(camera_obj, view)
 
     projection_matrix = None
@@ -289,6 +290,15 @@ def _panorama_settings_source(cam):
     core `Camera` attributes on 5.x. (The <5.0 case is untested.)
     """
     return cam.cycles if hasattr(cam, "cycles") else cam
+
+
+def panorama_rays(scene, camera_obj, views, view):
+    """`(directions, origins)` of `view` (one of `render_views(scene)`'s names, or None)."""
+    if view is None or pano_rays.uses_spherical_stereo(scene, camera_obj.data):
+        names = tuple(v[0] if v else None for v in views)
+        return pano_rays.ray_tables(scene, camera_obj, names)[view]
+    # the eye is the whole camera moved over, with its own shift
+    return pano_rays.ray_tables(scene, camera_obj, (view,), shift_x=stereo_eye(camera_obj, view)[1])[view]
 
 
 def build_panorama_params(cam):
@@ -499,9 +509,11 @@ def build_frame_params(scene):
 
 # --- Depth read-back --------------------------------------------------------
 # Z is planar (distance along the view axis, not ray length) in Cycles and
-# EEVEE alike; 1e10 marks no-hit pixels; Image.pixels rows start at the bottom.
+# EEVEE alike, except for panoramic cameras, where it is the ray length; 1e10
+# marks no-hit pixels; Image.pixels rows start at the bottom.
 
 DEPTH_CONVENTION = "PLANAR"
+PANO_DEPTH_CONVENTION = "EUCLIDEAN"
 DEPTH_NO_HIT_VALUE = 1e10
 DEPTH_ROW_ORDER = "BOTTOM_LEFT_ORIGIN"
 
@@ -545,7 +557,7 @@ def read_depth_buffer(scene, path):
     # Z is in Blender units, like matrix_world; Unit Scale changes neither.
     return external_render.DepthBuffer(
         data=data,
-        depth_convention=DEPTH_CONVENTION,
+        depth_convention=PANO_DEPTH_CONVENTION if scene.camera.data.type == "PANO" else DEPTH_CONVENTION,
         no_hit_value=DEPTH_NO_HIT_VALUE,
         row_order=DEPTH_ROW_ORDER,
         units="meters",
@@ -954,6 +966,12 @@ def _render_current_frame(context, write_still=True):
                 with step(f"read_cryptomatte{suffix}"):
                     cryptomatte = edge_blend.read_cryptomatte([_with_suffix(p, suffix) for p in cryptomatte_paths])
             camera_params = build_camera_params(scene, scene.camera, name)
+            if flagged and camera_params.projection == "PANO":
+                with step(f"panorama rays{suffix}"):
+                    directions, origins = panorama_rays(scene, scene.camera, views, name)
+                camera_params = dataclasses.replace(camera_params, panorama=dataclasses.replace(
+                    camera_params.panorama, ray_directions=directions, ray_origins=origins,
+                ))
             frame_params = dataclasses.replace(frame_params, view_index=view_index)
 
             volume_layers = view_layers[name] = []

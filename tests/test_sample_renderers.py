@@ -1,3 +1,5 @@
+import dataclasses
+
 import bpy
 import numpy as np
 import pytest
@@ -114,9 +116,9 @@ def test_zero_density_scale_gives_zero_alpha(persp_camera_params):
     assert result.rgba[CENTER_ROW, CENTER_COL, 3] == 0.0
 
 
-def test_non_planar_depth_convention_raises(persp_camera_params):
+def test_unknown_depth_convention_raises(persp_camera_params):
     depth = _depth_buffer(1e10)
-    depth.depth_convention = "EUCLIDEAN"
+    depth.depth_convention = "LOGARITHMIC"
     volume = _volume_params()
     with pytest.raises(NotImplementedError):
         sample_renderers.constant_density_renderer(_request(persp_camera_params, depth, volume))
@@ -182,3 +184,81 @@ def test_equirectangular_forward_direction_hits_centered_volume():
     assert result.rgba[CENTER_ROW, CENTER_COL, 3] == pytest.approx(0.8, abs=1e-3)
     # directly behind the camera (+Z, u~0/1) should miss the box entirely
     assert result.rgba[CENTER_ROW, 0, 3] == 0.0
+
+
+@pytest.fixture
+def fisheye_camera_params():
+    """A 180-degree equisolid fisheye at world (0, 0, 10) looking down -Z,
+    with its rays from pano_rays.
+    """
+    from yt_volumes import pano_rays
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.render.resolution_x = RES_X
+    scene.render.resolution_y = RES_Y
+    cam_data = bpy.data.cameras.new("C")
+    cam_data.type = "PANO"
+    operators._panorama_settings_source(cam_data).panorama_type = "FISHEYE_EQUISOLID"
+    cam_obj = bpy.data.objects.new("C", cam_data)
+    cam_obj.location = (0.0, 0.0, 10.0)
+    scene.collection.objects.link(cam_obj)
+    scene.camera = cam_obj
+    bpy.context.view_layer.update()
+    params = operators.build_camera_params(scene, cam_obj)
+    rays, origins = pano_rays.ray_tables(scene, cam_obj)[None]
+    assert origins is None
+    return dataclasses.replace(params, panorama=dataclasses.replace(params.panorama, ray_directions=rays))
+
+
+def test_panorama_rays_clip_at_the_camera_distance(fisheye_camera_params):
+    rays = fisheye_camera_params.panorama.ray_directions
+    assert rays.shape == (RES_Y, RES_X, 3)
+    np.testing.assert_allclose(rays[CENTER_ROW, CENTER_COL], [0.0, 0.0, -1.0], atol=1e-3)
+
+    depth = _depth_buffer(5.0)  # a solid halfway through the box
+    depth.depth_convention = "EUCLIDEAN"
+    result = sample_renderers.constant_density_renderer(
+        _request(fisheye_camera_params, depth, _volume_params(density_scale=0.4))
+    )
+    assert result.rgba[CENTER_ROW, CENTER_COL, 3] == pytest.approx(0.4, abs=1e-3)
+    # the corners lie outside the fisheye's image circle
+    no_ray = np.linalg.norm(rays, axis=-1) == 0.0
+    assert no_ray[0, 0] and no_ray[-1, -1]
+    assert np.all(result.rgba[no_ray] == 0.0)
+
+
+def test_equirectangular_rays_match_the_formula():
+    from yt_volumes import pano_rays
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.render.resolution_x, scene.render.resolution_y = 32, 16
+    cam_data = bpy.data.cameras.new("C")
+    cam_data.type = "PANO"
+    operators._panorama_settings_source(cam_data).panorama_type = "EQUIRECTANGULAR"
+    cam_obj = bpy.data.objects.new("C", cam_data)
+    cam_obj.rotation_euler = (1.0, 0.2, 0.3)  # the table is in camera space regardless
+    scene.collection.objects.link(cam_obj)
+    scene.camera = cam_obj
+    rays, origins = pano_rays.ray_tables(scene, cam_obj)[None]
+    assert origins is None
+
+    u = (np.arange(32) + 0.5) / 32
+    v_from_bottom = (np.arange(16) + 0.5) / 16
+    theta, phi = np.meshgrid((u - 0.5) * 2 * np.pi, (v_from_bottom - 0.5) * np.pi)
+    expected = np.stack([np.sin(theta) * np.cos(phi), np.sin(phi), -np.cos(theta) * np.cos(phi)], axis=-1)
+    angle = np.linalg.norm(np.cross(rays, expected), axis=-1)
+    assert angle.max() < 1e-3
+    assert not any(s.name.startswith("yt_volumes") for s in bpy.data.scenes)
+
+
+def test_ray_origins_move_the_rays(fisheye_camera_params):
+    panorama = fisheye_camera_params.panorama
+    origins = np.zeros_like(panorama.ray_directions)
+    origins[...] = (0.0, 0.0, -1.0)  # every ray starts 1 forward, so 1 closer to the box
+    camera = dataclasses.replace(fisheye_camera_params, panorama=dataclasses.replace(panorama, ray_origins=origins))
+    depth = _depth_buffer(5.0)  # a solid 5 from the camera (world z = 5), 4 along the ray
+    depth.depth_convention = "EUCLIDEAN"
+    result = sample_renderers.constant_density_renderer(_request(camera, depth, _volume_params(density_scale=0.4)))
+    assert result.rgba[CENTER_ROW, CENTER_COL, 3] == pytest.approx(0.4, abs=1e-3)
