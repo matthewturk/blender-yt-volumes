@@ -99,9 +99,9 @@ A renderer is a callable `RenderRequest -> RenderResult`, registered in
   **premultiplied** alpha, **linear** color, plus an optional `cmap_range`
   the add-on remembers on the volume.
 
-Only one depth per pixel crosses the boundary, so a solid enclosed by a
-volume along a ray clips the volume at its near face only; the volume behind
-it still contributes. There's no Z-Combine anywhere: a single depth isn't
+Only one depth per pixel crosses the boundary: each ray stops at the nearest
+written surface, which is right for opaque geometry (even inside a volume) but
+can't show the volume partly through a semi-transparent surface. There's no Z-Combine anywhere: a single depth isn't
 meaningful for a volume, and its hard per-pixel switch would show wherever a
 solid cuts into one. No lights or shadows cross either; the renderer is
 self-emissive.
@@ -184,5 +184,5 @@ With any renderer, including `SAMPLE_CONSTANT`:
 - **A solid poking into the volume from one side** should cut a clean
   boundary along its near surface. This is the case a Z-Combine would get
   wrong.
-- **A solid fully inside the volume** renders wrong by design: the volume
-  behind it still shows (see "The renderer contract").
+- **A solid fully inside the volume** should show the volume in front of it
+  and hide the volume behind it.
