@@ -1769,6 +1769,60 @@ def test_yt_transfer_function_opacity_is_per_view_or_per_data_length(monkeypatch
     assert lengths == [pytest.approx(0.03 * 1e4), pytest.approx(0.03)]
 
 
+def _clamping_component():
+    component = _FakeComponent()
+    component.tf_clamp_low = component.tf_clamp_high = False
+    return component
+
+
+def test_tf_clamp_settings_reach_a_yt_idv_that_clamps():
+    component = _clamping_component()
+    yir._set_tf_clamp(component, {"yt_idv_tf_clamp_low": True, "yt_idv_tf_clamp_high": False})
+    assert (component.tf_clamp_low, component.tf_clamp_high) == (True, False)
+    yir._set_tf_clamp(component, {})
+    assert (component.tf_clamp_low, component.tf_clamp_high) == (False, False)
+
+
+def test_tf_clamp_on_a_yt_idv_without_clamping_warns_and_renders_anyway():
+    component = _FakeComponent()
+    with pytest.warns(UserWarning, match="can't clamp"):
+        yir._set_tf_clamp(component, {"yt_idv_tf_clamp_high": True})
+    assert not hasattr(component, "tf_clamp_high")
+
+
+def test_gn_transfer_function_sets_tf_clamp(monkeypatch):
+    component = _gn_component(monkeypatch)
+    component.tf_clamp_low = component.tf_clamp_high = False
+    component.data = _two_block_data()
+    yir._configure_gn_transfer_function(component, custom_params={
+        "yt_idv_gn_tf_rgba": [[1.0, 1.0, 1.0, 1.0]] * 256, "yt_idv_tf_fit_range": False,
+        "yt_idv_tf_log_min": np.log10(1.1), "yt_idv_tf_log_max": np.log10(2.0),
+        "yt_idv_tf_clamp_high": True,
+    })
+    assert (component.tf_clamp_low, component.tf_clamp_high) == (False, True)
+
+
+def test_yt_transfer_function_sets_tf_clamp_except_when_it_draws_nothing(monkeypatch):
+    import yt_idv.tf_conversion as tfc
+
+    component = _clamping_component()
+    component.data = types.SimpleNamespace(_yt_volumes_base_transform=(np.zeros(3), 0.5), applied_scale_ratio=1.0)
+    params = {"yt_idv_tf_clamp_low": True, "yt_idv_tf_clamp_high": True}
+    monkeypatch.setattr(tfc, "convert_yt_transfer_function", lambda tf, data, ray_length, nbins: {})
+    monkeypatch.setattr(tfc, "apply_converted_transfer_function", lambda c, converted: None)
+    monkeypatch.setitem(yir._yt_tf_applied, id(component), None)
+    yir._apply_yt_transfer_function(component, params, None, lambda: None)
+    assert (component.tf_clamp_low, component.tf_clamp_high) == (True, True)
+
+    def zero_everywhere(tf, data, ray_length, nbins):
+        raise ValueError("the transfer function is zero everywhere")
+
+    # the range moves above every value; clamping low would draw all of them
+    monkeypatch.setattr(tfc, "convert_yt_transfer_function", zero_everywhere)
+    yir._apply_yt_transfer_function(component, params, None, lambda: None)
+    assert (component.tf_clamp_low, component.tf_clamp_high) == (False, False)
+
+
 def test_exposure_factor_aims_the_brightest_pixels_near_white_without_clipping():
     image = np.zeros((100, 100, 4), dtype=np.float32)
     image[:10, :10, 0] = 0.45  # 1% of pixels at 0.45

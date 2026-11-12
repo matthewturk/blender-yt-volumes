@@ -66,6 +66,7 @@ import importlib
 import inspect
 import math
 import types
+import warnings
 
 import numpy as np
 
@@ -1486,6 +1487,19 @@ def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
     component.transfer_function.data = tf_data
 
 
+def _set_tf_clamp(component, custom_params):
+    """Draw values outside the transfer function's range in its end values, per
+    `yt_idv_tf_clamp_low`/`_high`.
+    """
+    low = bool(custom_params.get("yt_idv_tf_clamp_low", False))
+    high = bool(custom_params.get("yt_idv_tf_clamp_high", False))
+    if not hasattr(component, "tf_clamp_low"):
+        if low or high:
+            warnings.warn("this yt_idv can't clamp the transfer function's range; Clamp Below/Above Range do nothing")
+        return
+    component.tf_clamp_low, component.tf_clamp_high = low, high
+
+
 def _tf_bounds(collection, custom_params):
     """`(low, high)` log10 bounds, in the field's own units, of the yt Layers
     and Geometry Nodes transfer functions: the data between
@@ -1872,6 +1886,7 @@ def _configure_gn_transfer_function(component, custom_params):
         }
     _use_float_table(component, data)
     _apply_transfer_function_settings(component, value_min, value_max, data)
+    _set_tf_clamp(component, custom_params)
 
 
 def _use_float_table(component, data):
@@ -2032,6 +2047,7 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
+    _set_tf_clamp(component, custom_params)
     ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _opacity_zoom(component.data, custom_params)
     per_frame = key is None
     key = (id(component.data), key, ray_length)
@@ -2052,6 +2068,7 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
         # nothing to draw: a range above every normalized value discards all samples
         component.render_method = "transfer_function"
         component.tf_min, component.tf_max = 2.0, 3.0
+        _set_tf_clamp(component, {})  # clamping low would draw everything with the old table
         _yt_tf_applied.pop(id(component), None)
         return
     apply_converted_transfer_function(component, converted)

@@ -27,6 +27,7 @@ class VolumeOverrideCustomParam(bpy.types.PropertyGroup):
 LOOK_SETTINGS = (
     "backend", "samples_per_cell", "colormap", "rescale_colormap",
     "tf_fit_range", "tf_percentile_low", "tf_percentile_high", "tf_log_min", "tf_log_max",
+    "tf_clamp_low", "tf_clamp_high",
     "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "tf_brightness_ramp",
     "tf_camera_fade", "tf_camera_fade_decades", "tf_opaque", "tf_opaque_above", "tf_opaque_edge", "auto_exposure",
     "mip_alpha_max", "mip_alpha_ramp_power",
@@ -211,6 +212,17 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
         name="Max (log10)",
         description="log10 of the field, in its own units, at the transfer function's high end; used with Fit to Data off",
         default=-20.0, precision=3,
+    )
+    # yt_idv modes with a transfer function
+    tf_clamp_low: bpy.props.BoolProperty(
+        name="Clamp Below Range",
+        description="Draw values below the transfer function's range in its color and opacity at the low end, instead of leaving them out; zero and negative values stay out. Needs a yt_idv with transfer function clamping",
+        default=False,
+    )
+    tf_clamp_high: bpy.props.BoolProperty(
+        name="Clamp Above Range",
+        description="Draw values above the transfer function's range in its color and opacity at the high end, instead of leaving them out. Needs a yt_idv with transfer function clamping",
+        default=False,
     )
 
     # yt Layers (YT_IDV_TRANSFER_FUNCTION): ColorTransferFunction.add_layers
@@ -531,12 +543,16 @@ _MODE_SETTINGS = {
     "YT_IDV_TRANSFER_FUNCTION": (
         "tf_n_layers", "tf_layer_width", "tf_alpha_first", "tf_alpha_last", "colormap", "tf_brightness_ramp",
         "tf_camera_fade", "tf_camera_fade_decades", "tf_opaque", "tf_opaque_above", "tf_opaque_edge",
-        *_TF_RANGE, "yt_tf_ray_length", "opacity_per_view", "auto_exposure",
+        *_TF_RANGE, "tf_clamp_low", "tf_clamp_high", "yt_tf_ray_length", "opacity_per_view", "auto_exposure",
     ),
     "YT_IDV_MAX_INTENSITY_ALPHA": ("colormap", "mip_alpha_max", "mip_alpha_ramp_power"),
-    "YT_IDV_YT_TRANSFER_FUNCTION": ("yt_tf", "yt_tf_ray_length", "opacity_per_view", "auto_exposure"),
+    "YT_IDV_YT_TRANSFER_FUNCTION": (
+        "yt_tf", "yt_tf_ray_length", "tf_clamp_low", "tf_clamp_high", "opacity_per_view", "auto_exposure",
+    ),
     # Min and Max are each slot's, drawn with it.
-    "YT_IDV_GN_TRANSFER_FUNCTION": ("gn_tf_opacity_scale", "opacity_per_view", *_TF_RANGE[:3], "auto_exposure"),
+    "YT_IDV_GN_TRANSFER_FUNCTION": (
+        "gn_tf_opacity_scale", "opacity_per_view", *_TF_RANGE[:3], "tf_clamp_low", "tf_clamp_high", "auto_exposure",
+    ),
 }
 # Modes that color with a colormap over a fitted range (Rescale Colormap, Colormap Range).
 _COLORMAP_RANGE_MODES = ("YT_IDV_MAX_INTENSITY", "YT_IDV_MAX_INTENSITY_ALPHA", "YT_IDV_PROJECTION")
