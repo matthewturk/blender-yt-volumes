@@ -209,6 +209,18 @@ def render_views(scene):
     return views or [None]
 
 
+def still_outputs(scene, base):
+    """The files a still render saved to `base` (a path without extension)
+    writes: one per eye only when a stereo pair is saved as individual files.
+    """
+    render = scene.render
+    extension = render.file_extension if render.use_file_extension else ""
+    views = render_views(scene)
+    if views == [None] or render.image_settings.views_format != "INDIVIDUAL":
+        return [base + extension]
+    return [base + suffix + extension for _, suffix in views]
+
+
 def stereo_eye(camera_obj, view):
     """`(matrix_world, shift_x)` of the `"left"`/`"right"` eye of `camera_obj`,
     placed as Blender's stereo settings place it.
@@ -1052,9 +1064,7 @@ def _render_current_frame(context, write_still=True):
             for owner, name, value in saved:
                 if getattr(owner, name) != value:
                     setattr(owner, name, value)
-        base = bpy.path.abspath(scene.render.filepath)
-        extension = scene.render.file_extension if scene.render.use_file_extension else ""
-        outputs = [base + (view[1] if view else "") + extension for view in views]
+        outputs = still_outputs(scene, bpy.path.abspath(scene.render.filepath))
         if write_still:
             log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
         else:

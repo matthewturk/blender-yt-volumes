@@ -46,6 +46,7 @@ DEFAULTS = {
         "device": "OPTIX",  # Cycles only
         "engine": "CYCLES",  # or "BLENDER_EEVEE" (needs Blender's Vulkan GPU backend)
         "smooth_edges": None,  # the scene's Smooth Surface Edges; default: the .blend's
+        "stereo": None,  # "TOPBOTTOM", "SIDEBYSIDE", "INDIVIDUAL" (a file per eye) or "OFF"; default: the .blend's
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
     },
@@ -73,6 +74,7 @@ DEFAULTS = {
 
 SUBSET_KINDS = ("region", "sphere", "box")
 ENGINES = ("CYCLES", "BLENDER_EEVEE")
+STEREO_LAYOUTS = ("TOPBOTTOM", "SIDEBYSIDE", "INDIVIDUAL", "OFF")
 DEVICES = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI", "CPU")
 PATH_KEYS = (("data", "path"), ("data", "scene"), ("blender", "file"), ("blender", "output"), ("blender", "work_dir"))
 
@@ -268,6 +270,8 @@ def validate(config, series=False):
         raise ConfigError(f"blender.engine must be one of {ENGINES}")
     if blender["device"] not in DEVICES:
         raise ConfigError(f"blender.device must be one of {DEVICES}")
+    if blender["stereo"] is not None and blender["stereo"] not in STEREO_LAYOUTS:
+        raise ConfigError(f"blender.stereo must be one of {STEREO_LAYOUTS}")
     start_end = parse_frames(blender["frames"])
     if start_end and start_end[0] > start_end[1]:
         raise ConfigError(f"blender.frames {blender['frames']!r} ends before it starts")
@@ -461,12 +465,13 @@ def _load_saved_scene(path):
     import numpy as np
     from yt_idv.scene_graph import SceneGraph
 
+    from . import units
     from .yt_idv_renderer import scale_scene_to_subset
 
     scene = SceneGraph.load(path)
     scale_scene_to_subset(scene)
-    # the renderer only reads ds.domain_center, in unitary units
-    return scene, types.SimpleNamespace(domain_center=np.full(3, 0.5))
+    # the renderer reads only ds.domain_center, in unitary units
+    return scene, types.SimpleNamespace(domain_center=np.full(3, 0.5), unit_registry_json=units.scene_file_units(path))
 
 
 def _apply_cmap_range(scene, cmap_range):
@@ -518,8 +523,41 @@ def _configure_blender(config):
     scene.render.image_settings.file_format = "PNG"
     if blender["smooth_edges"] is not None:
         scene.yt_volumes_smooth_edges = bool(blender["smooth_edges"])
+    if blender["stereo"]:
+        configure_stereo(scene, blender["stereo"])
     configure_engine(scene, blender)
     return scene, temp_work_dir
+
+
+def configure_stereo(scene, layout):
+    """Render the camera's stereo pair into one image (`TOPBOTTOM`, left on
+    top, or `SIDEBYSIDE`) or a file per eye (`INDIVIDUAL`); `OFF` renders mono.
+    """
+    render = scene.render
+    render.use_multiview = layout != "OFF"
+    if layout == "OFF":
+        return
+    render.views_format = "STEREO_3D"
+    for view in render.views:
+        if view.name in ("left", "right"):
+            view.use = True
+    if layout == "INDIVIDUAL":
+        render.image_settings.views_format = "INDIVIDUAL"
+    else:
+        render.image_settings.views_format = "STEREO_3D"
+        render.image_settings.stereo_3d_format.display_mode = layout
+
+
+def output_paths(scene, frame):
+    """The files a still render of `frame` writes: one per eye when a stereo
+    pair is saved as individual files.
+    """
+    from . import operators
+
+    render = scene.render
+    path = render.frame_path(frame=frame)
+    base = os.path.splitext(path)[0] if render.use_file_extension else path
+    return operators.still_outputs(scene, base)
 
 
 def configure_engine(scene, blender):
@@ -646,8 +684,9 @@ def render(config):
                 # the operator numbers the frame, as Render Animation does
                 scene.render.filepath = prefix
                 bpy.ops.render.volume_override(animation=False, write_still=True)
-                written.append(scene.render.frame_path(frame=frame))
-                print(f"[render_volume] frame {frame} -> {written[-1]}", flush=True)
+                paths = output_paths(scene, frame)
+                written.extend(paths)
+                print(f"[render_volume] frame {frame} -> {', '.join(paths)}", flush=True)
     finally:
         if temp_work_dir:
             shutil.rmtree(temp_work_dir, ignore_errors=True)
