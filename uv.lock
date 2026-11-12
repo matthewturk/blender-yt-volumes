@@ -653,7 +653,7 @@ wheels = [
 
 [[package]]
 name = "yt-idv"
-version = "0.6.1"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -668,17 +668,17 @@ dependencies = [
     { name = "unyt" },
     { name = "yt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/86/9786a8ccc3dc4dbc2d980a76d1f8b3c33a33dff7e4ee342aa627e0f9119a/yt_idv-0.6.1.tar.gz", hash = "sha256:3028ffba5eb7be1cf8bf85c321b1845bd96fa3f46379a9c9fac3d51cc336eacc", size = 714048, upload-time = "2026-10-20T20:17:35.562Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/f5/61d2ca79d999fd03a2c2ac5f987ed3ce2ccc5d9a1243d5b0390ffebafbbd/yt_idv-0.7.0.tar.gz", hash = "sha256:94662d6c7c73024e11b2a153e3e8d1059d26bc2fcd6adcbb4ff78c4d3a9788b1", size = 726571, upload-time = "2026-11-12T20:12:37.629Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/7d/f7ab842754ebd9341ad7e7db357573ddc060d583c6a7f1a230a92e4f19d8/yt_idv-0.6.1-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:0f6f4b211eeccd6168d24b3c1f4124dc5d1085e80214e7f142d36532e5d49d11", size = 727836, upload-time = "2026-10-20T20:17:22.882Z" },
-    { url = "https://files.pythonhosted.org/packages/70/c1/e2feb3897ab38b68cda94684ab6aa8e90d32d97173dd3687da801bfa29a1/yt_idv-0.6.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5f11021beb2f2eaa59c6fbad12a6813bda08463a6068d572299f49b2f5fc563e", size = 728855, upload-time = "2026-10-20T20:17:24.146Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/52/f377f465c4fe04092080a3514eb38c0efa6445d598e8e3e8fa15510b341f/yt_idv-0.6.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a87f9b1768965c67f6bc0e041c764153f8f250d7119fbc89feb80daa9a20f8c5", size = 1740744, upload-time = "2026-10-20T20:17:25.629Z" },
-    { url = "https://files.pythonhosted.org/packages/ec/3b/f1f380443fa0a28b8a1cabd1ba9e2e502269c2de0f4c935389ed77b15a03/yt_idv-0.6.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7eb0a48e72122fe6f26d360bba0bbc30411f75b4cbb13feb4ba4f23d3825dee2", size = 1766282, upload-time = "2026-10-20T20:17:27.387Z" },
+    { url = "https://files.pythonhosted.org/packages/91/4b/c05a733bcc940f66aef3db172f2807f629d731afd499fb5bd8bea0234aac/yt_idv-0.7.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:9f49e5390a48f78d9b85dba1f748128a9fd3528c37aee1042c6a3289583f1111", size = 740403, upload-time = "2026-11-12T20:12:24.924Z" },
+    { url = "https://files.pythonhosted.org/packages/79/0f/23d63e1830c652177a29e919a24cafcdd1edbff1381bd7a9452dff93ca67/yt_idv-0.7.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:bceb5691521facec22499252cdb1be1d71b3ee3afafef4374b34d216e059ceeb", size = 741330, upload-time = "2026-11-12T20:12:26.282Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/7b/a914adeda70edd4aa6f8a46ca62549d8fbc8d0ab415cd2086624e156d60a/yt_idv-0.7.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:71f3417cf2d4fa3af0d032852dd4f905d4461ea1844bf7f8d89e6424e7e0956a", size = 1751518, upload-time = "2026-11-12T20:12:28.084Z" },
+    { url = "https://files.pythonhosted.org/packages/db/49/49151c4171e5d997a1963a7a0f7b7ac83048e478ddb28079c5a621082431/yt_idv-0.7.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1e0fe56b62bb82df25a18c5e67d426e8b792a647821a8a0f50d55872ebcb615e", size = 1775262, upload-time = "2026-11-12T20:12:29.727Z" },
 ]
 
 [[package]]
 name = "yt-volumes"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -710,7 +710,7 @@ ytidv = [
     { name = "h5py", specifier = ">=3.10" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pooch", specifier = ">=1.8" },
-    { name = "yt-idv", specifier = ">=0.6.1" },
+    { name = "yt-idv", specifier = ">=0.7.0" },
 ]
 
 [[package]]

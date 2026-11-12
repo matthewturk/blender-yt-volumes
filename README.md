@@ -273,7 +273,21 @@ side-by-side). The eye cameras follow the camera's Stereoscopy settings
 (interocular and convergence distance, Off-Axis, Parallel or Toe-in, pivot), and
 match where Cycles draws each eye to under a pixel. The second eye reuses the
 first eye's Auto Exposure, so the pair matches. Each eye costs a full volume
-render. Multi-View mode and panoramic stereo aren't supported.
+render. Multi-View mode isn't supported.
+
+## Panoramic cameras
+yt_idv modes render panoramic cameras of every type (equirectangular, the
+fisheyes, mirror ball, central cylindrical, cubemap faces), with all of their
+settings, from inside the data or outside it. The add-on computes every
+pixel's ray as Cycles does (ported from Cycles' camera code, and tested
+against rays Cycles renders), and yt_idv marches exactly those rays. The
+table is rebuilt only when the lens, its stereo settings or the resolution
+change. With spherical stereo each eye's rays start at their own eye
+positions, so pole merging and convergence match Cycles. Depth clipping is
+exact in Cycles; EEVEE's panorama depth is approximate (see above). Needs a
+yt_idv with the `ray_table` projection. [docs/panoramas.md](docs/panoramas.md)
+is a recipe for stereo 360 videos for headsets: camera and stereo settings, a
+comfortable camera path, and encoding.
 
 ## Scene units per data unit
 Each volume keeps `obj["yt_units"]` current, for drivers, Geometry Nodes inputs
@@ -436,7 +450,6 @@ draws over it, with or without this setting.
   self-emissive, and it doesn't cast shadows or light onto geometry.
 - The viewport preview doesn't support orthographic views. Motion blur
   isn't matched.
-- Opaque End (yt Layers) needs a yt_idv newer than 0.6.1 (yt-project/yt_idv#312).
 
 ## Development
 

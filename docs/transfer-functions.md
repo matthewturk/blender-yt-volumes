@@ -58,7 +58,11 @@ Data** (on by default) it spans the data between the **Low %** and **High %**
 percentiles by volume (10 and 100); off, Min/Max (log10) set it in the field's
 own units (each slot's, for the Geometry Nodes transfer function), and the panel
 shows what Fit to Data would give, with a button to use it. yt Layers uses the
-same range settings. The ramp's color is weighted by the opacity curve, as in
+same range settings. Values outside the range are left out; **Clamp Below Range**
+and **Clamp Above Range** (in all three transfer function modes) draw them in
+the transfer function's color and opacity at that end instead, e.g. to show
+everything denser than the range in its top color. Zero and negative values
+stay out. They need a yt_idv with transfer function clamping (`tf_clamp_low`). The ramp's color is weighted by the opacity curve, as in
 yt, so what is transparent doesn't glow. **Opacity Scale** multiplies emission
 and opacity per box width of path: thin or small structures need it large.
 While zoomed, **Opacity Per View** (on by default, also for the yt modes' Ray
@@ -122,7 +126,7 @@ gain fades out along the rise and is measured only where the end hasn't made
 the image half opaque, so the solid end keeps its own color and the layers
 around it stay exposed as without it. It needs a
 yt_idv whose transfer-function shader integrates each step exactly
-(yt-project/yt_idv#312, newer than 0.6.1); otherwise its first sample
+(yt-project/yt_idv#312, in 0.7.0 and later); otherwise its first sample
 overshoots to white.
 The plot shows opacity only up to 1, so the rise looks like a step there.
 

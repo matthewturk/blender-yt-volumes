@@ -71,6 +71,7 @@ def test_options_alone_are_enough_without_a_config_file(blend, monkeypatch):
     (_minimal() + '[data.subset]\nkind = "sphere"\n', "needs radius"),
     (_minimal() + 'colour = "red"\n', "unknown config keys: blender.colour"),
     (_minimal() + 'engine = "BLENDER_WORKBENCH"\n', "blender.engine must be one of"),
+    (_minimal() + 'stereo = "ANAGLYPH"\n', "blender.stereo must be one of"),
 ])
 def test_validation_errors(tmp_path, blend, text, message):
     with pytest.raises(rv.ConfigError, match=message):
@@ -355,6 +356,33 @@ def test_configure_engine_sets_the_engines_own_samples(monkeypatch, engine):
     else:
         assert (scene.cycles.samples, scene.eevee.taa_render_samples) == (cycles_default, 7)
         assert devices == []
+
+
+@pytest.mark.parametrize("layout, files", [
+    ("TOPBOTTOM", ["frame_0003.png"]),
+    ("SIDEBYSIDE", ["frame_0003.png"]),
+    ("INDIVIDUAL", ["frame_0003_L.png", "frame_0003_R.png"]),
+    ("OFF", ["frame_0003.png"]),
+])
+def test_configure_stereo_sets_the_layout_and_the_files_written(layout, files):
+    import bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.render.filepath = "/out/frame_"
+    scene.render.views["right"].use = False
+
+    rv.configure_stereo(scene, layout)
+
+    render = scene.render
+    assert render.use_multiview == (layout != "OFF")
+    if layout != "OFF":
+        assert render.views_format == "STEREO_3D"
+        assert all(render.views[name].use for name in ("left", "right"))
+        if layout != "INDIVIDUAL":
+            assert render.image_settings.views_format == "STEREO_3D"
+            assert render.image_settings.stereo_3d_format.display_mode == layout
+    assert [p.rsplit("/", 1)[1] for p in rv.output_paths(scene, 3)] == files
 
 
 def test_register_extension_imports_package_without_touching_sys_path(tmp_path, monkeypatch):

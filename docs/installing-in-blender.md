@@ -41,7 +41,7 @@ Blender versions with the same Python minor version.
 ```
 uv venv --python 3.13 ~/blender-ytenv
 uv pip install --python ~/blender-ytenv/bin/python \
-    "yt_idv>=0.6.1" \
+    "yt_idv>=0.7.0" \
     pooch pandas h5py "numpy==$NUMPY"
 ```
 
@@ -73,7 +73,7 @@ cost of being undone by a Blender reinstall. Everything has `cp313` wheels on
 PyPI, so it installs straight into Blender's Python:
 
 ```
-uv pip install --python $BLENDER_PY "yt_idv>=0.6.1" \
+uv pip install --python $BLENDER_PY "yt_idv>=0.7.0" \
     pooch pandas h5py "numpy==$NUMPY"
 ```
 

@@ -29,6 +29,7 @@ resolution = [1920, 1080]      # default: the .blend's
 samples = 32                   # Cycles samples; default: the .blend's
 device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU (Cycles only)
 # smooth_edges = true          # Smooth Surface Edges (Cryptomatte); default: the .blend's
+# stereo = "TOPBOTTOM"         # stereo output: TOPBOTTOM, SIDEBYSIDE, INDIVIDUAL or OFF; default: the .blend's
 # engine = "BLENDER_EEVEE"     # default "CYCLES"; EEVEE needs Blender's Vulkan GPU backend
 # work_dir = "/tmp/my_work"    # default: a fresh temp directory per run
 

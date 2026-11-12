@@ -66,12 +66,15 @@ import importlib
 import inspect
 import math
 import types
+import warnings
 
 import numpy as np
 
 from . import change_tracking, parallel
 from .external_render import RenderRequest, RenderResult
 from .sample_renderers import _persp_ortho_rays, _pixel_grid_fractions
+from .sample_renderers import panorama_rays as _panorama_world_rays
+from .sample_renderers import ray_length_from_camera_distance
 
 SAMPLE_DATASET_NAME = "IsolatedGalaxy"
 SAMPLE_FIELD = "density"
@@ -604,8 +607,14 @@ def _render_signature(request: RenderRequest, render_size: int, render_mode: str
     """Everything besides the volume data that affects the image. The depth
     buffer is hashed by content, since occluders can move under a fixed camera.
     """
+    camera = request.camera
+    if camera.panorama is not None:
+        # set by the lens settings and resolution, which are compared already
+        camera = dataclasses.replace(camera, panorama=dataclasses.replace(
+            camera.panorama, ray_directions=None, ray_origins=None,
+        ))
     return {
-        "camera": dataclasses.asdict(request.camera),
+        "camera": dataclasses.asdict(camera),
         "depth_shape": list(request.depth.data.shape),
         "depth_hash": depth_hash or _depth_hash(request.depth),
         "render_size": render_size,
@@ -848,11 +857,9 @@ def _registered_camera_kwargs(
     `height / frame_height`. `model_bounds` (`(low, high)`, default the unit cube) sets the near/far
     planes. `model_frame` is `apply_zoom`'s; see `_world_to_model`.
     """
-    if camera.projection != "PERSP":
+    if camera.projection not in ("PERSP", "PANO"):
         raise NotImplementedError(
-            "yt_idv's camera is perspective-only (yt_idv.cameras."
-            "trackball_camera.TrackballCamera has no ortho/panoramic "
-            f"projection) -- got CameraParams.projection={camera.projection!r}."
+            f"yt_idv renders PERSP and PANO cameras, not {camera.projection!r}."
         )
 
     cam_matrix_world = np.array(camera.matrix_world, dtype=np.float64)
@@ -889,21 +896,41 @@ def _registered_camera_kwargs(
     focus = position + forward * look_ahead
 
     aspect_ratio = width / height
+    planes = camera_planes(position, model_bounds, model_frame, zoom_depth)
+    kwargs = {
+        "position": position.astype("f4"),
+        "focus": focus.astype("f4"),
+        "up": up.astype("f4"),
+        "aspect_ratio": aspect_ratio,
+        **planes,
+    }
+    if camera.projection == "PANO":
+        # the rays come from the camera's ray table (see `_use_ray_table`)
+        return {**kwargs, "projection_type": "ray_table"}
     if frame_height:
         frame_fov = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio)
         fov_deg = math.degrees(2.0 * math.atan(height / frame_height * math.tan(math.radians(frame_fov) / 2.0)))
     else:
         fov_deg = _approx_vertical_fov_deg(camera, frame_aspect or aspect_ratio, aspect_ratio)
-    planes = camera_planes(position, model_bounds, model_frame, zoom_depth)
+    return {**kwargs, "fov": fov_deg, "projection_type": "perspective"}
 
-    return {
-        "position": position.astype("f4"),
-        "focus": focus.astype("f4"),
-        "up": up.astype("f4"),
-        "fov": fov_deg,
-        "aspect_ratio": aspect_ratio,
-        **planes,
-    }
+
+def _use_ray_table(yt_idv_camera, camera, model_per_world):
+    """Give `yt_idv_camera` the PANO `camera`'s rays; yt_idv keeps
+    the textures of the last two tables (a stereo pair).
+    """
+    from yt_idv.cameras.base_camera import BaseCamera
+
+    if "ray_table" not in BaseCamera.projection_type.values:
+        raise RuntimeError("Panoramic cameras need a yt_idv with the ray_table projection")
+    rays = camera.panorama.ray_directions if camera.panorama is not None else None
+    if rays is None:
+        raise ValueError("A panoramic camera needs CameraParams.panorama.ray_directions (see pano_rays)")
+    if yt_idv_camera.ray_table is not rays:
+        yt_idv_camera.ray_table = rays
+    if yt_idv_camera.ray_origins is not camera.panorama.ray_origins:
+        yt_idv_camera.ray_origins = camera.panorama.ray_origins
+    yt_idv_camera.ray_origin_scale = model_per_world
 
 
 def camera_planes(position, model_bounds=None, model_frame=None, zoom_depth=None):
@@ -960,6 +987,8 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=Non
     camera = request.camera
     depth_buffer = request.depth
     volume = request.volume
+    if camera.projection == "PANO":
+        return _panorama_window_depth(request, yt_idv_camera, model_frame)
     projection = None if camera.projection_matrix is None else np.array(camera.projection_matrix, dtype=np.float64)
     if projection is not None and _is_plain_perspective(projection):
         return _perspective_window_depth(request, projection, yt_idv_camera, model_frame)
@@ -1001,6 +1030,28 @@ def _cycles_depth_to_yt_idv_window_depth(request, yt_idv_camera, model_frame=Non
         window_depth = window_depth[::-1, :]
     elif depth_buffer.row_order != "TOP_LEFT_ORIGIN":
         raise ValueError(f"unknown row_order {depth_buffer.row_order!r}")
+    return np.ascontiguousarray(window_depth)
+
+
+def _panorama_window_depth(request, yt_idv_camera, model_frame=None):
+    """`_cycles_depth_to_yt_idv_window_depth` for a PANO camera: its Z is the
+    distance from the camera, and a ray table camera's window depth is the
+    model space distance along the ray over the far plane.
+    """
+    depth_buffer = request.depth
+    if depth_buffer.depth_convention != "EUCLIDEAN":
+        raise ValueError(f"a panorama's Z is the distance from the camera, not {depth_buffer.depth_convention!r} depth")
+    origins, directions = _panorama_world_rays(request.camera, depth_buffer.row_order)
+    A, _ = _world_to_model(request.volume, model_frame)
+    has_ray = np.linalg.norm(directions, axis=-1) > 0.0
+    depth_data = depth_buffer.data.astype(np.float64)
+    no_hit = (depth_data >= depth_buffer.no_hit_value * 0.999) | ~has_ray
+    camera_position = np.array(request.camera.matrix_world, dtype=np.float64)[:3, 3]
+    ray_length = ray_length_from_camera_distance(origins, directions, camera_position, np.where(no_hit, 0.0, depth_data))
+    window_depth = ray_length * np.linalg.norm(directions @ A.T, axis=-1) / float(yt_idv_camera.far_plane)
+    window_depth = np.clip(np.where(no_hit, 1.0, window_depth), 0.0, 1.0).astype("f4")
+    if depth_buffer.row_order == "BOTTOM_LEFT_ORIGIN":
+        window_depth = window_depth[::-1, :]
     return np.ascontiguousarray(window_depth)
 
 
@@ -1127,7 +1178,8 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
     nothing affecting the image changed.
     """
     height, width = request.depth.data.shape
-    offset = _shift_offset(request.camera, height, width)
+    # a panorama's rays already include any shift
+    offset = (0, 0) if request.camera.projection == "PANO" else _shift_offset(request.camera, height, width)
     # the frame plus room for a camera shift, rendered centered and cropped back
     render_size = (width + 2 * abs(offset[0]), height + 2 * abs(offset[1]))
     dataset_id = request.volume.dataset.dataset_id
@@ -1182,6 +1234,9 @@ def _render_with_yt_idv(request: RenderRequest, configure_component) -> RenderRe
             frame_height=height,
         )
     )
+    if request.camera.projection == "PANO":
+        A, _ = _world_to_model(request.volume, model_frame)
+        _use_ray_table(scene.camera, request.camera, float(np.cbrt(abs(np.linalg.det(A)))))
 
     window_depth = _cycles_depth_to_yt_idv_window_depth(request, scene.camera, model_frame)
     set_external_depth_clip(scene, _pad_to_canvas(window_depth, render_size, offset=offset))
@@ -1430,6 +1485,19 @@ def _apply_transfer_function_settings(component, tf_min, tf_max, tf_data):
     component.tf_max = tf_max
     component.tf_log = True
     component.transfer_function.data = tf_data
+
+
+def _set_tf_clamp(component, custom_params):
+    """Draw values outside the transfer function's range in its end values, per
+    `yt_idv_tf_clamp_low`/`_high`.
+    """
+    low = bool(custom_params.get("yt_idv_tf_clamp_low", False))
+    high = bool(custom_params.get("yt_idv_tf_clamp_high", False))
+    if not hasattr(component, "tf_clamp_low"):
+        if low or high:
+            warnings.warn("this yt_idv can't clamp the transfer function's range; Clamp Below/Above Range do nothing")
+        return
+    component.tf_clamp_low, component.tf_clamp_high = low, high
 
 
 def _tf_bounds(collection, custom_params):
@@ -1818,6 +1886,7 @@ def _configure_gn_transfer_function(component, custom_params):
         }
     _use_float_table(component, data)
     _apply_transfer_function_settings(component, value_min, value_max, data)
+    _set_tf_clamp(component, custom_params)
 
 
 def _use_float_table(component, data):
@@ -1978,6 +2047,7 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
     """
     from yt_idv.tf_conversion import apply_converted_transfer_function, convert_yt_transfer_function
 
+    _set_tf_clamp(component, custom_params)
     ray_length = float(custom_params.get("yt_idv_yt_tf_ray_length", 0.02)) * _opacity_zoom(component.data, custom_params)
     per_frame = key is None
     key = (id(component.data), key, ray_length)
@@ -1998,6 +2068,7 @@ def _apply_yt_transfer_function(component, custom_params, key, make):
         # nothing to draw: a range above every normalized value discards all samples
         component.render_method = "transfer_function"
         component.tf_min, component.tf_max = 2.0, 3.0
+        _set_tf_clamp(component, {})  # clamping low would draw everything with the old table
         _yt_tf_applied.pop(id(component), None)
         return
     apply_converted_transfer_function(component, converted)

@@ -11,11 +11,18 @@ declare -A TAGS=([linux-x64]="x86_64-manylinux_2_28 manylinux_2_28_x86_64 manyli
                  [windows-x64]="x86_64-pc-windows-msvc win_amd64"
                  [macos-arm64]="aarch64-apple-darwin macosx_11_0_arm64 macosx_10_9_universal2")
 PLATS=(${PLATFORMS:-${!TAGS[@]}})
+# pyproject's ytidv requirement, so a zip never bundles a yt_idv older than the add-on needs
+YT_IDV_REQ=$(python3 - "$(dirname "$0")/../pyproject.toml" <<'PY'
+import sys, tomllib
+group = tomllib.load(open(sys.argv[1], "rb"))["dependency-groups"]["ytidv"]
+print(next(r for r in group if r.startswith("yt_idv")))
+PY
+)
 for bp in "${PLATS[@]}"; do
   read -r uvplat tags <<< "${TAGS[$bp]}"
   # numpy comes from Blender.
   uv pip compile -q --python-version 3.13 --python-platform "$uvplat" --only-binary :all: --no-emit-package numpy \
-      ${WHEELS:+--find-links "$WHEELS"} --no-header --no-annotate - -o "$STAGE/$bp.txt" <<< $'yt_idv\nyt\npooch\npandas\nh5py'
+      ${WHEELS:+--find-links "$WHEELS"} --no-header --no-annotate - -o "$STAGE/$bp.txt" <<< "$YT_IDV_REQ"$'\nyt\npooch\npandas\nh5py'
   uv run -q --no-project --python 3.13 --with pip -- pip download -q --no-deps --only-binary :all: --python-version 3.13 \
       $(printf -- '--platform %s ' $tags) ${WHEELS:+--find-links "$WHEELS"} -r "$STAGE/$bp.txt" -d "$STAGE/yt_volumes/wheels"
 done

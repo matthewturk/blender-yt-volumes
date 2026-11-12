@@ -4,7 +4,8 @@
               solid surface behind it) * a constant
 
 Pure numpy, no `bpy`. Selected by the `SAMPLE_CONSTANT` renderer mode.
-Supports PERSP/ORTHO and EQUIRECTANGULAR PANO cameras.
+Supports PERSP/ORTHO cameras, and PANO cameras with measured ray
+directions (or EQUIRECTANGULAR ones without).
 """
 
 import numpy as np
@@ -17,22 +18,28 @@ def constant_density_renderer(request: RenderRequest) -> RenderResult:
     depth = request.depth
     volume = request.volume
 
-    if depth.depth_convention != "PLANAR":
-        # Cycles' Z pass is planar depth.
+    if depth.depth_convention not in ("PLANAR", "EUCLIDEAN"):
         raise NotImplementedError(
-            "constant_density_renderer assumes DepthBuffer.depth_convention "
-            f"== 'PLANAR'; got {depth.depth_convention!r}."
+            "constant_density_renderer needs DepthBuffer.depth_convention "
+            f"'PLANAR' or 'EUCLIDEAN'; got {depth.depth_convention!r}."
         )
 
     origins, directions = _pixel_rays(camera, depth.row_order, depth.data.shape)
+    has_ray = np.any(directions != 0.0, axis=-1)
+    directions = np.where(has_ray[..., None], directions, (0.0, 0.0, 1.0))
     box_min, box_max = _world_aabb(volume.matrix_world, volume.bounding_box_local)
     t_near, t_far, hit = _ray_aabb_intersect(origins, directions, box_min, box_max)
+    hit &= has_ray
 
-    matrix_world_inv = np.linalg.inv(np.array(camera.matrix_world, dtype=np.float64))
-    p_near = origins + t_near[..., None] * directions
-    p_far = origins + t_far[..., None] * directions
-    depth_near = _planar_depth(p_near, matrix_world_inv)
-    depth_far = _planar_depth(p_far, matrix_world_inv)
+    if depth.depth_convention == "EUCLIDEAN":
+        # the distance from the camera, not from each ray's origin
+        camera_position = np.array(camera.matrix_world, dtype=np.float64)[:3, 3]
+        depth_near = np.linalg.norm(origins + t_near[..., None] * directions - camera_position, axis=-1)
+        depth_far = np.linalg.norm(origins + t_far[..., None] * directions - camera_position, axis=-1)
+    else:
+        matrix_world_inv = np.linalg.inv(np.array(camera.matrix_world, dtype=np.float64))
+        depth_near = _planar_depth(origins + t_near[..., None] * directions, matrix_world_inv)
+        depth_far = _planar_depth(origins + t_far[..., None] * directions, matrix_world_inv)
 
     # no_hit_value (~1e10) never clips, so no special case is needed.
     clipped_far = np.minimum(depth_far, depth.data)
@@ -77,13 +84,13 @@ def _pixel_rays(camera, row_order, shape):
     if camera.projection in ("PERSP", "ORTHO"):
         return _persp_ortho_rays(camera, row_order, shape)
     if camera.projection == "PANO":
+        if camera.panorama is not None and camera.panorama.ray_directions is not None:
+            return panorama_rays(camera, row_order)
         if camera.panorama is None or camera.panorama.panorama_type != "EQUIRECTANGULAR":
             got = camera.panorama.panorama_type if camera.panorama else None
             raise NotImplementedError(
-                "constant_density_renderer only supports PANO cameras with "
-                f"panorama_type == 'EQUIRECTANGULAR'; got {got!r}. See "
-                "PanoramicLensParams' docstring for the other sub-types' "
-                "(unverified) formulas if you need one of those."
+                "constant_density_renderer needs measured ray directions for a "
+                f"{got!r} panorama (the render pipeline supplies them)."
             )
         return _equirect_rays(camera, row_order, shape)
     raise NotImplementedError(f"unknown CameraParams.projection {camera.projection!r}")
@@ -116,6 +123,37 @@ def _persp_ortho_rays(camera, row_order, shape):
     p_a = unproject(0.0)
     p_b = unproject(1.0)
     return p_a, (p_b - p_a)
+
+
+def panorama_rays(camera, row_order):
+    """(origins, directions) of a PANO camera's measured rays, each (H, W, 3)
+    world space; directions are (0, 0, 0) for pixels with no ray.
+    """
+    if row_order not in ("TOP_LEFT_ORIGIN", "BOTTOM_LEFT_ORIGIN"):
+        raise ValueError(f"unknown row_order {row_order!r}")
+
+    def rows(table):
+        table = np.asarray(table, dtype=np.float64)
+        return table[::-1] if row_order == "TOP_LEFT_ORIGIN" else table
+
+    matrix_world = np.array(camera.matrix_world, dtype=np.float64)
+    # Cycles drops the camera object's scale
+    rotation = matrix_world[:3, :3] / np.linalg.norm(matrix_world[:3, :3], axis=0)
+    dir_world = rows(camera.panorama.ray_directions) @ rotation.T
+    origin_world = np.broadcast_to(matrix_world[:3, 3], dir_world.shape).copy()
+    if camera.panorama.ray_origins is not None:
+        origin_world += rows(camera.panorama.ray_origins) @ rotation.T
+    return origin_world, dir_world
+
+
+def ray_length_from_camera_distance(origins, directions, camera_position, distance):
+    """Distance along each ray to where it is `distance` from the camera
+    (a panorama's Z), for rays from `origins` along unit `directions`.
+    """
+    offsets = origins - camera_position
+    od = np.einsum("...k,...k->...", offsets, directions)
+    oo = np.einsum("...k,...k->...", offsets, offsets)
+    return -od + np.sqrt(np.maximum(od * od - oo + distance * distance, 0.0))
 
 
 def _equirect_rays(camera, row_order, shape):
