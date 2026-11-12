@@ -285,7 +285,9 @@ table is rebuilt only when the lens, its stereo settings or the resolution
 change. With spherical stereo each eye's rays start at their own eye
 positions, so pole merging and convergence match Cycles. Depth clipping is
 exact in Cycles; EEVEE's panorama depth is approximate (see above). Needs a
-yt_idv with the `ray_table` projection.
+yt_idv with the `ray_table` projection. [docs/panoramas.md](docs/panoramas.md)
+is a recipe for stereo 360 videos for headsets: camera and stereo settings, a
+comfortable camera path, and encoding.
 
 ## Scene units per data unit
 Each volume keeps `obj["yt_units"]` current, for drivers, Geometry Nodes inputs
