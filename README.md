@@ -450,7 +450,6 @@ draws over it, with or without this setting.
   self-emissive, and it doesn't cast shadows or light onto geometry.
 - The viewport preview doesn't support orthographic views. Motion blur
   isn't matched.
-- Opaque End (yt Layers) needs a yt_idv newer than 0.6.1 (yt-project/yt_idv#312).
 
 ## Development
 

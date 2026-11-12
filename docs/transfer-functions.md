@@ -126,7 +126,7 @@ gain fades out along the rise and is measured only where the end hasn't made
 the image half opaque, so the solid end keeps its own color and the layers
 around it stay exposed as without it. It needs a
 yt_idv whose transfer-function shader integrates each step exactly
-(yt-project/yt_idv#312, newer than 0.6.1); otherwise its first sample
+(yt-project/yt_idv#312, in 0.7.0 and later); otherwise its first sample
 overshoots to white.
 The plot shows opacity only up to 1, so the rise looks like a step there.
 

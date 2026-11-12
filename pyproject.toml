@@ -31,10 +31,10 @@ dev = [
     "openexr>=3.4.13",
 ]
 # Optional -- `uv sync --group ytidv` on top of the default `dev` group --
-# real yt_idv. 0.6.1 is the first release with the scene transforms and
-# texture atlas this relies on.
+# real yt_idv. 0.7.0 is the first release with the ray table projection and
+# transfer function clamping this relies on.
 ytidv = [
-    "yt_idv>=0.6.1",
+    "yt_idv>=0.7.0",
     # yt.load_sample's Enzo/IsolatedGalaxy path lazy-imports these; not part
     # of yt_idv's own declared dependencies.
     "pooch>=1.8",
