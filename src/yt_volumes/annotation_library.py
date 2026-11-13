@@ -32,8 +32,8 @@ def scene_of(tree):
 
 def build_index(blend=BLEND):
     """Menu entries of `blend`'s node-group assets, sorted by name: dicts of
-    name, scene, description and input socket names. Appends the assets into
-    the current session, so run it in a throwaway one.
+    name, scene, description and inputs ({socket name: socket type}). Appends
+    the assets into the current session, so run it in a throwaway one.
     """
     with bpy.data.libraries.load(blend, link=False, assets_only=True) as (src, dst):
         dst.node_groups = list(src.node_groups)
@@ -45,8 +45,8 @@ def build_index(blend=BLEND):
                 "name": tree.name,
                 "scene": scene,
                 "description": tree.asset_data.description or tree.description,
-                "inputs": [item.name for item in tree.interface.items_tree
-                           if item.item_type == "SOCKET" and item.in_out == "INPUT"],
+                "inputs": {item.name: item.socket_type for item in tree.interface.items_tree
+                           if item.item_type == "SOCKET" and item.in_out == "INPUT"},
             })
     return sorted(entries, key=lambda entry: entry["name"])
 

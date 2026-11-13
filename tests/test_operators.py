@@ -1700,6 +1700,31 @@ def test_a_3d_scene_annotation_goes_at_the_cursor_wired_to_the_volume(addon_enab
     assert getattr(first.modifiers[0].properties.inputs, identifier).value == volume
 
 
+@pytest.mark.parametrize("sockets, filled", [
+    # name, in/out, type
+    ([("Unit", "INPUT", "NodeSocketString"), ("Unit Fraction", "INPUT", "NodeSocketFloat")], {"Unit": "unitary", "Unit Fraction": 0.25}),
+    ([("Unit", "INPUT", "NodeSocketFloat"), ("Title", "INPUT", "NodeSocketInt")], {"Unit": 0.25, "Title": 0}),
+    ([("Size", "INPUT", "NodeSocketFloat"), ("Volume", "OUTPUT", "NodeSocketFloat")], {"Size": 0.25}),
+])
+def test_only_inputs_with_the_expected_name_and_type_are_filled(addon_enabled, monkeypatch, sockets, filled):
+    from yt_volumes import annotation_library, annotations
+
+    tree = bpy.data.node_groups.new("Marker", "GeometryNodeTree")
+    for name, in_out, kind in sockets:
+        item = tree.interface.new_socket(name, in_out=in_out, socket_type=kind)
+        if kind == "NodeSocketFloat" and in_out == "INPUT":
+            item.default_value = 0.25
+    inputs = {name: kind for name, in_out, kind in sockets if in_out == "INPUT"}
+    monkeypatch.setattr(annotation_library, "read_index", lambda: {"Marker": {
+        "name": "Marker", "scene": annotation_library.MAIN_SCENE, "description": "", "inputs": inputs}})
+    assert annotations.unavailable("Marker", None) is None  # nothing here needs a volume
+    obj = annotations.add_from_library(addon_enabled, "Marker", _flagged_cube())
+    modifier = obj.modifiers[0]
+    values = {item.name: getattr(modifier.properties.inputs, item.identifier).value
+              for item in tree.interface.items_tree if item.in_out == "INPUT"}
+    assert values == pytest.approx(filled)
+
+
 def test_the_annotation_menu_says_what_an_annotation_needs(addon_enabled):
     from yt_volumes import annotations, units
 

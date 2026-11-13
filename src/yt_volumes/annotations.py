@@ -142,8 +142,9 @@ def annotation_template():
 
 
 def _set_input(modifier, name, value):
-    identifier = modifier.node_group.interface.items_tree[name].identifier
-    getattr(modifier.properties.inputs, identifier).value = value
+    item = next(i for i in modifier.node_group.interface.items_tree
+                if i.item_type == "SOCKET" and i.in_out == "INPUT" and i.name == name)
+    getattr(modifier.properties.inputs, item.identifier).value = value
 
 
 def default_title(volume):
@@ -174,13 +175,19 @@ def default_unit(volume):
     return next((u for u in units.data_units(volume) if group.get(f"scene_per_{u}")), "unitary")
 
 
-# Inputs filled from the volume when a group has them, by socket name.
+# Inputs filled from the volume, once, when the object is added: only inputs
+# with exactly these names and socket types, so "Unit Fraction" or a float "Unit" are left alone.
 _VOLUME_INPUTS = {
-    "Volume": lambda volume: volume,
-    "Units Object": lambda volume: volume.volume_override.units_object,
-    "Unit": default_unit,
-    "Title": default_title,
+    "Volume": ("NodeSocketObject", lambda volume: volume),
+    "Units Object": ("NodeSocketObject", lambda volume: volume.volume_override.units_object),
+    "Unit": ("NodeSocketString", default_unit),
+    "Title": ("NodeSocketString", default_title),
 }
+
+
+def _volume_inputs(inputs):
+    """The names in `inputs` ({socket name: socket type}) filled from the volume."""
+    return {name for name, kind in inputs.items() if _VOLUME_INPUTS.get(name, (None,))[0] == kind}
 # Where new annotation-scene objects go, by group; others go at the frame's origin.
 _PLACES = {
     COLORBAR_GROUP: lambda annotations: (0.2, 0.08 + 0.15 * len(colorbars(annotations)), 0.0),
@@ -206,7 +213,7 @@ def active_volume(context):
 
 def unavailable(name, volume):
     """Why library annotation `name` can't be added for `volume` (may be None), or None."""
-    inputs = annotation_library.read_index()[name]["inputs"]
+    inputs = _volume_inputs(annotation_library.read_index()[name]["inputs"])
     if volume is None and ("Volume" in inputs or "Units Object" in inputs):
         return "Select a volume"
     if "Units Object" in inputs and volume.volume_override.units_object is None:
@@ -236,9 +243,9 @@ def add_from_library(scene, name, volume=None, collection=None):
     modifier = obj.modifiers.new(name, "NODES")
     modifier.node_group = annotation_template() if name == TEMPLATE_GROUP else _get_or_append("node_groups", name)
     if volume is not None:
-        for socket, value in _VOLUME_INPUTS.items():
-            if socket in modifier.node_group.interface.items_tree:
-                _set_input(modifier, socket, value(volume))
+        for item in modifier.node_group.interface.items_tree:
+            if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name in _volume_inputs({item.name: item.socket_type}):
+                _set_input(modifier, item.name, _VOLUME_INPUTS[item.name][1](volume))
     return obj
 
 
