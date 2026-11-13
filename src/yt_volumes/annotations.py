@@ -8,12 +8,11 @@ Pass 2 renders it with Cycles through a Render Layers node, at the main
 scene's frame and resolution, and lays it over the volumes.
 """
 
-import os
 import re
 
 import bpy
 
-from . import units
+from . import annotation_library, units
 
 SCENE_PROPERTY = "yt_annotation_scene"
 COLORBAR_GROUP = "yt Colorbar"
@@ -24,8 +23,7 @@ MATERIAL_NAME = "yt Annotation"
 COLOR_ATTRIBUTE = "yt_annotation_color"  # scene-linear; the material emits it
 TICK_ATTRIBUTE = "yt_tick_value"
 CAMERA_HEIGHT = 10.0
-# Built from assets/annotations by nodebpy; see README "Development".
-ASSET_LIBRARY = os.path.join(os.path.dirname(__file__), "assets", "annotations.blend")
+ASSET_LIBRARY = annotation_library.BLEND
 
 
 def aspect(scene):
@@ -170,62 +168,99 @@ def colorbars(annotations):
     return _annotations_with(annotations, COLORBAR_GROUP)
 
 
-def add_colorbar(scene, volume):
-    """A colorbar of `volume`'s transfer function in `scene`'s annotation
-    scene (made if needed), below any others there.
-    """
-    annotations = add_annotation_scene(scene)
-    mesh = bpy.data.meshes.new(f"{volume.name} Colorbar")
-    obj = bpy.data.objects.new(mesh.name, mesh)
-    obj.location = (0.2, 0.08 + 0.15 * len(colorbars(annotations)), 0.0)
-    annotations.collection.objects.link(obj)
-    modifier = obj.modifiers.new("yt Colorbar", "NODES")
-    modifier.node_group = colorbar_node_group()
-    _set_input(modifier, "Volume", volume)
-    _set_input(modifier, "Title", default_title(volume))
-    return obj
-
-
 def default_unit(volume):
     """The first of `volume`'s Data Units its units object knows, else unitary."""
     group = volume.get(units.KEY, {})
     return next((u for u in units.data_units(volume) if group.get(f"scene_per_{u}")), "unitary")
 
 
+# Inputs filled from the volume when a group has them, by socket name.
+_VOLUME_INPUTS = {
+    "Volume": lambda volume: volume,
+    "Units Object": lambda volume: volume.volume_override.units_object,
+    "Unit": default_unit,
+    "Title": default_title,
+}
+# Where new annotation-scene objects go, by group; others go at the frame's origin.
+_PLACES = {
+    COLORBAR_GROUP: lambda annotations: (0.2, 0.08 + 0.15 * len(colorbars(annotations)), 0.0),
+    FOV_GROUP: lambda annotations: (0.7, 0.1 + 0.12 * len(_annotations_with(annotations, FOV_GROUP)), 0.0),
+}
+
+
+def main_scene(scene):
+    """The scene whose annotation scene `scene` is, or `scene` itself."""
+    return next((s for s in bpy.data.scenes if annotation_scene(s) == scene), scene)
+
+
+def active_volume(context):
+    """The active object if it's a volume, else the scene's only volume, else None."""
+    def is_volume(obj):
+        return getattr(obj, "volume_override", None) is not None and obj.volume_override.is_volume_override
+
+    if is_volume(context.object):
+        return context.object
+    volumes = [o for o in main_scene(context.scene).objects if is_volume(o)]
+    return volumes[0] if len(volumes) == 1 else None
+
+
+def unavailable(name, volume):
+    """Why library annotation `name` can't be added for `volume` (may be None), or None."""
+    inputs = annotation_library.read_index()[name]["inputs"]
+    if volume is None and ("Volume" in inputs or "Units Object" in inputs):
+        return "Select a volume"
+    if "Units Object" in inputs and volume.volume_override.units_object is None:
+        return f"Add a units object to {volume.name!r} first (Units for Geometry Nodes)"
+    return None
+
+
+def add_from_library(scene, name, volume=None, collection=None):
+    """A new object running library annotation `name`, with its inputs filled
+    from `volume`: in `scene`'s annotation scene (made if needed), or in
+    `collection` (default the main scene's) at the 3D cursor. The starter
+    "yt Annotation" gets its own copy of its tree; other groups are shared.
+    """
+    reason = unavailable(name, volume)
+    if reason is not None:
+        raise ValueError(f"Can't add {name!r}: {reason}")
+    scene = main_scene(scene)
+    label = name.removeprefix("yt ")
+    obj = bpy.data.objects.new(f"{volume.name} {label}" if volume else label, bpy.data.meshes.new(label))
+    if annotation_library.read_index()[name]["scene"] == annotation_library.ANNOTATION_SCENE:
+        annotations = add_annotation_scene(scene)
+        obj.location = _PLACES.get(name, lambda _: (0.0, 0.0, 0.0))(annotations)
+        annotations.collection.objects.link(obj)
+    else:
+        obj.location = scene.cursor.location
+        (collection or scene.collection).objects.link(obj)
+    modifier = obj.modifiers.new(name, "NODES")
+    modifier.node_group = annotation_template() if name == TEMPLATE_GROUP else _get_or_append("node_groups", name)
+    if volume is not None:
+        for socket, value in _VOLUME_INPUTS.items():
+            if socket in modifier.node_group.interface.items_tree:
+                _set_input(modifier, socket, value(volume))
+    return obj
+
+
+def add_colorbar(scene, volume):
+    """A colorbar of `volume`'s transfer function in `scene`'s annotation
+    scene (made if needed), below any others there.
+    """
+    return add_from_library(scene, COLORBAR_GROUP, volume)
+
+
 def add_field_of_view(scene, volume):
     """A field-of-view scale bar for `volume` in `scene`'s annotation scene
     (made if needed), at the bottom right. `volume` needs a units object.
     """
-    units_object = volume.volume_override.units_object
-    if units_object is None:
-        raise ValueError(f"{volume.name!r} has no units object; add one with Units for Geometry Nodes")
-    annotations = add_annotation_scene(scene)
-    mesh = bpy.data.meshes.new(f"{volume.name} Field of View")
-    obj = bpy.data.objects.new(mesh.name, mesh)
-    obj.location = (0.7, 0.1 + 0.12 * len(_annotations_with(annotations, FOV_GROUP)), 0.0)
-    annotations.collection.objects.link(obj)
-    modifier = obj.modifiers.new(FOV_GROUP, "NODES")
-    modifier.node_group = fov_node_group()
-    _set_input(modifier, "Units Object", units_object)
-    _set_input(modifier, "Unit", default_unit(volume))
-    return obj
+    return add_from_library(scene, FOV_GROUP, volume)
 
 
 def add_annotation(scene, volume):
     """An annotation object in `scene`'s annotation scene (made if needed),
     with its own copy of the starter tree to edit. `volume` needs a units object.
     """
-    units_object = volume.volume_override.units_object
-    if units_object is None:
-        raise ValueError(f"{volume.name!r} has no units object; add one with Units for Geometry Nodes")
-    annotations = add_annotation_scene(scene)
-    obj = bpy.data.objects.new(f"{volume.name} Annotation", bpy.data.meshes.new(f"{volume.name} Annotation"))
-    annotations.collection.objects.link(obj)
-    modifier = obj.modifiers.new(TEMPLATE_GROUP, "NODES")
-    modifier.node_group = annotation_template()
-    _set_input(modifier, "Units Object", units_object)
-    _set_input(modifier, "Unit", default_unit(volume))
-    return obj
+    return add_from_library(scene, TEMPLATE_GROUP, volume)
 
 
 class VOLUMEOVERRIDE_OT_add_colorbar(bpy.types.Operator):
@@ -287,7 +322,72 @@ class VOLUMEOVERRIDE_OT_add_annotation(bpy.types.Operator):
         return {"FINISHED"}
 
 
-_CLASSES = (VOLUMEOVERRIDE_OT_add_colorbar, VOLUMEOVERRIDE_OT_add_field_of_view, VOLUMEOVERRIDE_OT_add_annotation)
+class VOLUMEOVERRIDE_OT_add_library_annotation(bpy.types.Operator):
+    """Add an annotation from the yt-volumes library"""
+
+    bl_idname = "volume_override.add_library_annotation"
+    bl_label = "Add yt Annotation"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty(name="Annotation", options={"HIDDEN", "SKIP_SAVE"})
+
+    @classmethod
+    def description(cls, context, properties):
+        entry = annotation_library.read_index().get(properties.name)
+        if entry is None:
+            return cls.__doc__
+        reason = unavailable(properties.name, active_volume(context))
+        return entry["description"] + (f"\n\nUnavailable: {reason}" if reason else "")
+
+    def execute(self, context):
+        if self.name not in annotation_library.read_index():
+            self.report({"ERROR"}, f"No annotation {self.name!r} in the library")
+            return {"CANCELLED"}
+        volume = active_volume(context)
+        reason = unavailable(self.name, volume)
+        if reason is not None:
+            self.report({"ERROR"}, reason)
+            return {"CANCELLED"}
+        in_main = main_scene(context.scene) == context.scene
+        obj = add_from_library(context.scene, self.name, volume, context.collection if in_main else None)
+        if obj.name in context.view_layer.objects:  # added to the scene being looked at
+            for selected in context.selected_objects:
+                selected.select_set(False)
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+        self.report({"INFO"}, f"Added {obj.name!r} to {obj.users_scene[0].name!r}")
+        return {"FINISHED"}
+
+
+class VOLUMEOVERRIDE_MT_add_annotation(bpy.types.Menu):
+    """Annotations from the yt-volumes library, for the annotation scene or the 3D scene"""
+
+    bl_idname = "VOLUMEOVERRIDE_MT_add_annotation"
+    bl_label = "yt Annotation"
+
+    def draw(self, context):
+        layout = self.layout
+        entries = annotation_library.read_index().values()
+        volume = active_volume(context)
+        for scene, heading in ((annotation_library.ANNOTATION_SCENE, "Annotation Scene"), (annotation_library.MAIN_SCENE, "3D Scene")):
+            names = [e["name"] for e in entries if e["scene"] == scene]
+            if not names:
+                continue
+            layout.label(text=heading)
+            for name in names:
+                row = layout.row()
+                row.enabled = unavailable(name, volume) is None
+                row.operator(VOLUMEOVERRIDE_OT_add_library_annotation.bl_idname, text=name).name = name
+
+
+def _draw_add_menu(self, context):
+    self.layout.menu(VOLUMEOVERRIDE_MT_add_annotation.bl_idname, icon="GEOMETRY_NODES")
+
+
+_CLASSES = (
+    VOLUMEOVERRIDE_OT_add_colorbar, VOLUMEOVERRIDE_OT_add_field_of_view, VOLUMEOVERRIDE_OT_add_annotation,
+    VOLUMEOVERRIDE_OT_add_library_annotation, VOLUMEOVERRIDE_MT_add_annotation,
+)
 
 
 def register():
@@ -297,9 +397,11 @@ def register():
     )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
+    bpy.types.VIEW3D_MT_add.append(_draw_add_menu)
 
 
 def unregister():
+    bpy.types.VIEW3D_MT_add.remove(_draw_add_menu)
     for cls in reversed(_CLASSES):
         if cls.is_registered:
             bpy.utils.unregister_class(cls)

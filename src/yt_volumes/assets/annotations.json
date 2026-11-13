@@ -1,0 +1,49 @@
+[
+ {
+  "name": "yt Annotation",
+  "scene": "ANNOTATION",
+  "description": "A starting point for your own: a dot at the volume's zoom target or middle, with its own node tree to edit",
+  "inputs": [
+   "Geometry",
+   "Units Object",
+   "Unit",
+   "Size",
+   "Color"
+  ]
+ },
+ {
+  "name": "yt Colorbar",
+  "scene": "ANNOTATION",
+  "description": "A colorbar of the volume's transfer function: its colors, log10 ticks and labels, a title, and its opacity",
+  "inputs": [
+   "Geometry",
+   "Volume",
+   "Width",
+   "Height",
+   "Ticks Every",
+   "Decimals",
+   "Label Size",
+   "Title",
+   "Text Color",
+   "Show Opacity",
+   "Opacity Height",
+   "Opacity Decades",
+   "Line Width"
+  ]
+ },
+ {
+  "name": "yt Field of View",
+  "scene": "ANNOTATION",
+  "description": "A labeled scale bar, sized at the volume's zoom target or middle",
+  "inputs": [
+   "Geometry",
+   "Units Object",
+   "Unit",
+   "Length",
+   "Auto Max",
+   "Line Width",
+   "Label Size",
+   "Text Color"
+  ]
+ }
+]

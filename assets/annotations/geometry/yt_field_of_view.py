@@ -100,6 +100,11 @@ class YtFieldOfView(CustomGeometryGroup):
 
 ASSET = YtFieldOfView
 
+ASSET_METADATA = {
+    "description": "A labeled scale bar, sized at the volume's zoom target or middle",
+    "tags": ("Annotation Scene",),
+}
+
 DATABLOCK_DEPENDENCIES = {
     "fonts": ("Bfont Regular",),
     "materials": ("yt Annotation",),

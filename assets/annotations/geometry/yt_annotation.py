@@ -52,6 +52,11 @@ class YtAnnotation2(CustomGeometryGroup):
 
 ASSET = YtAnnotation2
 
+ASSET_METADATA = {
+    "description": "A starting point for your own: a dot at the volume's zoom target or middle, with its own node tree to edit",
+    "tags": ("Annotation Scene",),
+}
+
 DATABLOCK_DEPENDENCIES = {
     "materials": ("yt Annotation",),
 }

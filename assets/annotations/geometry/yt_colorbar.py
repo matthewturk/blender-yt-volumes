@@ -189,6 +189,11 @@ class YtColorbar(CustomGeometryGroup):
 
 ASSET = YtColorbar
 
+ASSET_METADATA = {
+    "description": "A colorbar of the volume's transfer function: its colors, log10 ticks and labels, a title, and its opacity",
+    "tags": ("Annotation Scene",),
+}
+
 DATABLOCK_DEPENDENCIES = {
     "fonts": ("Bfont Regular",),
     "materials": ("yt Annotation",),
