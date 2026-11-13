@@ -514,7 +514,10 @@ To add or change an annotation:
    every asset in the file (or only those named after it), rebuilds
    `annotations.blend`, checks the round trip, and rewrites the menu's
    index, `annotations.json`. Commit what changed under `assets/` and
-   `src/yt_volumes/assets/`.
+   `src/yt_volumes/assets/`. With `--dry-run` first, it shows the source
+   changes it would make and writes nothing. Either way it warns of groups
+   without a scene tag that no other group uses, which nobody could add,
+   and of groups in use that aren't marked as assets, which it skips.
 
 The tools run in an isolated environment from the `assets` dependency
 group, e.g. `PYTHONPATH= uv run --isolated --only-group assets nodebpy check`.
