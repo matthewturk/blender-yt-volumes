@@ -19,7 +19,16 @@ run() { (cd "$ROOT" && PYTHONPATH= BLENDER_USER_EXTENSIONS="$TMP/no-extensions" 
 
 # Always run, for its warnings, even when names are given.
 LISTED=$(run python scripts/annotation_assets.py names "$BLEND")
-if (($#)); then NAMES=("$@"); else mapfile -t NAMES <<< "$LISTED"; fi
+mapfile -t FOUND <<< "$LISTED"
+if (($#)); then
+  NAMES=()
+  for name in "$@"; do
+    if printf '%s\n' "${FOUND[@]}" | grep -qxF -- "$name"; then NAMES+=("$name")
+    else echo "warning: no asset named '$name' in $(basename "$BLEND"); skipping it" >&2; fi
+  done
+  ((${#NAMES[@]})) || { echo "Nothing to export." >&2; exit 1; }
+else NAMES=("${FOUND[@]}"); fi
+echo "Exporting: $(printf "'%s', " "${NAMES[@]}" | sed 's/, $//')" >&2
 
 if ((DRY_RUN)); then
   cp -r "$ROOT/assets/annotations" "$TMP/annotations"

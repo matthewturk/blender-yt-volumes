@@ -28,19 +28,27 @@ def _used(trees):
             if node.bl_idname == "GeometryNodeGroup" and node.node_tree is not None}
 
 
-def _report(trees):
-    """Say what each group is for; warn of groups nobody could add."""
+def _report(trees, materials=(), source=None):
+    """List what each group is for, then warn of groups nobody could add."""
     used = _used(trees)
+    found, warnings = [], []
     for tree in trees:
         scene = library.scene_of(tree)  # raises for a group tagged for both scenes
         if scene is not None:
             where = "annotation scene" if scene == library.ANNOTATION_SCENE else "3D scene"
-            print(f"  {tree.name}: menu, {where}", file=sys.stderr)
+            found.append((tree.name, f"menu, {where}"))
         elif tree.name in used:
-            print(f"  {tree.name}: helper, used by other groups", file=sys.stderr)
+            found.append((tree.name, "helper, used by other groups"))
         else:
-            print(f'warning: {tree.name!r} has no "Annotation Scene" or "3D Scene" tag and no '
-                  "other group uses it, so nobody could add it", file=sys.stderr)
+            found.append((tree.name, "no scene tag"))
+            warnings.append(f'{tree.name!r} has no "Annotation Scene" or "3D Scene" tag and no '
+                            "other group uses it, so nobody could add it")
+    found += [(material.name, "material") for material in materials]
+    print(f"Found {len(found)} asset{'s' * (len(found) != 1)}" + (f" in {source}:" if source else ":"), file=sys.stderr)
+    width = max((len(name) for name, _ in found), default=0)
+    for name, what in found:
+        print(f"  {name:<{width}}  {what}", file=sys.stderr)
+    return warnings
 
 
 def names(blend):
@@ -48,13 +56,12 @@ def names(blend):
         dst.node_groups, dst.materials = list(src.node_groups), list(src.materials)
     trees = [t for t in dst.node_groups if t.asset_data is not None]
     materials = [m for m in dst.materials if m.asset_data is not None]
-    _report(trees)
+    warnings = _report(trees, materials, os.path.basename(blend))
     used = _used(dst.node_groups)
-    for tree in dst.node_groups:
-        if tree.asset_data is None and tree.name not in used and tree.bl_idname == "GeometryNodeTree":
-            print(f"warning: {tree.name!r} isn't marked as an asset, so it won't be exported", file=sys.stderr)
-    for material in materials:
-        print(f"  {material.name}: material", file=sys.stderr)
+    warnings += [f"{t.name!r} isn't marked as an asset, so it won't be exported" for t in dst.node_groups
+                 if t.asset_data is None and t.name not in used and t.bl_idname == "GeometryNodeTree"]
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
     if not trees and not materials:
         sys.exit(f"{blend} has no assets; mark the groups and materials to export as assets")
     for asset in trees + materials:
@@ -63,7 +70,9 @@ def names(blend):
 
 def index():
     library.write_index()
-    _report(list(bpy.data.node_groups))  # write_index appended the library's groups
+    # write_index appended the library's groups
+    for warning in _report(list(bpy.data.node_groups), source="the bundled library"):
+        print(f"warning: {warning}", file=sys.stderr)
 
 
 if __name__ == "__main__":
