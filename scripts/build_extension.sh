@@ -5,7 +5,16 @@
 # PLATFORMS="linux-x64 ..." limits the platforms; WHEELS=<dir> adds local wheels (e.g. a yt_idv build).
 set -euo pipefail
 BLENDER=$1; mkdir -p "$2"; OUT=$(realpath "$2"); STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
-cp -r "$(dirname "$0")/../src/yt_volumes" "$STAGE/" && mkdir "$STAGE/yt_volumes/wheels"
+ROOT=$(realpath "$(dirname "$0")/..")
+# The annotation library: check its sources round-trip, then rebuild it if they changed.
+# Isolated from user extensions, which may bundle another nodebpy.
+for step in check ensure; do
+  (cd "$ROOT" && PYTHONPATH= BLENDER_USER_EXTENSIONS="$STAGE/no-extensions" \
+      uv run -q --isolated --only-group assets nodebpy "$step")
+done
+git -C "$ROOT" diff --quiet -- src/yt_volumes/assets || echo "warning: src/yt_volumes/assets was rebuilt; commit it" >&2
+cp -r "$ROOT/src/yt_volumes" "$STAGE/" && mkdir "$STAGE/yt_volumes/wheels"
+rm -f "$STAGE"/yt_volumes/assets/*.stamp
 # Blender platform -> uv platform, then pip's wheel tags for it.
 declare -A TAGS=([linux-x64]="x86_64-manylinux_2_28 manylinux_2_28_x86_64 manylinux_2_17_x86_64 manylinux2014_x86_64 linux_x86_64"
                  [windows-x64]="x86_64-pc-windows-msvc win_amd64"

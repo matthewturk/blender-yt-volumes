@@ -41,6 +41,13 @@ ytidv = [
     "pandas>=2.0",
     "h5py>=3.10",
 ]
+# Builds the bundled annotation node groups and materials from their sources;
+# see README "Development". nodebpy 520.x tracks Blender 5.2, the oldest the
+# add-on supports, so the .blend opens in every supported Blender.
+assets = [
+    "bpy==5.2.0",
+    "nodebpy[format]==520.*",
+]
 
 [tool.uv]
 package = true
@@ -55,6 +62,12 @@ where = ["src"]
 [build-system]
 requires = ["setuptools>=77"]  # SPDX `license` strings
 build-backend = "setuptools.build_meta"
+
+[tool.nodebpy.assets]
+source = "assets/annotations"
+blend = "src/yt_volumes/assets/annotations.blend"
+# Blender's built-in font, which the text nodes reference
+resources = "assets/resources.blend"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

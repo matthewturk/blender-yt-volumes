@@ -1640,6 +1640,39 @@ def test_a_colorbar_ticks_whole_decades_of_the_fitted_range(clean_scene_with_pro
         annotations.unregister()
 
 
+def test_the_bundled_annotation_library_holds_what_the_add_on_appends():
+    from yt_volumes import annotations
+
+    with bpy.data.libraries.load(annotations.ASSET_LIBRARY) as (src, _):
+        groups, materials = set(src.node_groups), set(src.materials)
+    assert {annotations.COLORBAR_GROUP, annotations.VIEW_GROUP, annotations.FOV_GROUP, annotations.TEMPLATE_GROUP} <= groups
+    assert annotations.MATERIAL_NAME in materials
+
+
+def test_appended_annotations_reuse_the_files_view_group_material_and_font(clean_scene):
+    from yt_volumes import annotations
+
+    font = bpy.data.fonts.load("<builtin>")  # as in any file with text in it
+    colorbar = annotations.colorbar_node_group()
+    fov = annotations.fov_node_group()
+    first, second = annotations.annotation_template(), annotations.annotation_template()
+    assert annotations.colorbar_node_group() == colorbar  # appended once
+
+    view = bpy.data.node_groups[annotations.VIEW_GROUP]
+    assert sorted(bpy.data.node_groups.keys()) == sorted([
+        annotations.COLORBAR_GROUP, annotations.FOV_GROUP, annotations.VIEW_GROUP,
+        annotations.TEMPLATE_GROUP, f"{annotations.TEMPLATE_GROUP}.001",
+    ])
+    assert first != second  # each annotation gets its own tree to edit
+    for tree in (fov, first, second):
+        assert view in {n.node_tree for n in tree.nodes if n.bl_idname == "GeometryNodeGroup"}
+    assert list(bpy.data.materials) == [annotations.annotation_material()]
+    assert list(bpy.data.fonts) == [font]
+    assert not any(d.asset_data for d in [*bpy.data.node_groups, *bpy.data.materials, *bpy.data.fonts])
+    for tree, names in ((colorbar, ("Volume", "Title")), (fov, ("Units Object", "Unit")), (first, ("Units Object", "Unit"))):
+        assert set(names) <= set(tree.interface.items_tree.keys())
+
+
 @pytest.mark.parametrize("engine, device, backend, mode, warns", [
     ("BLENDER_EEVEE", "CPU", "VULKAN", "SAMPLE_CONSTANT", True),
     ("BLENDER_EEVEE", "GPU", "VULKAN", "YT_IDV_MAX_INTENSITY", False),

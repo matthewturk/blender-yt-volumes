@@ -27,6 +27,10 @@ a little — not an expert, not a beginner.
 - For quick pipeline experiments, set the volume's
   `volume_override.renderer_mode = "SAMPLE_CONSTANT"` to skip yt_idv entirely
   (seconds per run instead of minutes).
+- Annotation node groups and materials live as nodebpy sources in
+  `assets/annotations/`; edit those, then rebuild the bundled `.blend` with
+  `PYTHONPATH= uv run --isolated --only-group assets nodebpy build` (and
+  `check`). Don't `uv sync` the assets group into the dev venv.
 - The look (renderer mode, colormaps, TFs, remembered colormap range) lives on
   the volume object and is saved in the .blend; add-on prefs hold only
   `work_dir` and `verbose_logging`. `render_volume`'s `[render]` overrides it.

@@ -485,6 +485,32 @@ exercise only Blender 5's compositor API.
 - `scripts/build_extension.sh` builds the extension zips;
   `.github/workflows/release.yml` runs it for every `v*` tag.
 
+### The bundled annotation nodes
+
+The annotation node groups and their material (yt Colorbar, yt Field of
+View, yt Annotation View, yt Annotation) ship in
+`src/yt_volumes/assets/annotations.blend`, and the add-on appends them from
+there. That file is built by [nodebpy](https://bradyajohnston.github.io/nodebpy)
+from the Python sources in `assets/annotations/`, one module per node group
+or material. The sources are what you edit and review.
+
+```
+nb() { PYTHONPATH= uv run --isolated --only-group assets nodebpy "$@"; }
+nb dump my_work.blend --names "yt Colorbar"   # GUI edits back to source
+nb build                                     # sources -> annotations.blend
+nb check                                     # sources survive build -> dump
+```
+
+To change a group in the node editor, append it from `annotations.blend`
+into a working file (it stays marked as an asset; mark new groups and
+materials yourself), edit it, save, and dump it back with `--names`; a dump
+without `--names` replaces the whole source tree with that file's assets. Then `nb build` and commit the sources, the `.blend` and
+its `.stamp`. nodebpy 520 is Blender 5.2's, the oldest Blender the add-on
+supports, so use only nodes Blender 5.2 has. Text nodes need Blender's
+built-in font, which the build appends from `assets/resources.blend`.
+`build_extension.sh` runs `check`, and rebuilds the `.blend` if it's older
+than its sources.
+
 [docs/architecture.md](docs/architecture.md) describes the two-pass pipeline
 and the renderer contract.
 
@@ -503,7 +529,9 @@ src/yt_volumes/
     viewer.py, viewer_main.py, viewer_link.py   the yt_idv viewer window
     transfer_function_nodes.py, tf_plot.py      the Geometry Nodes transfer function, its plot
     units.py               scene units per data unit
+    annotations.py         the annotation scene; appends from assets/annotations.blend
     scene_sync.py, change_tracking.py, handlers.py, sample_renderers.py, ...
+assets/annotations/        nodebpy sources of the bundled annotation nodes
 extensions/deep_zoom/      the Deep Zoom authoring extension (see its README)
 examples/                  configs and scene builders
 scripts/                   verification tools, the headless driver, the extension build
