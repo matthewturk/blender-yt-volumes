@@ -515,9 +515,12 @@ To add or change an annotation:
    `annotations.blend`, checks the round trip, and rewrites the menu's
    index, `annotations.json`. Commit what changed under `assets/` and
    `src/yt_volumes/assets/`. With `--dry-run` first, it shows the source
-   changes it would make and writes nothing. Either way it warns of groups
-   without a scene tag that no other group uses, which nobody could add,
-   and of groups in use that aren't marked as assets, which it skips.
+   changes it would make and writes nothing. Either way it lists the assets
+   it found and the groups in use that aren't marked as assets (skipped),
+   and warns of groups without a scene tag that no other group uses, which
+   nobody could add. Object references, such as a Units Object input's
+   default, are cleared on the way out, since the library can't hold your
+   file's objects; Add yt Annotation fills Volume and Units Object in.
 
 The tools run in an isolated environment from the `assets` dependency
 group, e.g. `PYTHONPATH= uv run --isolated --only-group assets nodebpy check`.

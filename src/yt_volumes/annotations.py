@@ -242,10 +242,14 @@ def add_from_library(scene, name, volume=None, collection=None):
         (collection or scene.collection).objects.link(obj)
     modifier = obj.modifiers.new(name, "NODES")
     modifier.node_group = annotation_template() if name == TEMPLATE_GROUP else _get_or_append("node_groups", name)
-    if volume is not None:
-        for item in modifier.node_group.interface.items_tree:
-            if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name in _volume_inputs({item.name: item.socket_type}):
-                _set_input(modifier, item.name, _VOLUME_INPUTS[item.name][1](volume))
+    for item in modifier.node_group.interface.items_tree:
+        if item.item_type != "SOCKET" or item.in_out != "INPUT":
+            continue
+        if volume is not None and item.name in _volume_inputs({item.name: item.socket_type}):
+            _set_input(modifier, item.name, _VOLUME_INPUTS[item.name][1](volume))
+        elif isinstance(getattr(item, "default_value", None), bpy.types.ID):
+            # A new modifier takes the group's value defaults but not its material or object ones.
+            _set_input(modifier, item.name, item.default_value)
     return obj
 
 

@@ -2,8 +2,12 @@
 
     python scripts/annotation_assets.py names <working.blend>
         print the file's node-group and material asset names, one per line;
-        on stderr, which scene each node group is for, and warnings for
-        groups nobody could add and groups not marked as assets
+        on stderr, which scene each node group is for, the groups in use
+        that aren't marked as assets, and warnings for groups nobody could add
+    python scripts/annotation_assets.py clean <working.blend> <out.blend>
+        save the working file's assets to out.blend with object and
+        collection references cleared, saying which ones (the library can't
+        hold the working file's objects)
     python scripts/annotation_assets.py index
         write src/yt_volumes/assets/annotations.json from annotations.blend,
         warning of its groups nobody could add
@@ -58,14 +62,50 @@ def names(blend):
     materials = [m for m in dst.materials if m.asset_data is not None]
     warnings = _report(trees, materials, os.path.basename(blend))
     used = _used(dst.node_groups)
-    warnings += [f"{t.name!r} isn't marked as an asset, so it won't be exported" for t in dst.node_groups
-                 if t.asset_data is None and t.name not in used and t.bl_idname == "GeometryNodeTree"]
+    unmarked = [t.name for t in dst.node_groups
+                if t.asset_data is None and t.name not in used and t.bl_idname == "GeometryNodeTree"]
+    if unmarked:
+        print(f"Not marked as assets, so not exported: {', '.join(sorted(unmarked))}", file=sys.stderr)
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
     if not trees and not materials:
         sys.exit(f"{blend} has no assets; mark the groups and materials to export as assets")
     for asset in trees + materials:
         print(asset.name)
+
+
+_REFERENCE_SOCKETS = {"NodeSocketObject": "object", "NodeSocketCollection": "collection"}
+
+
+def _clear_references(tree):
+    """Clear `tree`'s object and collection socket defaults; describe each one cleared."""
+    cleared = []
+    for item in tree.interface.items_tree:
+        if (item.item_type == "SOCKET" and item.in_out == "INPUT" and item.socket_type in _REFERENCE_SOCKETS
+                and item.default_value is not None):
+            filled = " (Add yt Annotation fills it from the volume)" if item.name in ("Volume", "Units Object") else ""
+            cleared.append(f"input {item.name!r} default {item.default_value.name!r}{filled}")
+            item.default_value = None
+    for node in tree.nodes:
+        for socket in node.inputs:
+            if socket.bl_idname in _REFERENCE_SOCKETS and socket.default_value is not None:
+                # A linked socket's value does nothing, but nodebpy still counts it as a dependency.
+                if not socket.is_linked:
+                    cleared.append(f"node {node.name!r} {socket.name} {socket.default_value.name!r}")
+                socket.default_value = None
+    return cleared
+
+
+def clean(blend, out):
+    with bpy.data.libraries.load(blend, link=False, assets_only=True) as (src, dst):
+        dst.node_groups, dst.materials = list(src.node_groups), list(src.materials)
+    for tree in bpy.data.node_groups:  # the assets and the groups they use
+        for what in _clear_references(tree):
+            print(f"note: {tree.name!r}: cleared {what}; the library can't hold this file's objects",
+                  file=sys.stderr)
+    for asset in [*dst.node_groups, *dst.materials]:
+        asset.use_fake_user = True  # nothing in the saved copy uses them
+    bpy.ops.wm.save_as_mainfile(filepath=out)
 
 
 def index():
@@ -78,4 +118,4 @@ def index():
 if __name__ == "__main__":
     bpy.ops.wm.read_factory_settings(use_empty=True)
     command, *args = sys.argv[1:]
-    {"names": names, "index": index}[command](*args)
+    {"names": names, "clean": clean, "index": index}[command](*args)

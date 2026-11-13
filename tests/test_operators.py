@@ -1725,6 +1725,20 @@ def test_only_inputs_with_the_expected_name_and_type_are_filled(addon_enabled, m
     assert values == pytest.approx(filled)
 
 
+def test_an_added_annotation_keeps_its_groups_material_default(addon_enabled, monkeypatch):
+    from yt_volumes import annotation_library, annotations
+
+    material = bpy.data.materials.new("Marker Material")
+    tree = bpy.data.node_groups.new("Marker", "GeometryNodeTree")
+    tree.interface.new_socket("Material", in_out="INPUT", socket_type="NodeSocketMaterial").default_value = material
+    monkeypatch.setattr(annotation_library, "read_index", lambda: {"Marker": {
+        "name": "Marker", "scene": annotation_library.MAIN_SCENE, "description": "",
+        "inputs": {"Material": "NodeSocketMaterial"}}})
+    modifier = annotations.add_from_library(addon_enabled, "Marker").modifiers[0]
+    identifier = tree.interface.items_tree["Material"].identifier
+    assert getattr(modifier.properties.inputs, identifier).value == material
+
+
 def test_the_annotation_menu_says_what_an_annotation_needs(addon_enabled):
     from yt_volumes import annotations, units
 
