@@ -1640,6 +1640,126 @@ def test_a_colorbar_ticks_whole_decades_of_the_fitted_range(clean_scene_with_pro
         annotations.unregister()
 
 
+def test_the_bundled_annotation_library_holds_what_the_add_on_appends():
+    from yt_volumes import annotations
+
+    with bpy.data.libraries.load(annotations.ASSET_LIBRARY) as (src, _):
+        groups, materials = set(src.node_groups), set(src.materials)
+    assert {annotations.COLORBAR_GROUP, annotations.VIEW_GROUP, annotations.FOV_GROUP, annotations.TEMPLATE_GROUP} <= groups
+    assert annotations.MATERIAL_NAME in materials
+
+
+def test_appended_annotations_reuse_the_files_view_group_material_and_font(clean_scene):
+    from yt_volumes import annotations
+
+    font = bpy.data.fonts.load("<builtin>")  # as in any file with text in it
+    colorbar = annotations.colorbar_node_group()
+    fov = annotations.fov_node_group()
+    first, second = annotations.annotation_template(), annotations.annotation_template()
+    assert annotations.colorbar_node_group() == colorbar  # appended once
+
+    view = bpy.data.node_groups[annotations.VIEW_GROUP]
+    assert sorted(bpy.data.node_groups.keys()) == sorted([
+        annotations.COLORBAR_GROUP, annotations.FOV_GROUP, annotations.VIEW_GROUP,
+        annotations.TEMPLATE_GROUP, f"{annotations.TEMPLATE_GROUP}.001",
+    ])
+    assert first != second  # each annotation gets its own tree to edit
+    for tree in (fov, first, second):
+        assert view in {n.node_tree for n in tree.nodes if n.bl_idname == "GeometryNodeGroup"}
+    assert list(bpy.data.materials) == [annotations.annotation_material()]
+    assert list(bpy.data.fonts) == [font]
+    assert not any(d.asset_data for d in [*bpy.data.node_groups, *bpy.data.materials, *bpy.data.fonts])
+    for tree, names in ((colorbar, ("Volume", "Title")), (fov, ("Units Object", "Unit")), (first, ("Units Object", "Unit"))):
+        assert set(names) <= set(tree.interface.items_tree.keys())
+
+
+def test_the_annotation_menu_index_matches_the_bundled_library(clean_scene):
+    from yt_volumes import annotation_library
+
+    assert list(annotation_library.read_index().values()) == annotation_library.build_index()
+
+
+def test_a_3d_scene_annotation_goes_at_the_cursor_wired_to_the_volume(addon_enabled, monkeypatch):
+    from yt_volumes import annotation_library, annotations
+
+    scene = addon_enabled
+    index = {name: dict(entry) for name, entry in annotation_library.read_index().items()}
+    index[annotations.COLORBAR_GROUP]["scene"] = annotation_library.MAIN_SCENE  # stands in for a 3D Scene asset
+    monkeypatch.setattr(annotation_library, "read_index", lambda: index)
+    volume = _flagged_cube()
+    collection = bpy.data.collections.new("Markers")
+    scene.collection.children.link(collection)
+    scene.cursor.location = (1.0, 2.0, 3.0)
+
+    first = annotations.add_from_library(scene, annotations.COLORBAR_GROUP, volume, collection)
+    second = annotations.add_from_library(scene, annotations.COLORBAR_GROUP, volume, collection)
+    assert tuple(first.location) == (1.0, 2.0, 3.0) and list(collection.objects) == [first, second]
+    assert annotations.annotation_scene(scene) is None
+    assert first.modifiers[0].node_group == second.modifiers[0].node_group  # shared, not copied
+    identifier = first.modifiers[0].node_group.interface.items_tree["Volume"].identifier
+    assert getattr(first.modifiers[0].properties.inputs, identifier).value == volume
+
+
+@pytest.mark.parametrize("sockets, filled", [
+    # name, in/out, type
+    ([("Unit", "INPUT", "NodeSocketString"), ("Unit Fraction", "INPUT", "NodeSocketFloat")], {"Unit": "unitary", "Unit Fraction": 0.25}),
+    ([("Unit", "INPUT", "NodeSocketFloat"), ("Title", "INPUT", "NodeSocketInt")], {"Unit": 0.25, "Title": 0}),
+    ([("Size", "INPUT", "NodeSocketFloat"), ("Volume", "OUTPUT", "NodeSocketFloat")], {"Size": 0.25}),
+])
+def test_only_inputs_with_the_expected_name_and_type_are_filled(addon_enabled, monkeypatch, sockets, filled):
+    from yt_volumes import annotation_library, annotations
+
+    tree = bpy.data.node_groups.new("Marker", "GeometryNodeTree")
+    for name, in_out, kind in sockets:
+        item = tree.interface.new_socket(name, in_out=in_out, socket_type=kind)
+        if kind == "NodeSocketFloat" and in_out == "INPUT":
+            item.default_value = 0.25
+    inputs = {name: kind for name, in_out, kind in sockets if in_out == "INPUT"}
+    monkeypatch.setattr(annotation_library, "read_index", lambda: {"Marker": {
+        "name": "Marker", "scene": annotation_library.MAIN_SCENE, "description": "", "inputs": inputs}})
+    assert annotations.unavailable("Marker", None) is None  # nothing here needs a volume
+    obj = annotations.add_from_library(addon_enabled, "Marker", _flagged_cube())
+    modifier = obj.modifiers[0]
+    values = {item.name: getattr(modifier.properties.inputs, item.identifier).value
+              for item in tree.interface.items_tree if item.in_out == "INPUT"}
+    assert values == pytest.approx(filled)
+
+
+def test_an_added_annotation_keeps_its_groups_material_default(addon_enabled, monkeypatch):
+    from yt_volumes import annotation_library, annotations
+
+    material = bpy.data.materials.new("Marker Material")
+    tree = bpy.data.node_groups.new("Marker", "GeometryNodeTree")
+    tree.interface.new_socket("Material", in_out="INPUT", socket_type="NodeSocketMaterial").default_value = material
+    monkeypatch.setattr(annotation_library, "read_index", lambda: {"Marker": {
+        "name": "Marker", "scene": annotation_library.MAIN_SCENE, "description": "",
+        "inputs": {"Material": "NodeSocketMaterial"}}})
+    modifier = annotations.add_from_library(addon_enabled, "Marker").modifiers[0]
+    identifier = tree.interface.items_tree["Material"].identifier
+    assert getattr(modifier.properties.inputs, identifier).value == material
+
+
+def test_the_annotation_menu_says_what_an_annotation_needs(addon_enabled):
+    from yt_volumes import annotations, units
+
+    scene = addon_enabled
+    assert annotations.unavailable(annotations.FOV_GROUP, None) == "Select a volume"
+    volume = _flagged_cube()
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.context.view_layer.objects.active = None
+    assert annotations.active_volume(bpy.context) == volume  # the scene's only volume
+    assert "units object" in annotations.unavailable(annotations.FOV_GROUP, volume)
+    assert annotations.unavailable(annotations.COLORBAR_GROUP, volume) is None
+    assert bpy.ops.volume_override.add_library_annotation(name=annotations.COLORBAR_GROUP) == {"FINISHED"}
+    with pytest.raises(RuntimeError, match="units object"):
+        bpy.ops.volume_override.add_library_annotation(name=annotations.FOV_GROUP)
+
+    units.add_units_object(volume, scene)
+    assert bpy.ops.volume_override.add_library_annotation(name=annotations.FOV_GROUP) == {"FINISHED"}
+    fov = annotations._annotations_with(annotations.annotation_scene(scene), annotations.FOV_GROUP)
+    assert [o.name for o in fov] == [f"{volume.name} Field of View"]
+
+
 @pytest.mark.parametrize("engine, device, backend, mode, warns", [
     ("BLENDER_EEVEE", "CPU", "VULKAN", "SAMPLE_CONSTANT", True),
     ("BLENDER_EEVEE", "GPU", "VULKAN", "YT_IDV_MAX_INTENSITY", False),

@@ -359,17 +359,24 @@ object's origin, so moving or scaling the object places it. Ticks appear
 after the first render has fitted the range.
 
 ## Scale bars and your own annotations
-These need the volume's units object (**Units for Geometry Nodes**); the
-buttons beside it add them to the annotation scene.
+**Add > yt Annotation** (Shift+A in the 3D viewport, or the menu beside the
+volume's units object) lists every annotation the add-on ships, under the
+scene each goes in: the annotation scene, or the 3D scene at the 3D cursor.
+It fills the inputs it recognizes (Volume, Units Object, Unit, Title) from
+the active volume, or from the scene's only volume. Objects added from the
+same entry share one node group, so changing the group changes them all;
+use the modifier's inputs to vary them, or Make Single User to edit one.
+The field of view and the starter annotation need the volume's units object
+(**Units for Geometry Nodes**).
 
-**Add Field of View** adds a labeled scale bar, from the object's origin to
+**yt Field of View** is a labeled scale bar, from the object's origin to
 +x. Its **Length** is in **Unit** (any of the volume's Data Units, or
 `unitary`) and can be keyframed (right-click > Insert Keyframe); at 0 it
 picks a round 1, 2 or 5 × 10ⁿ up to **Auto Max** of the frame.
 
-**Add Annotation** is the starting point for anything else. It adds an
-object with its own editable node tree, a dot **Size** across (in Unit) drawn
-where the volume is on screen. Open it in a Geometry Nodes editor and change
+**yt Annotation** is the starting point for anything else. Unlike the
+others, each one gets its own copy of the node tree to edit: a dot **Size**
+across (in Unit) drawn where the volume is on screen. Open it in a Geometry Nodes editor and change
 it. The node doing the work is **yt Annotation View** (Add > Group). Give it
 the **Units Object** and a **Unit**, and it answers, for the volume's zoom
 target or middle, or for any main-scene **Point** with **Use Point** on:
@@ -485,6 +492,42 @@ exercise only Blender 5's compositor API.
 - `scripts/build_extension.sh` builds the extension zips;
   `.github/workflows/release.yml` runs it for every `v*` tag.
 
+### The bundled annotation nodes
+
+The annotation node groups and materials ship in
+`src/yt_volumes/assets/annotations.blend`, and the add-on appends them from
+there. That file is built by [nodebpy](https://bradyajohnston.github.io/nodebpy)
+from the Python sources in `assets/annotations/`, one module per node group
+or material. The sources are what you edit and review.
+
+To add or change an annotation:
+
+1. Build its node group in a working `.blend`, with nodes Blender 5.2 has
+   (the oldest Blender the add-on supports; nodebpy 520 is its). To reuse
+   yt Annotation View or the yt Annotation material, or to change a shipped
+   group, append it from `annotations.blend`.
+2. Mark the group as an asset and, in the Asset Browser's metadata, give it
+   a description (the menu's tooltip) and one tag: `Annotation Scene` or
+   `3D Scene`. Groups with neither are helpers, shipped but not in the menu.
+   Name inputs Volume, Units Object, Unit or Title to have them filled in.
+3. Save, and run `scripts/export_annotations.sh my_work.blend`. It exports
+   every asset in the file (or only those named after it), rebuilds
+   `annotations.blend`, checks the round trip, and rewrites the menu's
+   index, `annotations.json`. Commit what changed under `assets/` and
+   `src/yt_volumes/assets/`. With `--dry-run` first, it shows the source
+   changes it would make and writes nothing. Either way it lists the assets
+   it found and the groups in use that aren't marked as assets (skipped),
+   and warns of groups without a scene tag that no other group uses, which
+   nobody could add. Object references, such as a Units Object input's
+   default, are cleared on the way out, since the library can't hold your
+   file's objects; Add yt Annotation fills Volume and Units Object in.
+
+The tools run in an isolated environment from the `assets` dependency
+group, e.g. `PYTHONPATH= uv run --isolated --only-group assets nodebpy check`.
+Text nodes need Blender's built-in font, which the build appends from
+`assets/resources.blend`. `build_extension.sh` runs `check`, rebuilds the
+`.blend` if it's older than its sources, and rewrites the index.
+
 [docs/architecture.md](docs/architecture.md) describes the two-pass pipeline
 and the renderer contract.
 
@@ -503,7 +546,10 @@ src/yt_volumes/
     viewer.py, viewer_main.py, viewer_link.py   the yt_idv viewer window
     transfer_function_nodes.py, tf_plot.py      the Geometry Nodes transfer function, its plot
     units.py               scene units per data unit
+    annotations.py         the annotation scene, Add > yt Annotation
+    annotation_library.py  the bundled annotations.blend and its menu index
     scene_sync.py, change_tracking.py, handlers.py, sample_renderers.py, ...
+assets/annotations/        nodebpy sources of the bundled annotation nodes
 extensions/deep_zoom/      the Deep Zoom authoring extension (see its README)
 examples/                  configs and scene builders
 scripts/                   verification tools, the headless driver, the extension build
