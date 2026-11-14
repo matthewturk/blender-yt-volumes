@@ -12,8 +12,8 @@ class SphereMaterial(CustomShaderGroup):
 
     def _build_group(self, tree: TreeBuilder[ShaderNodeTree]) -> None:
         principled_bsdf = s.PrincipledBSDF(
-            emission_color=(0.07015842, 0.07015842, 0.07015842, 1.0),
-            emission_strength=2.0,
+            emission_color=s.Attribute(attribute_name="emission_color").o.color,
+            emission_strength=s.Attribute(attribute_name="emission_strength").o.factor,
         )
         _material_output = s.MaterialOutput(principled_bsdf)
 

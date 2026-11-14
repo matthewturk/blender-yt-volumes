@@ -1,5 +1,27 @@
 [
  {
+  "name": "Sphere Annotation",
+  "scene": "MAIN",
+  "description": "Add a gyroscope-like sphere to a scene at specified size.",
+  "inputs": {
+   "Geometry": "NodeSocketGeometry",
+   "Unit": "NodeSocketString",
+   "Units Object": "NodeSocketObject",
+   "Unit Fraction": "NodeSocketFloat",
+   "Annotation Color": "NodeSocketColor",
+   "Annotation Brightness": "NodeSocketFloat",
+   "Text Annotation": "NodeSocketBool",
+   "Face Camera": "NodeSocketBool",
+   "Text Color": "NodeSocketColor",
+   "Text Strength": "NodeSocketFloat",
+   "Padding": "NodeSocketFloat",
+   "Text Size": "NodeSocketFloat",
+   "Disappearing": "NodeSocketBool",
+   "Start Frame": "NodeSocketInt",
+   "End Frame": "NodeSocketInt"
+  }
+ },
+ {
   "name": "yt Annotation",
   "scene": "ANNOTATION",
   "description": "A starting point for your own: a dot at the volume's zoom target or middle, with its own node tree to edit",
