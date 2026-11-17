@@ -5,7 +5,14 @@
 # PLATFORMS="linux-x64 ..." limits the platforms; WHEELS=<dir> adds local wheels (e.g. a yt_idv build).
 set -euo pipefail
 BLENDER=$1; mkdir -p "$2"; OUT=$(realpath "$2"); STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
-cp -r "$(dirname "$0")/../src/yt_volumes" "$STAGE/" && mkdir "$STAGE/yt_volumes/wheels"
+ROOT=$(realpath "$(dirname "$0")/..")
+# The annotation library isn't in git; build it fresh from its sources.
+# check fails for trees with multi-input sockets (see export_annotations.sh), so it only warns.
+(cd "$ROOT" && PYTHONPATH= BLENDER_USER_EXTENSIONS="$STAGE/no-extensions" uv run -q --isolated --only-group assets nodebpy check) \
+  || echo "warning: nodebpy check failed; building anyway" >&2
+"$ROOT/scripts/build_annotations.sh" --force
+cp -r "$ROOT/src/yt_volumes" "$STAGE/" && mkdir "$STAGE/yt_volumes/wheels"
+rm -f "$STAGE"/yt_volumes/assets/*.stamp
 # Blender platform -> uv platform, then pip's wheel tags for it.
 declare -A TAGS=([linux-x64]="x86_64-manylinux_2_28 manylinux_2_28_x86_64 manylinux_2_17_x86_64 manylinux2014_x86_64 linux_x86_64"
                  [windows-x64]="x86_64-pc-windows-msvc win_amd64"

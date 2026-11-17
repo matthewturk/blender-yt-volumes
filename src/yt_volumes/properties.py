@@ -982,8 +982,7 @@ def _draw_units(layout, obj):
     else:
         row = layout.row(align=True)
         row.prop(obj.volume_override, "units_object")
-        row.operator("volume_override.add_field_of_view", text="", icon="DRIVER_DISTANCE")
-        row.operator("volume_override.add_annotation", text="", icon="GEOMETRY_NODES")
+        row.menu("VOLUMEOVERRIDE_MT_add_annotation", text="", icon="GEOMETRY_NODES")
     group = obj.get("yt_units", {})
     for unit in (u.strip() for u in obj.volume_override.data_units.split(",") if u.strip()):
         value = group.get(f"scene_per_{unit}")

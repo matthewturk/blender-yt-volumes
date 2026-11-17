@@ -21,6 +21,9 @@ scripts/headless/_headless_render_out/
 # Claude Code local settings
 .claude/
 
+# built by scripts/build_annotations.sh
+/src/yt_volumes/assets/
+
 # build output (scripts/build_extension.sh, uv build)
 /dist/
 /dist-ext/
