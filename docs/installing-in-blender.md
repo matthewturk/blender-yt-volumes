@@ -1,16 +1,34 @@
 # Installing yt_idv and yt-volumes in a stock Blender
 
 How to get from a fresh Blender download to F12 renders with yt_idv, without
-this repo's dev venv. On Linux x64 the quickest is route 3: download the
+this repo's dev venv. On Linux x64 and macOS arm64 the quickest is route 3: download the
 extension zip from the
 [releases page](https://github.com/matthewturk/blender-yt-volumes/releases)
 and install it from disk. Routes 1 and 2 were tested on Linux x86-64 with the
 official `blender-5.2.2-linux-x64.tar.xz` and render the README's development
-example frame identically. Not yet tried on macOS or Windows (yt_idv's offscreen
-rendering uses EGL, which macOS doesn't have).
+example frame identically. macOS is beta (see below); Windows is untested.
 
-You need an NVIDIA/AMD/Intel GPU driver with EGL, and for routes 1 and 2
+You need an NVIDIA/AMD/Intel GPU driver with EGL on Linux, and for routes 1 and 2
 [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
+## macOS (beta)
+
+Blender on macOS draws with Metal, which leaves OpenGL free for yt_idv. The
+Volume Override panel's **Backend** defaults to **Auto**, which on macOS
+tries, in order:
+
+1. **CGL**, macOS's own OpenGL 4.1 core profile on the GPU. No window, nothing
+   to install.
+2. **Mesa's EGL**, if CGL can't make an accelerated context. Needs a Mesa
+   build with EGL (`libEGL.dylib`); yt_idv looks under `/opt/homebrew`,
+   `/usr/local`, `/opt/local` and `$YT_IDV_MESA_PREFIX`. Not every Homebrew
+   `mesa` ships `libEGL`. It renders on the CPU (llvmpipe) unless Mesa uses
+   zink over KosmicKrisp.
+
+Pick **CGL** or **EGL** in the Backend menu to force one. A process can only
+use one of them: PyOpenGL binds to the first, so restart Blender after
+switching. The fallback is reported on the terminal Blender was started from.
+**Open yt_idv Viewer** runs in its own process, in a pyglet window.
 
 ## What you have to match
 
@@ -90,7 +108,7 @@ Extensions > Install from Disk) is the whole setup: no uv, no compiler, no
 startup script. numpy is left out; Blender's is used. Deep Zoom stays a
 separate extension so it can author camera paths without yt_idv.
 
-Prebuilt Linux x64 zips are attached to each
+Prebuilt Linux x64 and macOS arm64 zips are attached to each
 [GitHub release](https://github.com/matthewturk/blender-yt-volumes/releases);
 `.github/workflows/release.yml` builds them when a `v*` tag is pushed. To build
 them yourself:
@@ -132,10 +150,11 @@ For deep camera paths, also install Deep Zoom: the `deep_zoom` zip from
 route 3, or zip `extensions/deep_zoom/` yourself, and use Preferences > Get
 Extensions > Install from Disk.
 
-In the GUI, set Preferences > System > GPU Backend to **Vulkan** and restart.
+On Linux, in the GUI, set Preferences > System > GPU Backend to **Vulkan** and restart.
 Under OpenGL, NVIDIA's EGL refuses to make yt_idv's context current next to
 Blender's own (`EGL_BAD_ACCESS` on F12). Batch Cycles renders (`blender -b`)
-work under either backend; EEVEE needs Vulkan in both.
+work under either backend; EEVEE needs Vulkan in both. On macOS Blender's
+Metal backend needs no change.
 
 ## Checking it
 

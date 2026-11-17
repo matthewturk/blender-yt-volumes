@@ -111,7 +111,7 @@ class VOLUMEOVERRIDE_OT_open_viewer(bpy.types.Operator):
             json.dump(config, f, default=float)
         # The viewer imports this add-on and yt_idv from wherever Blender found them.
         env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
-        env.pop("PYOPENGL_PLATFORM", None)  # pyglet opens a GLX window, not EGL
+        env.pop("PYOPENGL_PLATFORM", None)  # pyglet opens a GLX/Cocoa window, not EGL
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_main.py")
         process = subprocess.Popen([sys.executable, script, config_path], env=env)
         _viewers[obj.name] = {

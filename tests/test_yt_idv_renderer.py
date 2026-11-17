@@ -1637,7 +1637,7 @@ def test_needs_load_until_the_scene_is_cached_for_this_dataset(_clean_yir_state)
     request = _request_with(render_size=4)
     assert yir.needs_load(request)
     scene = types.SimpleNamespace(_yt_volumes_source=yir.SAMPLE_DATASET_NAME)
-    yir._volume_scene_cache["obj"] = (scene, None, "egl")
+    yir._volume_scene_cache["obj"] = (scene, None, yir.DEFAULT_BACKEND)
     assert not yir.needs_load(request)
     assert not yir.needs_load(_request_with(render_size=8))  # any size reuses it
     request.volume.dataset.dataset_path = "/data/other.zip"

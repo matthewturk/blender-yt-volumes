@@ -149,11 +149,14 @@ class VolumeOverrideProperties(bpy.types.PropertyGroup):
     backend: bpy.props.EnumProperty(
         name="Backend",
         description="Offscreen OpenGL backend",
+        # Explicit numbers: .blend files store the number, so items can't be renumbered.
         items=[
-            ("egl", "EGL", "Needs a working GPU + driver stack"),
-            ("osmesa", "OSMesa (buggy)", "Software rendering; corrupts non-square renders"),
+            ("auto", "Auto", "EGL; on macOS, CGL, falling back to Mesa's EGL", 2),
+            ("egl", "EGL", "Needs a working GPU + driver stack (Mesa's on macOS)", 0),
+            ("cgl", "CGL (macOS)", "macOS's own OpenGL on the GPU", 3),
+            ("osmesa", "OSMesa (buggy)", "Software rendering; corrupts non-square renders", 1),
         ],
-        default="egl",
+        default="auto",
     )
     samples_per_cell: bpy.props.FloatProperty(
         name="Samples per Cell",
