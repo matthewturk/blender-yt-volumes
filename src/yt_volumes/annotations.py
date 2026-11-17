@@ -8,6 +8,7 @@ Pass 2 renders it with Cycles through a Render Layers node, at the main
 scene's frame and resolution, and lays it over the volumes.
 """
 
+import os
 import re
 
 import bpy
@@ -84,6 +85,8 @@ def _append(kind, name):
     """Append `name` from the bundled library into `bpy.data.<kind>`, using the
     file's own copies of anything it depends on that the file already has.
     """
+    if not os.path.exists(ASSET_LIBRARY):
+        raise RuntimeError(annotation_library.NOT_BUILT)
     collections = ("node_groups", "materials", "fonts")
     before = {c: set(getattr(bpy.data, c).keys()) for c in collections}
     with bpy.data.libraries.load(ASSET_LIBRARY, link=False) as (_, dst):
@@ -379,6 +382,9 @@ class VOLUMEOVERRIDE_MT_add_annotation(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         entries = annotation_library.read_index().values()
+        if not entries:
+            layout.label(text=annotation_library.NOT_BUILT, icon="ERROR")
+            return
         volume = active_volume(context)
         for scene, heading in ((annotation_library.ANNOTATION_SCENE, "Annotation Scene"), (annotation_library.MAIN_SCENE, "3D Scene")):
             names = [e["name"] for e in entries if e["scene"] == scene]

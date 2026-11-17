@@ -498,7 +498,10 @@ The annotation node groups and materials ship in
 `src/yt_volumes/assets/annotations.blend`, and the add-on appends them from
 there. That file is built by [nodebpy](https://bradyajohnston.github.io/nodebpy)
 from the Python sources in `assets/annotations/`, one module per node group
-or material. The sources are what you edit and review.
+or material. The sources are what you edit, review and commit; the built
+`.blend` and its menu index aren't in git. Run `scripts/build_annotations.sh`
+after a checkout to use the add-on from `src/` (the tests build it
+themselves, and it only rebuilds when the sources changed).
 
 To add or change an annotation:
 
@@ -513,8 +516,8 @@ To add or change an annotation:
 3. Save, and run `scripts/export_annotations.sh my_work.blend`. It exports
    every asset in the file (or only those named after it), rebuilds
    `annotations.blend`, checks the round trip, and rewrites the menu's
-   index, `annotations.json`. Commit what changed under `assets/` and
-   `src/yt_volumes/assets/`. With `--dry-run` first, it shows the source
+   index, `annotations.json`. Commit what changed under
+   `assets/annotations/`. With `--dry-run` first, it shows the source
    changes it would make and writes nothing. Either way it lists the assets
    it found and the groups in use that aren't marked as assets (skipped),
    and warns of groups without a scene tag that no other group uses, which
@@ -525,8 +528,8 @@ To add or change an annotation:
 The tools run in an isolated environment from the `assets` dependency
 group, e.g. `PYTHONPATH= uv run --isolated --only-group assets nodebpy check`.
 Text nodes need Blender's built-in font, which the build appends from
-`assets/resources.blend`. `build_extension.sh` runs `check`, rebuilds the
-`.blend` if it's older than its sources, and rewrites the index.
+`assets/resources.blend`. `build_extension.sh` runs `check` and always
+builds the `.blend` and the index fresh for the release.
 
 [docs/architecture.md](docs/architecture.md) describes the two-pass pipeline
 and the renderer contract.

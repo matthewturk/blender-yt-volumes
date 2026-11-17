@@ -6,14 +6,11 @@
 set -euo pipefail
 BLENDER=$1; mkdir -p "$2"; OUT=$(realpath "$2"); STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
 ROOT=$(realpath "$(dirname "$0")/..")
-# The annotation library: check its sources round-trip, rebuild it if they changed, and
-# rewrite its menu index. Isolated from user extensions, which may bundle another nodebpy.
-assets() { (cd "$ROOT" && PYTHONPATH= BLENDER_USER_EXTENSIONS="$STAGE/no-extensions" uv run -q --isolated --only-group assets "$@"); }
+# The annotation library isn't in git; build it fresh from its sources.
 # check fails for trees with multi-input sockets (see export_annotations.sh), so it only warns.
-assets nodebpy check || echo "warning: nodebpy check failed; building anyway" >&2
-assets nodebpy ensure
-assets python scripts/annotation_assets.py index
-git -C "$ROOT" diff --quiet -- src/yt_volumes/assets || echo "warning: src/yt_volumes/assets was rebuilt; commit it" >&2
+(cd "$ROOT" && PYTHONPATH= BLENDER_USER_EXTENSIONS="$STAGE/no-extensions" uv run -q --isolated --only-group assets nodebpy check) \
+  || echo "warning: nodebpy check failed; building anyway" >&2
+"$ROOT/scripts/build_annotations.sh" --force
 cp -r "$ROOT/src/yt_volumes" "$STAGE/" && mkdir "$STAGE/yt_volumes/wheels"
 rm -f "$STAGE"/yt_volumes/assets/*.stamp
 # Blender platform -> uv platform, then pip's wheel tags for it.

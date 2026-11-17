@@ -28,10 +28,11 @@ a little — not an expert, not a beginner.
   `volume_override.renderer_mode = "SAMPLE_CONSTANT"` to skip yt_idv entirely
   (seconds per run instead of minutes).
 - Annotation node groups and materials live as nodebpy sources in
-  `assets/annotations/`. After editing them, rebuild the `.blend` and the
-  menu index: `PYTHONPATH= uv run --isolated --only-group assets nodebpy build`,
-  then `... nodebpy check` and `... python scripts/annotation_assets.py index`.
-  From a working `.blend`, `scripts/export_annotations.sh` does all three.
+  `assets/annotations/`; the built `.blend` and menu index aren't in git.
+  `scripts/build_annotations.sh` builds them (the tests run it; releases run
+  it with `--force`). Check sources with
+  `PYTHONPATH= uv run --isolated --only-group assets nodebpy check`.
+  From a working `.blend`, `scripts/export_annotations.sh` exports and builds.
   Don't `uv sync` the assets group into the dev venv.
 - The look (renderer mode, colormaps, TFs, remembered colormap range) lives on
   the volume object and is saved in the .blend; add-on prefs hold only

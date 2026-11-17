@@ -6,7 +6,7 @@
 # "Annotation Scene" or "3D Scene" to list it in the Add yt Annotation menu;
 # untagged ones ship as helpers for other groups. --dry-run shows what would
 # change in assets/annotations/ and writes nothing. Commit what changes under
-# assets/ and src/yt_volumes/assets/.
+# assets/annotations/; the built library isn't in git.
 set -euo pipefail
 DRY_RUN=0
 if [[ ${1:-} == --dry-run ]]; then DRY_RUN=1; shift; fi
@@ -57,4 +57,4 @@ run nodebpy build > /dev/null
 # round trip, so check fails for such trees even though they build correctly.
 run nodebpy check || echo "warning: nodebpy check failed (see above); the library still built" >&2
 run python scripts/annotation_assets.py index
-git -C "$ROOT" status --short -- assets src/yt_volumes/assets
+git -C "$ROOT" status --short -- assets/annotations

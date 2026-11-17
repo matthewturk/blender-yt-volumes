@@ -19,6 +19,7 @@ BLEND = os.path.join(ASSETS_DIR, "annotations.blend")
 INDEX = os.path.join(ASSETS_DIR, "annotations.json")
 ANNOTATION_SCENE, MAIN_SCENE = "ANNOTATION", "MAIN"
 SCENE_TAGS = {"Annotation Scene": ANNOTATION_SCENE, "3D Scene": MAIN_SCENE}
+NOT_BUILT = "The annotation library isn't built; run scripts/build_annotations.sh in the yt-volumes checkout"
 
 
 def scene_of(tree):
@@ -59,8 +60,12 @@ def write_index(blend=BLEND, path=INDEX):
     return entries
 
 
-@functools.cache
 def read_index(path=INDEX):
-    """{name: entry} of the menu's annotations."""
+    """{name: entry} of the menu's annotations; empty if the library isn't built."""
+    return _read_index(path) if os.path.exists(path) else {}
+
+
+@functools.cache
+def _read_index(path):
     with open(path) as f:
         return {entry["name"]: entry for entry in json.load(f)}
