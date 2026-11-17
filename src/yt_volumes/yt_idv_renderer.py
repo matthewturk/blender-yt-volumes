@@ -44,7 +44,8 @@ yt_idv gotchas handled here or in the required yt_idv patches:
   - Non-square renders show period-4 banding, so we render square and
     center-crop; the square's FOV covers the frame's longer side.
   - `SceneGraph.image` returns `(width, height, 4)` for non-square renders.
-  - OSMesa corrupts non-square renders; the default backend is EGL.
+  - OSMesa corrupts non-square renders; the default backend is EGL (CGL on
+    macOS, falling back to Mesa's EGL).
   - The EGL config needs `EGL_ALPHA_SIZE` or backgrounds come back opaque.
   - `transfer_function` needs the `passthrough_alpha` second pass to keep its
     accumulated alpha, and yt_idv's compositing fixes: blocks drawn nearest
@@ -65,6 +66,7 @@ import hashlib
 import importlib
 import inspect
 import math
+import sys
 import types
 import warnings
 
@@ -78,7 +80,7 @@ from .sample_renderers import ray_length_from_camera_distance
 
 SAMPLE_DATASET_NAME = "IsolatedGalaxy"
 SAMPLE_FIELD = "density"
-DEFAULT_BACKEND = "egl"  # OSMesa corrupts non-square renders
+DEFAULT_BACKEND = "auto"  # OSMesa corrupts non-square renders
 # The context's own surface; every render draws into framebuffers of its own size.
 CONTEXT_SURFACE_SIZE = 64
 
@@ -173,6 +175,8 @@ def _get_render_context(backend):
     key = backend
     cached = _render_context_cache.get(key)
     if cached is not None:
+        if hasattr(cached, "make_current"):  # a CGL context is current on one thread at a time
+            cached.make_current()
         return cached
     try:
         import yt_idv
@@ -181,9 +185,24 @@ def _get_render_context(backend):
             "yt_idv rendering needs `yt_idv` importable from Blender's own "
             "Python -- see docs/installing-in-blender.md."
         ) from exc
-    rc = yt_idv.render_context(backend, width=CONTEXT_SURFACE_SIZE, height=CONTEXT_SURFACE_SIZE)
+    rc = _create_render_context(yt_idv, backend, CONTEXT_SURFACE_SIZE)
     _render_context_cache[key] = rc
     return rc
+
+
+def _create_render_context(yt_idv, backend, size):
+    """yt_idv's render context for `backend`; "auto" is EGL, or on macOS CGL then Mesa's EGL."""
+    from . import cgl_context
+
+    if backend == "auto" and sys.platform == "darwin":
+        try:
+            return cgl_context.make_cgl_rendering_context(size, size)
+        except cgl_context.CGLUnavailable as exc:
+            warnings.warn(f"CGL unavailable ({exc}); trying Mesa's EGL")
+        backend = "egl"
+    if backend == "cgl":
+        return cgl_context.make_cgl_rendering_context(size, size)
+    return yt_idv.render_context("egl" if backend == "auto" else backend, width=size, height=size)
 
 
 def _float_texture(size):

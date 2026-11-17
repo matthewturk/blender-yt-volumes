@@ -1,4 +1,4 @@
-# On a `v*` tag, build the Linux yt-volumes and Deep Zoom extension zips and attach them to a GitHub release.
+# On a `v*` tag, build the Linux and macOS yt-volumes and Deep Zoom extension zips and attach them to a GitHub release.
 # Pull requests and manual runs (Actions tab) only upload the zips as a workflow artifact.
 name: Release extension
 
@@ -53,7 +53,7 @@ jobs:
             libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libgl1 libegl1
 
       - name: Build extensions
-        run: PLATFORMS=linux-x64 scripts/build_extension.sh "$PWD/blender/blender" dist-ext
+        run: PLATFORMS="linux-x64 macos-arm64" scripts/build_extension.sh "$PWD/blender/blender" dist-ext
 
       - uses: actions/upload-artifact@v4
         with:

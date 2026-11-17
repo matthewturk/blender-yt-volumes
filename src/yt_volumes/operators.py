@@ -722,7 +722,7 @@ def _pass2_render_overrides(scene, view_layer=None):
 
 
 def _gpu_backend():
-    """The GPU backend Blender is running on ("OPENGL", "VULKAN", ...), not the
+    """The GPU backend Blender is running on ("OPENGL", "VULKAN", "METAL"), not the
     preference, which only applies after a restart.
     """
     import gpu
@@ -836,7 +836,7 @@ def _needs_cpu_compositor(scene, uses_yt_idv):
     # own EGL context fails with EGL_BAD_ACCESS. With Cycles, pass 2's GPU
     # compositor beside yt_idv's data can run out of GPU memory, and Blender
     # crashes on the failed Vulkan allocation (1080p on a 6 GB card).
-    return uses_yt_idv and (_gpu_backend() != "VULKAN" or scene.render.engine == "CYCLES")
+    return uses_yt_idv and (_gpu_backend() == "OPENGL" or scene.render.engine == "CYCLES")
 
 
 def compatibility_warnings(scene, view_layer):
@@ -855,7 +855,7 @@ def compatibility_warnings(scene, view_layer):
             f"{overlay.name!r} renders with EEVEE while {scene.name!r} composites on the CPU, which "
             f"crashes Blender after a frame or two. Switch {overlay.name!r} to Cycles, or set "
             f"Render Properties > Performance > Compositor > Device to GPU"
-            + (" (needs the Vulkan GPU backend with yt_idv volumes)." if uses_yt_idv else ".")
+            + (" (needs the Vulkan or Metal GPU backend with yt_idv volumes)." if uses_yt_idv else ".")
         )
     return warnings
 
@@ -886,12 +886,12 @@ def _render_current_frame(context, write_still=True):
     prefs = _get_prefs(context)
     flagged = properties.rendered_volumes(scene, context.view_layer)
     uses_yt_idv = any(obj.volume_override.renderer_mode in YT_IDV_RENDERER_MODES for obj in flagged)
-    if uses_yt_idv and scene.render.engine != "CYCLES" and _gpu_backend() != "VULKAN":
+    if uses_yt_idv and scene.render.engine != "CYCLES" and _gpu_backend() == "OPENGL":
         # Under the OpenGL backend EEVEE holds a GL context, and yt_idv's EGL
         # context then fails with EGL_BAD_ACCESS (or EEVEE dies with X BadAccess).
         raise RuntimeError(
             f"yt_idv renderer modes with {scene.render.engine} need Blender's Vulkan GPU "
-            f"backend (Preferences > System > GPU Backend, then restart); otherwise "
+            f"backend (Preferences > System > GPU Backend, then restart; Metal on macOS); otherwise "
             f"switch Render Properties > Render Engine to Cycles"
         )
     warning = _engine_warning(scene)

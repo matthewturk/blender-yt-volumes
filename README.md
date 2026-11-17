@@ -15,12 +15,15 @@ deep hierarchies.
 underlying yt and yt_idv are generally (but not totally!) AI-free.
 
 **Platforms:** Blender 5.2 or later on Linux x64, with a GPU driver that
-provides EGL (NVIDIA, AMD or Intel). Windows is untested; macOS has no EGL, so
-yt_idv's offscreen rendering won't work there.
+provides EGL (NVIDIA, AMD or Intel). macOS arm64 support is **beta**: yt_idv
+draws with macOS's own OpenGL (CGL) on the GPU, falling back to Mesa's EGL
+(see [installing](docs/installing-in-blender.md#macos-beta)). Windows is
+untested.
 
 ## Installing
 
-Download `yt_volumes-<version>-linux_x64.zip` (and, for authoring deep camera
+Download `yt_volumes-<version>-linux_x64.zip` or
+`yt_volumes-<version>-macos_arm64.zip` (and, for authoring deep camera
 paths, `deep_zoom-<version>.zip`) from the
 [releases page](https://github.com/matthewturk/blender-yt-volumes/releases),
 then in Blender use Edit > Preferences > Get Extensions > Install from Disk.
@@ -110,11 +113,12 @@ Pass 1 (the scene's beauty and Z pass) renders with the scene's engine,
 Cycles or EEVEE; the volume always comes from yt_idv, so it looks the same
 either way. What can differ:
 
-- **Requirements.** EEVEE needs Blender's **Vulkan** GPU backend
+- **Requirements.** On Linux, EEVEE needs Blender's **Vulkan** GPU backend
   (Preferences > System > GPU Backend, then restart; `blender -b
   --gpu-backend vulkan` in batch). Under OpenGL, EEVEE's GL context and
   yt_idv's EGL context can't share a process, and the render stops with an
-  error saying so. Cycles works under either backend.
+  error saying so. Cycles works under either backend. On macOS Blender runs
+  on Metal, which doesn't conflict with yt_idv.
 - **The geometry, not the volume.** EEVEE rasterizes: shadows, reflections,
   refraction and indirect light are approximations, so meshes, lights and
   materials look different, as in any EEVEE vs Cycles comparison. Nothing
@@ -461,7 +465,8 @@ draws over it, with or without this setting.
 ## Development
 
 Needs Python 3.13 (the pip `bpy` module the tests and batch renders use is
-Blender 5.2's), [uv](https://docs.astral.sh/uv/), and a GPU with EGL. Run
+Blender 5.2's), [uv](https://docs.astral.sh/uv/), and on Linux a GPU
+driver with EGL. Run
 commands with `PYTHONPATH` unset.
 
 ```

@@ -983,6 +983,8 @@ def test_yt_idv_modes_refuse_a_non_cycles_engine(monkeypatch, clean_scene_with_p
     # Cycles' pass 2 on the GPU compositor beside yt_idv's data can exhaust GPU memory.
     ("CYCLES", "VULKAN", "CPU"),
     ("CYCLES", "OPENGL", "CPU"),
+    ("CYCLES", "METAL", "CPU"),
+    ("BLENDER_EEVEE", "METAL", "GPU"),
 ])
 def test_the_cpu_compositor_for_opengl_and_cycles(addon_enabled, monkeypatch, tmp_path, engine, backend, during):
     scene = addon_enabled
@@ -1766,6 +1768,7 @@ def test_the_annotation_menu_says_what_an_annotation_needs(addon_enabled):
     ("BLENDER_EEVEE", "GPU", "OPENGL", "YT_IDV_MAX_INTENSITY", True),  # forced onto the CPU compositor
     ("BLENDER_EEVEE", "GPU", "OPENGL", "SAMPLE_CONSTANT", False),
     ("CYCLES", "CPU", "VULKAN", "SAMPLE_CONSTANT", False),
+    ("BLENDER_EEVEE", "GPU", "METAL", "YT_IDV_MAX_INTENSITY", False),
 ])
 def test_an_eevee_annotation_scene_beside_the_cpu_compositor_warns(addon_enabled, monkeypatch, engine, device, backend, mode, warns):
     from yt_volumes import annotations, transfer_function_nodes as tfn
