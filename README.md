@@ -349,7 +349,7 @@ pipeline (F12, Ctrl+F12, `render_volume`) render it with its own engine
 the finished frame; it doesn't appear in the main scene's viewport. An EEVEE
 annotation scene needs the main scene's compositor on the GPU (Render
 Properties > Performance > Compositor), which yt_idv volumes get only on the
-Vulkan GPU backend; otherwise switch the annotation scene to Cycles. F12 asks
+Vulkan or Metal GPU backend; otherwise switch the annotation scene to Cycles. F12 asks
 before rendering a setup that would crash.
 
 A colorbar is a mesh object whose **yt Colorbar** modifier reads the volume
