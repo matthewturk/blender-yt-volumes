@@ -411,6 +411,36 @@ Index 0 of a Named Attribute: `camera_to_world` (matrix),
 `depth × per_depth + ortho`), `frame_shift` and `frame_height` (in frame
 widths), `view_center`, and `scene_per_<unit>`.
 
+## Probes: per-frame analysis plots
+A **probe** is a Sphere Empty that runs a yt analysis on the data inside it
+and writes the result to a float Image. **Add > yt Annotation > Add Probe**
+puts one at the 3D cursor for the active volume and adds a **yt Image Panel**
+showing its Image to the annotation scene. Move or scale the Empty, and
+keyframe its Size or scale to animate it.
+
+Renders run probes after the volumes, before the annotation scene. A probe
+runs again only when its sphere, the dataset, its analysis or its parameters
+change (**Update**: On Change), on every frame (Every Frame), or only from
+**Update Probe** (Manual). It needs its volume rendered once in the session,
+which loads the dataset. Spherical data isn't supported yet.
+
+The default analysis, `yt_volumes.probe_analysis:phase_plot`, is a phase
+diagram: log10 of `z_field` (default `gas, mass`) binned over log
+`x_field` (`gas, density`) and log `y_field` (`gas, temperature`), with an
+optional `weight_field`, `x_bins`/`y_bins` (64), set as probe Parameters.
+It fits its axis and color ranges on the first run and keeps them, so a
+growing sphere leaves out data outside them; **Reset Fitted Ranges** refits,
+and `fit = every` refits every run (the axes then move).
+
+Your own analysis is a `"module:function"` taking a
+`probe_analysis.ProbeContext` (`ds`, `sphere`, `center`, `radius`, `frame`,
+`params`, and `state`, a dict saved with the probe) and returning a
+`ProbeResult`: `values`, `(h, w)` with row 0 at the bottom and NaN for empty
+pixels (or `(h, w, 4)` RGBA), and `meta`, a dict set on the Image as custom
+properties and on any panel input of the same name (**Value Min**, **X
+Title**, ...). The panel colors R from Value Min to Value Max with viridis
+and leaves out pixels with alpha below 0.5.
+
 ## Examples
 
 Each script's docstring has the commands.

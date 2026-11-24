@@ -40,6 +40,11 @@ def record_hash(cache_key, category, h):
     _last_hashes.setdefault(cache_key, {})[category] = h
 
 
+def forget(cache_key, category):
+    """Make `cache_key`'s next `version_for(category)` report `changed=True`."""
+    _last_hashes.get(cache_key, {}).pop(category, None)
+
+
 def reset():
     """Clear all tracked hashes, so every object next reports `changed=True`.
 

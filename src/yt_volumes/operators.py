@@ -25,7 +25,7 @@ import time
 import bpy
 import mathutils
 
-from . import annotations, change_tracking, compositor_build, edge_blend, external_render, pano_rays, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, pano_rays, probes, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -1036,6 +1036,10 @@ def _render_current_frame(context, write_still=True):
                         (name, layer.result() if isinstance(layer, concurrent.futures.Future) else layer)
                         for name, layer in layers
                     ]
+
+        if any(probes.probes(scene)):
+            with step("probes"):
+                probes.update_probes(scene, flagged, frame_params, log)
 
         # --- Pass 2: compositor-only, writes the real output ---------------
         # Same engine as pass 1: rendering with any other engine in between
