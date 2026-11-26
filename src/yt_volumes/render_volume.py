@@ -46,6 +46,8 @@ DEFAULTS = {
         "device": "OPTIX",  # Cycles only
         "engine": "CYCLES",  # or "BLENDER_EEVEE" (needs Blender's Vulkan GPU backend)
         "smooth_edges": None,  # the scene's Smooth Surface Edges; default: the .blend's
+        "provenance": None,  # Provenance Metadata; default: the .blend's (on unless turned off)
+        "provenance_sidecar": None,  # also write <output>.provenance.json; default: the .blend's
         "stereo": None,  # "TOPBOTTOM", "SIDEBYSIDE", "INDIVIDUAL" (a file per eye) or "OFF"; default: the .blend's
         "work_dir": None,
         "extensions": [],  # extension directories to register, e.g. ["../extensions/deep_zoom"]
@@ -523,6 +525,10 @@ def _configure_blender(config):
     scene.render.image_settings.file_format = "PNG"
     if blender["smooth_edges"] is not None:
         scene.yt_volumes_smooth_edges = bool(blender["smooth_edges"])
+    if blender["provenance"] is not None:
+        scene.yt_volumes_provenance = bool(blender["provenance"])
+    if blender["provenance_sidecar"] is not None:
+        scene.yt_volumes_provenance_sidecar = bool(blender["provenance_sidecar"])
     if blender["stereo"]:
         configure_stereo(scene, blender["stereo"])
     configure_engine(scene, blender)
@@ -660,14 +666,15 @@ def write_report(path, config, written):
         json.dump(report, f, indent=2)
 
 
-def render(config):
+def render(config, config_path=None):
     """Render every configured frame; returns the written PNG paths."""
     import bpy
 
-    from . import operators
+    from . import operators, provenance
 
     global _active_config
     _active_config = config
+    provenance.set_batch(config_path and os.path.abspath(config_path), config)
     scene, temp_work_dir = _configure_blender(config)
     volume = bpy.data.objects[config["blender"]["volume"]]
     start, end = parse_frames(config["blender"]["frames"]) or (scene.frame_start, scene.frame_end)
@@ -688,6 +695,7 @@ def render(config):
                 written.extend(paths)
                 print(f"[render_volume] frame {frame} -> {', '.join(paths)}", flush=True)
     finally:
+        provenance.set_batch(None, None)
         if temp_work_dir:
             shutil.rmtree(temp_work_dir, ignore_errors=True)
     return written
@@ -753,7 +761,7 @@ def main(argv=None):
 
         pprint.pprint(config, sort_dicts=False)
         return 0
-    written = render(config)
+    written = render(config, args.config)
     if args.report:
         write_report(args.report, config, written)
     return 0

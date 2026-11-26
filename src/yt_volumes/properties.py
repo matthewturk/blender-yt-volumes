@@ -847,6 +847,11 @@ class VOLUMEOVERRIDE_PT_object_panel(bpy.types.Panel):
         col.enabled = props.is_volume_override
         _draw_look(col, props)
         col.prop(context.scene, "yt_volumes_smooth_edges")
+        row = col.row(align=True)
+        row.prop(context.scene, "yt_volumes_provenance")
+        sub = row.row(align=True)
+        sub.active = context.scene.yt_volumes_provenance
+        sub.prop(context.scene, "yt_volumes_provenance_sidecar", text="Sidecar JSON")
         if props.renderer_mode.startswith("YT_IDV_"):
             from . import viewer_link
 

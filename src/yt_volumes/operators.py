@@ -25,7 +25,7 @@ import time
 import bpy
 import mathutils
 
-from . import annotations, change_tracking, compositor_build, edge_blend, external_render, pano_rays, properties, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, pano_rays, properties, provenance, sample_renderers, scene_sync, transfer_function_nodes, units, yt_idv_renderer
 
 # --- Debug logging -----------------------------------------------------------
 # Timestamped per-step console logging, gated on the verbose_logging preference.
@@ -624,7 +624,7 @@ def _restore_viewports(saved):
 class render_session:
     """Context manager for multi-frame renders: captures the scene settings
     `render_current_frame` forces (use_pass_z, use_persistent_data,
-    compositor_device, view_transform) and restores them once at the end
+    compositor_device, view_transform, the Note metadata) and restores them once at the end
     instead of after every frame. Restoring and re-forcing them each frame,
     even to the same values, invalidates Cycles' persistent-data cache.
 
@@ -652,6 +652,7 @@ class render_session:
             "use_persistent_data": scene.render.use_persistent_data,
             "compositor_device": scene.render.compositor_device,
             "view_transform": scene.view_settings.view_transform,
+            "note": (scene.render.use_stamp_note, scene.render.stamp_note_text),
         }
         self._viewports = _solid_viewports(self._context)
         global _active_render_session
@@ -676,6 +677,7 @@ class render_session:
         scene.render.use_persistent_data = self._saved["use_persistent_data"]
         scene.render.compositor_device = self._saved["compositor_device"]
         scene.view_settings.view_transform = self._saved["view_transform"]
+        _restore_note(scene.render, self._saved["note"])
         compositor_build.restore_passthrough(scene)
         _restore_viewports(self._viewports)
         return False  # never swallow exceptions
@@ -949,6 +951,9 @@ def _render_current_frame(context, write_still=True):
             scene.render.compositor_device = "CPU"
     viewports = _solid_viewports(context) if _active_render_session is None else []
     background = concurrent.futures.ThreadPoolExecutor(1)
+    record_provenance = provenance.enabled(scene)
+    prev_note = (scene.render.use_stamp_note, scene.render.stamp_note_text)
+    provenance_cameras, provenance_volumes, manifest = [], [], None
     # All of this frame's EXR intermediates live in frame_dir, removed in
     # `finally` (they otherwise fill the disk on long runs).
     try:
@@ -986,6 +991,8 @@ def _render_current_frame(context, write_still=True):
                 ))
             frame_params = dataclasses.replace(frame_params, view_index=view_index)
 
+            if record_provenance:
+                provenance_cameras.append(provenance.camera_record(scene.camera, camera_params, name))
             volume_layers = view_layers[name] = []
             for obj in _sorted_far_to_near(scene, flagged):
                 props = obj.volume_override
@@ -1017,6 +1024,11 @@ def _render_current_frame(context, write_still=True):
                     fit = yt_idv_renderer.gn_tf_fit(request.volume.dataset.dataset_id)
                     if fit is not None:
                         transfer_function_nodes.update_distribution(obj, fit["points"])
+                if record_provenance and view_index == 0:
+                    info = None
+                    if props.renderer_mode in YT_IDV_RENDERER_MODES:
+                        info = yt_idv_renderer.dataset_provenance(request.volume.dataset.dataset_id)
+                    provenance_volumes.append(provenance.volume_record(obj, request, result.cmap_range, info))
                 if result.cmap_range is not None and not props.rescale_colormap and not props.colormap_range_set:
                     props.colormap_range = result.cmap_range
                     props.colormap_range_set = True
@@ -1051,6 +1063,9 @@ def _render_current_frame(context, write_still=True):
                 name: (_with_suffix(beauty_path, suffix), view_layers[name])
                 for name, suffix in (view or (None, "") for view in views)
             }, overlay)
+        outputs = still_outputs(scene, bpy.path.abspath(scene.render.filepath))
+        if record_provenance:
+            manifest = _stamp_provenance(scene, outputs, provenance_cameras, provenance_volumes)
         # The engine renders the scene even with no Render Layers node, then discards it.
         overrides = _pass2_render_overrides(scene, view_layer)
         saved = [(owner, name, getattr(owner, name)) for owner, name, _ in overrides]
@@ -1064,9 +1079,13 @@ def _render_current_frame(context, write_still=True):
             for owner, name, value in saved:
                 if getattr(owner, name) != value:
                     setattr(owner, name, value)
-        outputs = still_outputs(scene, bpy.path.abspath(scene.render.filepath))
         if write_still:
             log(f"pass2 done; wrote {', '.join(map(repr, outputs))} (and the Render Result image)")
+            if manifest is not None:
+                try:
+                    provenance.write_outputs(manifest, outputs, provenance.sidecar_enabled(scene))
+                except Exception as exc:  # the frame is already written; don't fail the run over its record
+                    _log(f"WARNING: could not attach provenance to {outputs}: {exc!r}")
         else:
             log("pass2 done; the result is in the Render Result image (nothing written to disk)")
     finally:
@@ -1080,10 +1099,37 @@ def _render_current_frame(context, write_still=True):
             scene.render.compositor_device = prev_compositor_device
             scene.view_settings.view_transform = prev_view_transform
             scene.render.use_persistent_data = prev_use_persistent_data
+            _restore_note(scene.render, prev_note)
             compositor_build.restore_passthrough(scene)
         _restore_viewports(viewports)
         background.shutdown(cancel_futures=True)  # waits for a running blend before its inputs go
         shutil.rmtree(frame_dir, ignore_errors=True)
+
+
+def _stamp_provenance(scene, outputs, cameras, volumes):
+    """This frame's provenance manifest, its summary put in the Note metadata;
+    None if building it failed.
+    """
+    try:
+        manifest = provenance.build_manifest(scene, scene.frame_current, outputs, cameras, volumes)
+    except Exception as exc:  # a missing record shouldn't cost the frame
+        _log(f"WARNING: could not build the provenance record: {exc!r}")
+        return None
+    conflict = provenance.stamp_conflict(scene.render)
+    if conflict:
+        _log(f"WARNING: provenance summary not put in the Note metadata: {conflict}")
+    else:
+        # Changing the Note doesn't make Cycles re-sync.
+        provenance.set_note(scene.render, provenance.summary(manifest))
+    return manifest
+
+
+def _restore_note(render, saved):
+    use_note, text = saved
+    if render.stamp_note_text != text:
+        render.stamp_note_text = text
+    if render.use_stamp_note != use_note:
+        render.use_stamp_note = use_note
 
 
 def _show_render_result(context):
