@@ -32,6 +32,8 @@ device = "OPTIX"               # OPTIX, CUDA, HIP, METAL, ONEAPI, or CPU (Cycles
 # stereo = "TOPBOTTOM"         # stereo output: TOPBOTTOM, SIDEBYSIDE, INDIVIDUAL or OFF; default: the .blend's
 # engine = "BLENDER_EEVEE"     # default "CYCLES"; EEVEE needs Blender's Vulkan GPU backend
 # work_dir = "/tmp/my_work"    # default: a fresh temp directory per run
+# provenance = false           # record how each frame was made in its PNG metadata; default: the .blend's (on)
+# provenance_sidecar = true    # also write frame_NNNN.provenance.json beside each frame; default: the .blend's (off)
 
 # Every [render] key is optional and overrides the volume's own settings in
 # the .blend; leave a key out to keep what the .blend has.

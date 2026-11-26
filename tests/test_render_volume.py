@@ -31,6 +31,12 @@ def test_load_config_fills_defaults_and_resolves_paths_against_the_config(tmp_pa
     assert config["data"]["subset"] is None
 
 
+def test_provenance_keys_default_to_the_blends_own(tmp_path, blend):
+    config = rv.load_config(_write(tmp_path, _minimal()), [("blender.provenance_sidecar", True)])
+    assert config["blender"]["provenance"] is None
+    assert config["blender"]["provenance_sidecar"] is True
+
+
 def test_overrides_win_over_the_file_and_create_tables(tmp_path, blend):
     overrides = [
         ("render.mode", "YT_IDV_PROJECTION"),
