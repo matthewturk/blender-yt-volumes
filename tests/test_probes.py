@@ -110,6 +110,14 @@ def test_phase_plot_fits_ranges_once_and_marks_empty_bins():
     probe_analysis.phase_plot(ctx)
     assert state["x_range"] != fitted["x_range"]
 
+    fixed = {}
+    ctx.params = {"x_range": "1e-3, 10", "y_range": "10, 1e4", "value_range": "-5, 2", "x_bins": "8", "y_bins": "8"}
+    ctx.state = fixed
+    result = probe_analysis.phase_plot(ctx)
+    assert (result.meta["X Min"], result.meta["X Max"]) == pytest.approx((-3.0, 1.0))
+    assert (result.meta["Value Min"], result.meta["Value Max"]) == (-5.0, 2.0)
+    assert fixed["x_units"] == "g/cm**3" and "Value Title" in result.meta
+
 
 @pytest.fixture
 def blender_probe():
@@ -210,7 +218,11 @@ def test_quantities_returns_named_scalars_with_units():
     assert result.meta["temperature Units"] == "K"
     assert set(result.scalars) == {"density", "temperature"}
 
-    ctx.params.update(stat="max", fields="gas, temperature")
+    ctx.params.update(stat="sum", fields="gas, mass", units="Msun")
+    summed = probe_analysis.quantities(ctx)
+    assert summed.meta["mass Units"] == "Msun"
+    assert summed.scalars["mass"] == pytest.approx(float(ctx.sphere.sum(("gas", "mass")).to("Msun")))
+    ctx.params.update(stat="max", fields="gas, temperature", units="")
     assert probe_analysis.quantities(ctx).scalars["temperature"] == pytest.approx(float(ctx.sphere.max(("gas", "temperature"))))
     with pytest.raises(ValueError):
         probe_analysis.quantities(_context(ds, {"stat": "median"}))
@@ -336,3 +348,14 @@ def test_probe_annotations_need_a_probe_but_not_a_units_object(blender_probe):
     assert annotations.unavailable(probes.LINE_GROUP, volume) == "Select a probe"
     assert annotations.unavailable(probes.LINE_GROUP, volume, probe) is None
     assert annotations.unavailable("yt Time Label", volume) is not None  # needs the units object
+
+
+def test_phase_plot_widens_the_range_of_uniform_data():
+    yt = pytest.importorskip("yt")
+    ds = yt.load_uniform_grid(
+        {"density": (np.ones((8, 8, 8)), "g/cm**3"), "temperature": (np.full((8, 8, 8), 100.0), "K")}, (8, 8, 8)
+    )
+    state = {}
+    result = probe_analysis.phase_plot(_context(ds, {"x_bins": "4", "y_bins": "4"}, state))
+    assert state["y_range"][0] < 100.0 < state["y_range"][1]
+    assert np.isfinite(result.values).sum() == 1

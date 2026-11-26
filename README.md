@@ -442,11 +442,14 @@ The builtin analyses, set as the probe's Analysis with Parameters:
   `x_bins`/`y_bins` (64). It fits its axis and color ranges on the first run
   and keeps them, so a growing sphere leaves out data outside them; **Reset
   Fitted Ranges** refits, and `fit = every` refits every run (the axes then
-  move).
+  move). For a series, fix them instead: `x_range` and `y_range` (`low,
+  high` in the fields' units) and `value_range` (log10); `z_units` sets
+  the binned field's units (e.g. `Msun`).
 - `yt_volumes.probe_analysis:quantities`: one value per field in `fields`
   (`;`-separated, default `gas, density; gas, temperature`), the `stat`
   (`mean`, weighted by `weight_field`, default `gas, mass`, or `none`;
-  `sum`, `min`, `max`), named by the field (`temperature`).
+  `sum`, `min`, `max`), named by the field (`temperature`), in the field's
+  units or those in `units` (`;`-separated, e.g. `Msun`).
 - `yt_volumes.probe_analysis:history`: one of another analysis's values
   (`of`, default `quantities`; `quantity`, default its first) against `x`,
   `frame` or `time` (in `time_units`, default `Myr`), log10 unless `log =

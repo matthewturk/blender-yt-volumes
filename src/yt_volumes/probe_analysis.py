@@ -137,7 +137,10 @@ def phase_plot(ctx: ProbeContext) -> ProbeResult:
 
     Params: x_field (default "gas, density"), y_field ("gas, temperature"),
     z_field ("gas, mass"), weight_field (none), x_bins and y_bins (64),
-    fit ("first", or "every" to refit each run, moving the axes).
+    fit ("first", or "every" to refit each run, moving the axes), and
+    x_range, y_range (in the field's default units) and value_range (log10)
+    as "low, high" to fix those ranges instead of fitting them, and z_units
+    (e.g. "Msun").
     """
     import yt
 
@@ -151,6 +154,14 @@ def phase_plot(ctx: ProbeContext) -> ProbeResult:
     state = ctx.state
     if p.get("fit", "first") == "every":
         state.clear()
+    for name, field in (("x", x), ("y", y)):
+        fixed = _range(p.get(f"{name}_range"))
+        if fixed is not None:
+            state[f"{name}_units"] = str(ctx.ds._get_field_info(field).units or "dimensionless")
+            state[f"{name}_range"] = list(fixed)
+    fixed_values = _range(p.get("value_range"))
+    if fixed_values is not None:
+        state["value_range"] = list(fixed_values)
     if "x_range" not in state or "y_range" not in state:
         for name, field in (("x", x), ("y", y)):
             data = ctx.sphere[field]
@@ -158,8 +169,13 @@ def phase_plot(ctx: ProbeContext) -> ProbeResult:
             if positive.size == 0:
                 raise ValueError(f"phase_plot: {field} has no positive values in the sphere")
             state[f"{name}_units"] = str(data.units)
-            state[f"{name}_range"] = [float(positive.min()), float(positive.max())]
+            low, high = float(positive.min()), float(positive.max())
+            if high <= low * 1.0001:  # uniform data, e.g. a simulation's initial conditions
+                low, high = low / 3.0, high * 3.0
+            state[f"{name}_range"] = [low, high]
     units = {x: state["x_units"], y: state["y_units"]}
+    if p.get("z_units"):
+        units[z] = p["z_units"]
     extrema = {x: tuple(state["x_range"]), y: tuple(state["y_range"])}
     profile = yt.create_profile(
         ctx.sphere, [x, y], [z], n_bins=bins, extrema=extrema, logs={x: True, y: True},
@@ -171,7 +187,7 @@ def phase_plot(ctx: ProbeContext) -> ProbeResult:
     if "value_range" not in state:
         finite = values[np.isfinite(values)]
         state["value_range"] = [float(finite.min()), float(finite.max())] if finite.size else [0.0, 1.0]
-        state["value_units"] = str(profile[z].units)
+    state.setdefault("value_units", str(profile[z].units))
 
     (x0, x1), (y0, y1) = (np.log10(state["x_range"]), np.log10(state["y_range"]))
     return ProbeResult(values=values, meta={
@@ -196,7 +212,8 @@ def quantities(ctx: ProbeContext) -> ProbeResult:
 
     Params: fields ("gas, density; gas, temperature", ";"-separated),
     stat ("mean", "sum", "min" or "max"), weight_field ("gas, mass" for
-    mean; "none" for unweighted).
+    mean; "none" for unweighted), units (";"-separated, one per field, e.g.
+    "Msun"; empty keeps the field's).
     """
     p = ctx.params
     stat = p.get("stat", "mean")
@@ -205,14 +222,16 @@ def quantities(ctx: ProbeContext) -> ProbeResult:
     weight = p.get("weight_field", "gas, mass")
     weight = None if weight.strip().lower() in ("", "none") else _field(weight)
     scalars, meta = {}, {}
-    for spec in p.get("fields", "gas, density; gas, temperature").split(";"):
-        if not spec.strip():
-            continue
+    specs = [spec for spec in p.get("fields", "gas, density; gas, temperature").split(";") if spec.strip()]
+    units = [u.strip() for u in p.get("units", "").split(";")]
+    for i, spec in enumerate(specs):
         field = _field(spec)
         if stat == "mean":
             value = ctx.sphere.mean(field, weight=weight)
         else:
             value = getattr(ctx.sphere, stat)(field)
+        if i < len(units) and units[i]:
+            value = value.to(units[i])
         name = _short(field)
         scalars[name] = float(value.d)
         meta[f"{name} Units"] = str(value.units)
