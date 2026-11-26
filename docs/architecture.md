@@ -32,10 +32,14 @@ and `yt_idv_renderer.py` (registration, zoom, depth clip).
    `Image(beauty EXR) -> Alpha Over per volume (farthest first) -> output`,
    then runs **pass 2** with the same engine and `write_still=True`. The
    graph has no Render Layers node, so nothing is rendered again; this pass
-   only runs the compositor and writes the output file.
+   only runs the compositor and writes the output file. Before it, the
+   frame's provenance manifest (`provenance.build_manifest`, from step 3's
+   requests and results) goes into the render's Note metadata as a summary;
+   after it, the full manifest is added to PNG outputs as an iTXt chunk and,
+   if asked, a sidecar JSON. Changing the Note doesn't make Cycles re-sync.
 5. Scene settings the pipeline forces (Z pass, persistent data, CPU
-   compositor, Standard view transform) are restored in a `finally`, or once
-   at the end of a `render_session`.
+   compositor, Standard view transform, the Note) are restored in a
+   `finally`, or once at the end of a `render_session`.
 
 ### Why two passes
 

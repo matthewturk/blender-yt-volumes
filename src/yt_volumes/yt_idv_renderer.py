@@ -1915,6 +1915,33 @@ def dataset_frame(dataset_id):
     return tuple(_base_transform(collections[0])[0]), (None if maximum is None else tuple(maximum))
 
 
+def dataset_provenance(dataset_id):
+    """What a loaded dataset rendered: `{"field", "name", "data_source",
+    "current_time", "current_redshift"}` (missing keys unknown), or None.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    collections = [] if cached is None else _block_collections(cached[0])
+    if not collections:
+        return None
+    collection, ds = collections[0], cached[1]
+    info = {}
+    field = getattr(collection, "field", None)
+    if field is not None:
+        info["field"] = ", ".join(field) if isinstance(field, tuple) else str(field)
+    source = getattr(collection, "data_source", None)
+    if source is not None:
+        info["data_source"] = str(source)
+    if hasattr(ds, "unit_registry"):  # a yt dataset, not a scene file's stand-in
+        info["name"] = str(ds)
+        if getattr(ds, "unique_identifier", None) is not None:
+            info["unique_identifier"] = str(ds.unique_identifier)
+        if getattr(ds, "current_time", None) is not None:
+            info["current_time"] = str(ds.current_time)
+        if getattr(ds, "cosmological_simulation", False):
+            info["current_redshift"] = float(ds.current_redshift)
+    return info
+
+
 def gn_tf_fit(dataset_id):
     """The last Geometry Nodes transfer function fit for a loaded dataset:
     `{"physical_range", "units", "points"}` (see `_point_distribution`), or None.

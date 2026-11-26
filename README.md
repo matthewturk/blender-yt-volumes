@@ -539,6 +539,27 @@ that changes sharply within that distance is blurred slightly along
 outlines. A **Blended** material writes no depth at all, so the volume always
 draws over it, with or without this setting.
 
+## Provenance
+Every frame the pipeline renders records how it was made: each volume's
+dataset (path, name, time and redshift, the data object rendered), field,
+renderer mode, full look with a short hash of it, fitted colormap range and
+zoom; the camera of each view; the engine and samples; Blender, yt-volumes,
+yt and yt_idv versions; and, from `render_volume`/`render_series`, the config
+file's path and its fully merged contents.
+
+- PNG outputs carry the full record as a compressed `yt_volumes:provenance`
+  text chunk. Read it with `yt_volumes.provenance.read("frame_0001.png")`.
+- Every format (and Image > Save As after F12) gets a short JSON summary in
+  the **Note** metadata: per volume the dataset, field, mode, look hash and
+  colormap range, plus the hash of the full record. It's left out when
+  Metadata > Burn Into Image is on, or when the scene has its own Note.
+- **Provenance Sidecar JSON** also writes the full record beside each
+  output, as `frame_0001.provenance.json`.
+
+Both settings are beside Smooth Surface Edges in the Volume Override panel,
+and `blender.provenance` / `blender.provenance_sidecar` in a config.
+Provenance is on by default; the sidecar is off.
+
 ## Known limitations
 
 - Only one depth per pixel reaches yt_idv, so a semi-transparent surface
