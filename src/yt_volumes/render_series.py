@@ -93,12 +93,14 @@ def missing_runs(segment, prefix):
     return [tuple(r) for r in runs]
 
 
-def segment_config(config, segment, frames, cmap_range):
+def segment_config(config, segment, frames, cmap_range, probe_state=None):
     """The single-dataset `render_volume` config for one run of a segment."""
     out = json.loads(json.dumps(config))
     out["data"].update(path=segment.path, series=None, simulation=None)
     out["blender"]["frames"] = list(frames)
     out["render"]["cmap_range"] = cmap_range
+    if probe_state:
+        out["probes"]["state"] = probe_state
     return out
 
 
@@ -225,6 +227,12 @@ def run(config, outputs, skip_existing=False, dry_run=False):
         with open(saved_path) as f:
             cmap_range = json.load(f)
         print(f"[render_series] colormap range {cmap_range} (from an earlier run)", flush=True)
+    # Probe state (e.g. a time history) carries from segment to segment, and into a resumed run.
+    probe_path = os.path.join(state_dir, "probe_state.json")
+    probe_state = None
+    if os.path.exists(probe_path):
+        with open(probe_path) as f:
+            probe_state = json.load(f)
 
     try:
         if mode == "first_last" and cmap_range is None:
@@ -238,7 +246,11 @@ def run(config, outputs, skip_existing=False, dry_run=False):
             for start, end in runs:
                 print(f"[render_series] segment {n}/{len(segments)} frames {start}-{end}", flush=True)
                 report = _render_run(state_dir, f"segment_{seg.start:04d}_{start:04d}-{end:04d}",
-                                     segment_config(config, seg, (start, end), cmap_range))
+                                     segment_config(config, seg, (start, end), cmap_range, probe_state))
+                if report.get("probe_state"):
+                    probe_state = report["probe_state"]
+                    with open(probe_path, "w") as f:
+                        json.dump(probe_state, f)
                 if mode == "first" and cmap_range is None:
                     cmap_range = report["cmap_range"]
                     with open(saved_path, "w") as f:

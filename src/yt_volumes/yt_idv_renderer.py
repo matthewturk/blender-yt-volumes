@@ -73,7 +73,7 @@ import warnings
 import numpy as np
 
 from . import change_tracking, parallel
-from .external_render import RenderRequest, RenderResult
+from .external_render import RenderRequest, RenderResult, VolumeObjectParams
 from .sample_renderers import _persp_ortho_rays, _pixel_grid_fractions
 from .sample_renderers import panorama_rays as _panorama_world_rays
 from .sample_renderers import ray_length_from_camera_distance
@@ -604,6 +604,49 @@ def _get_volume_scene(request: RenderRequest, render_size: int):
     result = provider(ctx)
     _volume_scene_cache[dataset_id] = (result.scene, result.ds, context_key)
     return rc, result.scene, result.ds, result.changed
+
+
+def loaded_dataset(dataset_id):
+    """The `ds` the volume provider last returned for `dataset_id`, or None
+    before its first render.
+    """
+    cached = _volume_scene_cache.get(dataset_id)
+    return None if cached is None else cached[1]
+
+
+def world_to_unitary(volume: VolumeObjectParams):
+    """`(A, b)` with the dataset's unitary coordinates `A @ world + b`, for
+    `volume` registered as it renders now (zoom and shot space included).
+
+    Needs the volume rendered once this session.
+    """
+    cached = _volume_scene_cache.get(volume.dataset.dataset_id)
+    if cached is None:
+        raise LookupError("the volume hasn't rendered yet this session")
+    collections = _block_collections(cached[0])
+    if not collections:
+        raise ValueError("the volume's scene has no block data")
+    if any(_is_spherical(c) for c in collections):
+        raise NotImplementedError("world_to_unitary doesn't handle spherical data")
+    custom_params = volume.custom_params or {}
+    volume = _shot_space_volume(cached[0], volume, custom_params)
+    collection = collections[0]
+    # Read without recording: _base_transform would freeze an unzoomed transform.
+    base = getattr(collection, "_yt_volumes_base_transform", None)
+    if base is None:
+        base = (np.asarray(collection.applied_scale_offset, dtype=np.float64), float(collection.applied_scale_ratio))
+    base_offset, base_ratio = base
+    A, b = _world_to_model(volume)  # volume-cube coordinates
+    spec = custom_params.get("yt_idv_zoom_target")
+    if spec:
+        magnification = 10.0 ** float(custom_params.get("yt_idv_zoom_level", 0.0))
+        target = _zoom_target_unitary(spec, collection)
+        scale = base_ratio / magnification
+        offset = target - (target - base_offset) / base_ratio * scale
+    else:
+        scale, offset = base_ratio, base_offset
+    # unitary = scale * cube + offset, cube = A @ (world - b)
+    return scale * A, offset - scale * (A @ b)
 
 
 def needs_load(request: RenderRequest) -> bool:

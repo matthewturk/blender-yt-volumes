@@ -411,6 +411,96 @@ Index 0 of a Named Attribute: `camera_to_world` (matrix),
 `depth × per_depth + ortho`), `frame_shift` and `frame_height` (in frame
 widths), `view_center`, and `scene_per_<unit>`.
 
+## Probes: per-frame analysis plots
+A **probe** is a Sphere Empty that runs a yt analysis on the data inside it.
+**Add > yt Annotation** offers three kinds, each placed at the 3D cursor for
+the active volume with an annotation showing it in the annotation scene:
+
+- **Probe: Phase Diagram**: a phase diagram in a **yt Image Panel**, with a
+  colorbar.
+- **Probe: Time History**: one value over the frames in a **yt Line Panel**,
+  with a cursor at the current frame.
+- **Probe: Values**: one value as text in a **yt Probe Label**, e.g.
+  `temperature = 1.23e4 K`.
+
+Move or scale the Empty, and keyframe its Size or scale to animate it.
+Panels draw a **Callout** (a ring around the probe's sphere and a line to the
+panel) when they have the volume's units object (Units for Geometry Nodes).
+
+Renders run probes after the volumes, before the annotation scene. A probe
+runs again only when its sphere, the dataset (or the `ds` a time-varying
+loader returns), its analysis or its parameters change (**Update**: On
+Change), on every frame (Every Frame), or only from **Update Probe**
+(Manual). It needs its volume rendered once in the session, which loads the
+dataset. Spherical data isn't supported yet.
+
+The builtin analyses, set as the probe's Analysis with Parameters:
+
+- `yt_volumes.probe_analysis:phase_plot` (the default): log10 of `z_field`
+  (default `gas, mass`) binned over log `x_field` (`gas, density`) and log
+  `y_field` (`gas, temperature`), with an optional `weight_field`, and
+  `x_bins`/`y_bins` (64). It fits its axis and color ranges on the first run
+  and keeps them, so a growing sphere leaves out data outside them; **Reset
+  Fitted Ranges** refits, and `fit = every` refits every run (the axes then
+  move). For a series, fix them instead: `x_range` and `y_range` (`low,
+  high` in the fields' units) and `value_range` (log10); `z_units` sets
+  the binned field's units (e.g. `Msun`).
+- `yt_volumes.probe_analysis:quantities`: one value per field in `fields`
+  (`;`-separated, default `gas, density; gas, temperature`), the `stat`
+  (`mean`, weighted by `weight_field`, default `gas, mass`, or `none`;
+  `sum`, `min`, `max`), named by the field (`temperature`), in the field's
+  units or those in `units` (`;`-separated, e.g. `Msun`).
+- `yt_volumes.probe_analysis:history`: one of another analysis's values
+  (`of`, default `quantities`; `quantity`, default its first) against `x`,
+  `frame` or `time` (in `time_units`, default `Myr`), log10 unless `log =
+  false`. Each run adds a point. `x_range` and `y_range` (`low, high`) fix
+  the axes so they don't move as points arrive; Time History probes start
+  with `x_range` set to the scene's frame range. Other parameters go to the
+  inner analysis.
+
+### Probe values in drivers and annotations
+An analysis's values are put on the probe as `obj["yt_values"]`, and its
+panel shows them under Values. A driver reads one with a Single Property
+variable, e.g. `["yt_values"]["temperature"]`, to drive a light, a
+material, the camera or a transfer function. Probes run after the main
+scene renders, so a main-scene driver would see the previous run's values:
+**Bake Values** runs the probe over the scene's frame range and keyframes its
+values, so each frame has its own before it renders. Drivers in the
+annotation scene see the current frame's values without baking.
+
+An annotation linked to a probe (its **Probe** input, or its **Image**
+input showing the probe's Image) gets each of the probe's values and `meta`
+entries in its input of the same name. One with a **Quantity** input also
+gets that value in **Value** and its units in **Units**, which is how **yt
+Probe Label** works.
+
+`render_series` carries each probe's saved state from one segment to the
+next, so a time history spans the whole series; it's kept in
+`.render_series/probe_state.json` for resumed runs.
+
+### Time labels
+**yt Time Label** shows the dataset's time in its **Time Unit** (`s`, `yr`,
+`kyr`, `Myr` or `Gyr`) or, with **Redshift**, its redshift. It reads the
+volume's units object, which carries `time_in_<unit>` and, for cosmological
+data, `redshift` once the dataset has loaded (also in `obj["yt_units"]` for
+drivers). In `render_series` it follows each output.
+
+### Your own analysis
+An analysis is a `"module:function"` taking a `probe_analysis.ProbeContext`
+(`ds`, `sphere`, `center`, `radius`, `frame`, `params`, and `state`, a dict
+saved with the probe) and returning a `ProbeResult`:
+
+- `values`: `(h, w)` with row 0 at the bottom and NaN for empty pixels (or
+  `(h, w, 4)` RGBA), or None for no Image. yt Image Panel colors R from
+  Value Min to Value Max with viridis and leaves out pixels with alpha below
+  0.5; yt Line Panel reads a one-row Image with x in R and y in G.
+- `scalars`: `{name: float}`, put in `obj["yt_values"]`.
+- `meta`: set on the Image as custom properties and on linked annotations'
+  inputs of the same name (**Value Min**, **X Title**, **Value Title**, ...).
+
+Panel ticks are round steps when **Ticks Every** is 0, with as many decimals
+as the step needs.
+
 ## Examples
 
 Each script's docstring has the commands.
@@ -538,7 +628,9 @@ To add or change an annotation:
 2. Mark the group as an asset and, in the Asset Browser's metadata, give it
    a description (the menu's tooltip) and one tag: `Annotation Scene` or
    `3D Scene`. Groups with neither are helpers, shipped but not in the menu.
-   Name inputs Volume, Units Object, Unit or Title to have them filled in.
+   Name inputs Volume, Units Object, Unit or Title to have them filled in,
+   and Probe for an annotation about a probe (see "Probe values in drivers
+   and annotations" for the inputs a probe fills).
 3. Save, and run `scripts/export_annotations.sh my_work.blend`. It exports
    every asset in the file (or only those named after it), rebuilds
    `annotations.blend`, checks the round trip, and rewrites the menu's

@@ -19,7 +19,8 @@ bl_info = {
     "category": "Render",
 }
 
-from . import annotations, change_tracking, compositor_build, edge_blend, external_render, grid_overlay, handlers, operators, properties, provenance, sample_renderers, scene_sync, tf_plot, units, viewer_link, viewport_preview  # noqa: E402,F401
+
+from . import annotations, change_tracking, compositor_build, edge_blend, external_render, grid_overlay, handlers, operators, probes, properties, provenance, sample_renderers, scene_sync, tf_plot, units, viewer_link, viewport_preview  # noqa: E402,F401
 
 
 def register():
@@ -33,6 +34,7 @@ def register():
     tf_plot.register()
     units.register()
     annotations.register()
+    probes.register()
     edge_blend.register()
     provenance.register()
 
@@ -40,6 +42,7 @@ def register():
 def unregister():
     provenance.unregister()
     edge_blend.unregister()
+    probes.unregister()
     annotations.unregister()
     units.unregister()
     tf_plot.unregister()
