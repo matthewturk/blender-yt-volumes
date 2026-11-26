@@ -99,6 +99,22 @@ def test_recording_a_loaded_dataset_takes_its_registry_and_cube(scene, monkeypat
     assert obj["yt_units"]["scene_per_kpc"] == pytest.approx(0.8)
 
 
+def test_recording_a_dataset_keeps_its_time_for_the_time_label(scene, monkeypatch):
+    obj = _volume(scene)
+    ds = yt.load_uniform_grid({"density": np.ones((4, 4, 4))}, (4, 4, 4), length_unit="kpc", time_unit="Myr", sim_time=2.5)
+    collection = type("C", (), {"applied_scale_offset": np.zeros(3), "applied_scale_ratio": 1.0})()
+    component = type("Comp", (), {"name": "block_rendering", "data": collection})()
+    monkeypatch.setitem(yir._volume_scene_cache, "d", (type("S", (), {"components": [component]})(), ds, "egl"))
+    units_object = units.add_units_object(obj, scene)
+
+    units.record(obj, "d", scene)
+
+    assert obj["yt_units"]["time_in_Myr"] == pytest.approx(2.5)
+    assert obj["yt_units"]["time_in_Gyr"] == pytest.approx(2.5e-3)
+    assert "redshift" not in obj["yt_units"]  # not cosmological
+    assert units_object.data.attributes["time_in_kyr"].data[0].value == pytest.approx(2500.0)
+
+
 def test_a_driver_reads_the_conversion_after_a_frame_change(scene):
     obj = _volume(scene)
     obj["yt_units"] = {"registry": _kpc_dataset().unit_registry.to_json()}

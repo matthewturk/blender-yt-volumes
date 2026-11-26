@@ -136,6 +136,28 @@ def test_run_pins_the_first_segments_colormap_range(tmp_path, monkeypatch):
     assert [c["data"]["path"] for c in calls] == ["DD0000", "DD0001", "DD0002"]
 
 
+def test_run_carries_probe_state_between_segments_and_into_a_resume(tmp_path, monkeypatch):
+    config = _series_config(tmp_path)
+    calls = []
+
+    def fake_run_segment(config_path, report_path):
+        with open(config_path) as f:
+            calls.append(json.load(f))
+        before = calls[-1]["probes"]["state"] or {"P": {"points": []}}
+        points = before["P"]["points"] + [[len(calls), 1.0]]
+        with open(report_path, "w") as f:
+            json.dump({"cmap_range": None, "frames": [], "probe_state": {"P": {"points": points}}}, f)
+        return 0
+
+    monkeypatch.setattr(rs, "_run_segment", fake_run_segment)
+    assert rs.run(config, _outputs(0.0, 10.0, 20.0)) == 0
+    assert calls[0]["probes"]["state"] is None
+    assert [len(c["probes"]["state"]["P"]["points"]) for c in calls[1:]] == [1, 2]
+    calls.clear()
+    assert rs.run(config, _outputs(0.0, 10.0, 20.0)) == 0
+    assert len(calls[0]["probes"]["state"]["P"]["points"]) == 3
+
+
 def test_run_stops_at_the_first_failed_segment(tmp_path, monkeypatch, capsys):
     config = _series_config(tmp_path)
     calls = []

@@ -157,7 +157,7 @@ def test_update_probe_writes_the_image_and_panel_inputs(blender_probe):
     image = probe.yt_probe.image
     assert tuple(image.size) == (3, 2) and image.is_float and image["Value Max"] == 2.0
 
-    panel = annotations.add_from_library(scene, probes.PANEL_GROUP)
+    panel = annotations.add_from_library(scene, probes.PANEL_GROUP, probe=probe)
     annotations._set_input(panel.modifiers[0], "Image", image)
     assert probes.panels(image) == [(panel, panel.modifiers[0])]
     assert probes.update_probe(scene, probe) is False  # nothing moved
@@ -175,3 +175,164 @@ def test_add_probe_links_a_panel_to_its_image(blender_probe):
     assert probe.yt_probe.volume == volume and probe.empty_display_type == "SPHERE"
     [(panel, _)] = probes.panels(probe.yt_probe.image)
     assert panel.users_scene[0] == annotations.annotation_scene(bpy.context.scene)
+
+
+def _input(obj, name):
+    modifier = obj.modifiers[0]
+    item = next(i for i in modifier.node_group.interface.items_tree if getattr(i, "name", "") == name)
+    return getattr(modifier.properties.inputs, item.identifier).value
+
+
+def _ds_with_time():
+    import yt
+
+    rng = np.random.default_rng(1)
+    data = {"density": (rng.uniform(1.0, 2.0, (8, 8, 8)), "g/cm**3"), "temperature": (rng.uniform(1e3, 1e4, (8, 8, 8)), "K")}
+    return yt.load_uniform_grid(data, (8, 8, 8), length_unit="kpc", time_unit="Myr", sim_time=3.0)
+
+
+def _context(ds, params=None, state=None, frame=1):
+    center, radius = ds.domain_center, ds.quan(0.3, "unitary")
+    return probe_analysis.ProbeContext(
+        ds=ds, sphere=ds.sphere(center, radius), center=center, radius=radius,
+        frame=FrameParams(frame, 0.0), params=params or {}, state={} if state is None else state,
+    )
+
+
+def test_quantities_returns_named_scalars_with_units():
+    pytest.importorskip("yt")
+    ds = _ds_with_time()
+    ctx = _context(ds, {"fields": "gas, density; gas, temperature"})
+    result = probe_analysis.quantities(ctx)
+    assert result.values is None
+    expected = ctx.sphere.mean(("gas", "temperature"), weight=("gas", "mass"))
+    assert result.scalars["temperature"] == pytest.approx(float(expected))
+    assert result.meta["temperature Units"] == "K"
+    assert set(result.scalars) == {"density", "temperature"}
+
+    ctx.params.update(stat="max", fields="gas, temperature")
+    assert probe_analysis.quantities(ctx).scalars["temperature"] == pytest.approx(float(ctx.sphere.max(("gas", "temperature"))))
+    with pytest.raises(ValueError):
+        probe_analysis.quantities(_context(ds, {"stat": "median"}))
+
+
+def test_history_adds_a_point_per_run_and_passes_the_inner_values_through():
+    pytest.importorskip("yt")
+    ds = _ds_with_time()
+    state = {}
+    params = {"fields": "gas, temperature", "x": "frame"}
+    first = probe_analysis.history(_context(ds, params, state, frame=1))
+    assert first.values.shape == (1, 1, 4)
+    second = probe_analysis.history(_context(ds, params, state, frame=5))
+    pixels = second.values
+    assert pixels.shape == (1, 2, 4)
+    np.testing.assert_allclose(pixels[0, :, 0], [1.0, 5.0])
+    assert pixels[0, 1, 1] == pytest.approx(np.log10(second.scalars["temperature"]), rel=1e-6)
+    assert (pixels[0, :, 3] == 1.0).all()
+    assert second.meta["Cursor X"] == 5.0 and second.meta["X Max"] == 5.0
+    assert second.meta["Y Title"] == "log temperature (K)"
+    json.dumps(state)
+
+    # rerunning a frame replaces its point; time on x is the dataset's
+    probe_analysis.history(_context(ds, params, state, frame=5))
+    assert len(state["points"]) == 2
+    fixed = probe_analysis.history(_context(ds, {**params, "x_range": "1, 100", "y_range": "3, 5"}, {}, frame=1))
+    assert (fixed.meta["X Min"], fixed.meta["X Max"], fixed.meta["Y Min"], fixed.meta["Y Max"]) == (1, 100, 3, 5)
+    timed = probe_analysis.history(_context(ds, {"x": "time", "time_units": "Myr"}, {}, frame=1))
+    assert timed.values[0, 0, 0] == pytest.approx(3.0)
+    with pytest.raises(ValueError):
+        probe_analysis.history(_context(ds, {"quantity": "pressure"}, {}))
+
+
+def scalar_analysis(ctx):
+    _calls.append(ctx)
+    return probe_analysis.ProbeResult(
+        scalars={"temperature": 100.0 * ctx.frame.frame_number}, meta={"temperature Units": "K"}
+    )
+
+
+def test_a_new_ds_for_the_same_dataset_reruns_the_probe(blender_probe):
+    pytest.importorskip("yt")
+    volume, probe = blender_probe
+    scene = bpy.context.scene
+    _fake_load(volume)
+    assert probes.update_probe(scene, probe) is True
+    assert probes.update_probe(scene, probe) is False
+    _fake_load(volume)  # as a time-varying loader does each frame
+    assert probes.update_probe(scene, probe) is True
+
+
+def test_scalars_go_on_the_probe_and_into_labels(blender_probe):
+    pytest.importorskip("yt")
+    volume, probe = blender_probe
+    scene = bpy.context.scene
+    probe.yt_probe.analysis = f"{__name__}:scalar_analysis"
+    probe.yt_probe.update = "EVERY_FRAME"
+    _fake_load(volume)
+    label = annotations.add_from_library(scene, probes.LABEL_GROUP, probe=probe)
+    assert _input(label, "Probe") == probe
+
+    assert probes.update_probe(scene, probe) is True
+    assert probe.yt_probe.image is None  # values only
+    assert probe["yt_values"]["temperature"] == pytest.approx(100.0)
+    assert _input(label, "Value") == pytest.approx(100.0) and _input(label, "Units") == "K"
+    assert probes.update_probe(scene, probe) is False  # same frame
+
+
+def test_a_driver_in_the_annotation_scene_sees_the_new_value(blender_probe):
+    pytest.importorskip("yt")
+    volume, probe = blender_probe
+    scene = bpy.context.scene
+    probe.yt_probe.analysis = f"{__name__}:scalar_analysis"
+    probe.yt_probe.update = "EVERY_FRAME"
+    _fake_load(volume)
+    probes.update_probe(scene, probe)
+    overlay = annotations.add_annotation_scene(scene)
+    follower = bpy.data.objects.new("Follower", None)
+    overlay.collection.objects.link(follower)
+    driver = follower.driver_add("location", 0).driver
+    driver.type = "AVERAGE"
+    variable = driver.variables.new()
+    variable.targets[0].id = probe
+    variable.targets[0].data_path = '["yt_values"]["temperature"]'
+
+    scene.frame_set(3)
+    probes.update_probe(scene, probe)
+    depsgraph = overlay.view_layers[0].depsgraph
+    depsgraph.update()
+    assert follower.evaluated_get(depsgraph).location.x == pytest.approx(300.0)
+
+
+def test_bake_keyframes_each_frames_values(blender_probe):
+    pytest.importorskip("yt")
+    volume, probe = blender_probe
+    scene = bpy.context.scene
+    probe.yt_probe.analysis = f"{__name__}:scalar_analysis"
+    probe.yt_probe.update = "EVERY_FRAME"
+    _fake_load(volume)
+    scene.frame_set(2)
+
+    assert probes.bake(scene, probe, range(1, 5)) == ["temperature"]
+    assert scene.frame_current == 2
+    for frame in (1, 4, 2):  # only keyframes can bring back frame 1's value
+        scene.frame_set(frame)
+        assert probe["yt_values"]["temperature"] == pytest.approx(100.0 * frame)
+
+
+@pytest.mark.parametrize("kind, group, image", [
+    ("PHASE", probes.PANEL_GROUP, True), ("HISTORY", probes.LINE_GROUP, True), ("VALUES", probes.LABEL_GROUP, False),
+])
+def test_each_kind_of_probe_gets_its_annotation(blender_probe, kind, group, image):
+    volume, _ = blender_probe
+    probe = probes.add_probe(bpy.context, volume, kind)
+    [(panel, modifier)] = probes.panels(probe=probe)
+    assert modifier.node_group.name == group and _input(panel, "Probe") == probe
+    assert (probe.yt_probe.image is not None) == image
+    assert probe.yt_probe.analysis == probes.KINDS[kind][1]
+
+
+def test_probe_annotations_need_a_probe_but_not_a_units_object(blender_probe):
+    volume, probe = blender_probe
+    assert annotations.unavailable(probes.LINE_GROUP, volume) == "Select a probe"
+    assert annotations.unavailable(probes.LINE_GROUP, volume, probe) is None
+    assert annotations.unavailable("yt Time Label", volume) is not None  # needs the units object

@@ -18,11 +18,14 @@ For annotations it also carries the scene camera's framing
 `frame_shift`, `frame_height`) and `view_center`, the scene position the view
 is about; the "yt Annotation View" node group turns them into screen
 positions and sizes.
+With the dataset loaded it also holds `time_in_<unit>` (s, yr, kyr, Myr, Gyr)
+and, for cosmological data, `redshift`.
 The data side comes from yt's unit registry, recorded when the dataset loads;
 a yt_idv scene file carries it as a `dataset` entry in scene.json, or as a
 `dataset.json` member added by `add_units_to_scene_file`.
 """
 
+import functools
 import json
 import zipfile
 
@@ -39,6 +42,7 @@ ORIGIN_HIGH, ORIGIN_LOW, TO_WORLD = "unitary_origin_high", "unitary_origin_low",
 NODE_GROUP_NAME = "yt Unitary to Scene"
 CAMERA_TO_WORLD, WIDTH_PER_DEPTH, WIDTH_ORTHO, VIEW_CENTER = "camera_to_world", "frame_width_per_depth", "frame_width_ortho", "view_center"
 FRAME_SHIFT, FRAME_HEIGHT = "frame_shift", "frame_height"
+TIME_UNITS = ("s", "yr", "kyr", "Myr", "Gyr")
 
 
 def dataset_info(ds):
@@ -198,6 +202,11 @@ def update(obj, scene):
         if length:
             values[f"unitary_in_{unit}"] = length
             values[f"scene_per_{unit}"] = values["scene_per_unitary"] / length
+    if "current_time_s" in group:
+        for unit in TIME_UNITS:
+            values[f"time_in_{unit}"] = group["current_time_s"] / _seconds_per(unit)
+    if "current_redshift" in group:
+        values["redshift"] = group["current_redshift"]
     changed = False
     for name, value in values.items():
         if group.get(name) != value:
@@ -429,7 +438,31 @@ def record(obj, dataset_id, scene):
         group["registry"] = registry
     if cube_in_unitary and group.get("cube_in_unitary") != cube_in_unitary:
         group["cube_in_unitary"] = cube_in_unitary
+    for name, value in dataset_time(yt_idv_renderer.loaded_dataset(dataset_id)).items():
+        if group.get(name) != value:
+            group[name] = value
     update(obj, scene)
+
+
+@functools.cache
+def _seconds_per(unit):
+    from unyt import unyt_quantity
+
+    return float(unyt_quantity(1.0, unit).to("s").v)
+
+
+def dataset_time(ds):
+    """`current_time_s` and, for cosmological data, `current_redshift` of `ds`."""
+    found = {}
+    time = getattr(ds, "current_time", None)
+    if time is not None:
+        try:
+            found["current_time_s"] = float(time.to("s"))
+        except Exception:
+            pass
+    if getattr(ds, "cosmological_simulation", False):
+        found["current_redshift"] = float(getattr(ds, "current_redshift", 0.0) or 0.0)
+    return found
 
 
 def read(obj, scene):

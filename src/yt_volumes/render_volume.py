@@ -63,6 +63,9 @@ DEFAULTS = {
         "target": None,  # "max", or [x, y, z] in unitary coordinates
         "level": 0.0,  # log10 magnification, or a [[frame, level], ...] curve
     },
+    "probes": {
+        "state": None,  # {probe object name: analysis state}; render_series carries it between segments
+    },
     # Frame -> dataset mapping; render_series only.
     "time": {
         "by": "time",  # "time" or "index"
@@ -648,13 +651,34 @@ def _cmap_range(scene):
     return list(cmap_range) if cmap_range else None
 
 
+def _probe_states():
+    """{probe object name: analysis state} of the current scene's probes."""
+    import bpy
+
+    from . import probes
+
+    return {obj.name: json.loads(obj.yt_probe.state or "{}") for obj in probes.probes(bpy.context.scene)}
+
+
+def _apply_probe_states(states):
+    import bpy
+
+    for name, state in (states or {}).items():
+        obj = bpy.data.objects.get(name)
+        if obj is not None and obj.yt_probe.is_probe:
+            obj.yt_probe.state = json.dumps(state, sort_keys=True)
+
+
 def write_report(path, config, written):
-    """JSON summary of a run: dataset, frames written, and the colormap range used."""
+    """JSON summary of a run: dataset, frames written, the colormap range used,
+    and the probes' analysis state.
+    """
     data = config["data"]
     report = {
         "dataset": data["path"] or data["sample"] or data["scene"] or data["loader"],
         "frames": written,
         "cmap_range": _cmap_range(_active_scene),
+        "probe_state": _probe_states(),
     }
     with open(path, "w") as f:
         json.dump(report, f, indent=2)
@@ -669,6 +693,7 @@ def render(config):
     global _active_config
     _active_config = config
     scene, temp_work_dir = _configure_blender(config)
+    _apply_probe_states(config["probes"]["state"])
     volume = bpy.data.objects[config["blender"]["volume"]]
     start, end = parse_frames(config["blender"]["frames"]) or (scene.frame_start, scene.frame_end)
     prefix = config["blender"]["output"]

@@ -203,20 +203,39 @@ def main_scene(scene):
     return next((s for s in bpy.data.scenes if annotation_scene(s) == scene), scene)
 
 
+def active_probe(context):
+    """The active object if it's a probe, else None."""
+    obj = context.object
+    probe = getattr(obj, "yt_probe", None) if obj is not None else None
+    return obj if probe is not None and probe.is_probe else None
+
+
 def active_volume(context):
-    """The active object if it's a volume, else the scene's only volume, else None."""
+    """The active object if it's a volume, else the active probe's volume,
+    else the scene's only volume, else None.
+    """
     def is_volume(obj):
         return getattr(obj, "volume_override", None) is not None and obj.volume_override.is_volume_override
 
     if is_volume(context.object):
         return context.object
+    probe = active_probe(context)
+    if probe is not None and probe.yt_probe.volume is not None:
+        return probe.yt_probe.volume
     volumes = [o for o in main_scene(context.scene).objects if is_volume(o)]
     return volumes[0] if len(volumes) == 1 else None
 
 
-def unavailable(name, volume):
-    """Why library annotation `name` can't be added for `volume` (may be None), or None."""
-    inputs = _volume_inputs(annotation_library.read_index()[name]["inputs"])
+def unavailable(name, volume, probe=None):
+    """Why library annotation `name` can't be added for `volume` and `probe`
+    (either may be None), or None.
+    """
+    all_inputs = annotation_library.read_index()[name]["inputs"]
+    about_probe = all_inputs.get("Probe") == "NodeSocketObject"
+    if about_probe:
+        # Only a probe annotation's callout needs the units object.
+        return "Select a probe" if probe is None else None
+    inputs = _volume_inputs(all_inputs)
     if volume is None and ("Volume" in inputs or "Units Object" in inputs):
         return "Select a volume"
     if "Units Object" in inputs and volume.volume_override.units_object is None:
@@ -224,18 +243,19 @@ def unavailable(name, volume):
     return None
 
 
-def add_from_library(scene, name, volume=None, collection=None):
+def add_from_library(scene, name, volume=None, collection=None, probe=None):
     """A new object running library annotation `name`, with its inputs filled
-    from `volume`: in `scene`'s annotation scene (made if needed), or in
+    from `volume` (and its Probe input from `probe`): in `scene`'s annotation scene (made if needed), or in
     `collection` (default the main scene's) at the 3D cursor. The starter
     "yt Annotation" gets its own copy of its tree; other groups are shared.
     """
-    reason = unavailable(name, volume)
+    reason = unavailable(name, volume, probe)
     if reason is not None:
         raise ValueError(f"Can't add {name!r}: {reason}")
     scene = main_scene(scene)
     label = name.removeprefix("yt ")
-    obj = bpy.data.objects.new(f"{volume.name} {label}" if volume else label, bpy.data.meshes.new(label))
+    owner = probe or volume
+    obj = bpy.data.objects.new(f"{owner.name} {label}" if owner else label, bpy.data.meshes.new(label))
     if annotation_library.read_index()[name]["scene"] == annotation_library.ANNOTATION_SCENE:
         annotations = add_annotation_scene(scene)
         obj.location = _PLACES.get(name, lambda _: (0.0, 0.0, 0.0))(annotations)
@@ -250,6 +270,8 @@ def add_from_library(scene, name, volume=None, collection=None):
             continue
         if volume is not None and item.name in _volume_inputs({item.name: item.socket_type}):
             _set_input(modifier, item.name, _VOLUME_INPUTS[item.name][1](volume))
+        elif probe is not None and item.name == "Probe" and item.socket_type == "NodeSocketObject":
+            _set_input(modifier, item.name, probe)
         elif isinstance(getattr(item, "default_value", None), bpy.types.ID):
             # A new modifier takes the group's value defaults but not its material or object ones.
             _set_input(modifier, item.name, item.default_value)
@@ -350,20 +372,20 @@ class VOLUMEOVERRIDE_OT_add_library_annotation(bpy.types.Operator):
         entry = annotation_library.read_index().get(properties.name)
         if entry is None:
             return cls.__doc__
-        reason = unavailable(properties.name, active_volume(context))
+        reason = unavailable(properties.name, active_volume(context), active_probe(context))
         return entry["description"] + (f"\n\nUnavailable: {reason}" if reason else "")
 
     def execute(self, context):
         if self.name not in annotation_library.read_index():
             self.report({"ERROR"}, f"No annotation {self.name!r} in the library")
             return {"CANCELLED"}
-        volume = active_volume(context)
-        reason = unavailable(self.name, volume)
+        volume, probe = active_volume(context), active_probe(context)
+        reason = unavailable(self.name, volume, probe)
         if reason is not None:
             self.report({"ERROR"}, reason)
             return {"CANCELLED"}
         in_main = main_scene(context.scene) == context.scene
-        obj = add_from_library(context.scene, self.name, volume, context.collection if in_main else None)
+        obj = add_from_library(context.scene, self.name, volume, context.collection if in_main else None, probe)
         if obj.name in context.view_layer.objects:  # added to the scene being looked at
             for selected in context.selected_objects:
                 selected.select_set(False)
@@ -385,7 +407,7 @@ class VOLUMEOVERRIDE_MT_add_annotation(bpy.types.Menu):
         if not entries:
             layout.label(text=annotation_library.NOT_BUILT, icon="ERROR")
             return
-        volume = active_volume(context)
+        volume, probe = active_volume(context), active_probe(context)
         for scene, heading in ((annotation_library.ANNOTATION_SCENE, "Annotation Scene"), (annotation_library.MAIN_SCENE, "3D Scene")):
             names = [e["name"] for e in entries if e["scene"] == scene]
             if not names:
@@ -393,7 +415,7 @@ class VOLUMEOVERRIDE_MT_add_annotation(bpy.types.Menu):
             layout.label(text=heading)
             for name in names:
                 row = layout.row()
-                row.enabled = unavailable(name, volume) is None
+                row.enabled = unavailable(name, volume, probe) is None
                 row.operator(VOLUMEOVERRIDE_OT_add_library_annotation.bl_idname, text=name).name = name
 
 

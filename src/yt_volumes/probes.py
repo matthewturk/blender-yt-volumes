@@ -1,6 +1,8 @@
 """Probes: Sphere Empties that run a yt analysis on the data inside them and
 put the result in a float Image, shown in the annotation scene by "yt Image
-Panel". The pipeline updates them after the volumes render, before pass 2.
+Panel", and named scalars in `obj["yt_values"]`. The pipeline updates them
+after the volumes render, before pass 2, so a driver in the main scene sees
+the previous run's values unless they're baked (Bake Values).
 """
 
 import json
@@ -12,6 +14,8 @@ from . import annotations, probe_analysis
 from .properties import VolumeOverrideCustomParam
 
 PANEL_GROUP = "yt Image Panel"
+LINE_GROUP = "yt Line Panel"
+LABEL_GROUP = "yt Probe Label"
 DEFAULT_ANALYSIS = "yt_volumes.probe_analysis:phase_plot"
 
 
@@ -95,33 +99,79 @@ def new_image(name, width=64, height=64):
     return image
 
 
-def panels(image):
-    """`(object, modifier)` pairs whose Geometry Nodes Image input is `image`."""
+def _inputs(modifier):
+    return {item.name: item for item in modifier.node_group.interface.items_tree
+            if item.item_type == "SOCKET" and item.in_out == "INPUT"}
+
+
+def _value(modifier, item):
+    return getattr(modifier.properties.inputs, item.identifier).value
+
+
+def panels(image=None, probe=None):
+    """`(object, modifier)` pairs whose Geometry Nodes Image input is `image`
+    or whose Probe input is `probe`.
+    """
     found = []
     for obj in bpy.data.objects:
         for modifier in obj.modifiers:
             if modifier.type != "NODES" or modifier.node_group is None:
                 continue
-            for item in modifier.node_group.interface.items_tree:
-                if (item.item_type == "SOCKET" and item.in_out == "INPUT" and item.socket_type == "NodeSocketImage"
-                        and getattr(modifier.properties.inputs, item.identifier).value == image):
+            inputs = _inputs(modifier)
+            for name, socket_type, target in (("Image", "NodeSocketImage", image), ("Probe", "NodeSocketObject", probe)):
+                item = inputs.get(name)
+                if (target is not None and item is not None and item.socket_type == socket_type
+                        and _value(modifier, item) == target):
                     found.append((obj, modifier))
                     break
     return found
 
 
-def _sync_meta(image, meta):
-    """Copy `meta` onto `image` and onto same-named inputs of panels showing it."""
-    for key, value in meta.items():
-        if image.get(key) != value:
-            image[key] = value
-    for _obj, modifier in panels(image):
-        for item in modifier.node_group.interface.items_tree:
-            if item.item_type != "SOCKET" or item.in_out != "INPUT" or item.name not in meta:
+def _sync_meta(obj, image, meta):
+    """Copy `meta` onto `image` (if any) and onto same-named inputs of the
+    annotations showing the probe. An annotation with a "Quantity" input also
+    gets that scalar in "Value" and its units in "Units".
+    """
+    if image is not None:
+        for key, value in meta.items():
+            if image.get(key) != value:
+                image[key] = value
+    for _obj, modifier in panels(image, obj):
+        inputs = _inputs(modifier)
+        values = dict(meta)
+        quantity = inputs.get("Quantity")
+        if quantity is not None and quantity.socket_type == "NodeSocketString":
+            name = _value(modifier, quantity)
+            if name in meta:
+                values["Value"] = meta[name]
+                values["Units"] = meta.get(f"{name} Units", "")
+        for name, value in values.items():
+            item = inputs.get(name)
+            if item is None or item.name in ("Image", "Probe", "Quantity"):
                 continue
             socket = getattr(modifier.properties.inputs, item.identifier)
-            if socket.value != meta[item.name]:
-                socket.value = meta[item.name]
+            try:
+                if socket.value != value:
+                    socket.value = value
+            except TypeError:
+                pass  # a same-named input of another type
+
+
+VALUES_KEY = "yt_values"
+
+
+def write_values(obj, scalars):
+    """Put `scalars` in `obj["yt_values"]`, for drivers; tags `obj` if any changed."""
+    if VALUES_KEY not in obj:
+        obj[VALUES_KEY] = {}
+    group = obj[VALUES_KEY]
+    changed = False
+    for name, value in scalars.items():
+        if group.get(name) != float(value):
+            group[name] = float(value)
+            changed = True
+    if changed:
+        obj.update_tag()
 
 
 def update_probe(scene, obj, frame=None, force=False):
@@ -149,8 +199,9 @@ def update_probe(scene, obj, frame=None, force=False):
     key = probe_analysis.probe_key(
         volume.dataset.version.hash, center_unitary, radius_unitary, props.analysis, params,
         frame.frame_number if props.update == "EVERY_FRAME" else None,
+        loaded=f"{id(ds)}:{getattr(ds, 'unique_identifier', '')}",
     )
-    if force or props.image is None:
+    if force or (props.image is None and not obj.get(VALUES_KEY)):
         probe_analysis.forget(probe_id)
 
     contexts = []
@@ -172,7 +223,9 @@ def update_probe(scene, obj, frame=None, force=False):
             props.state = state
     if not fresh:
         return False
-    _sync_meta(write_image(obj, result.values), result.meta)
+    image = write_image(obj, result.values) if result.values is not None else props.image
+    write_values(obj, result.scalars)
+    _sync_meta(obj, image, {**result.meta, **result.scalars, "Probe Radius": float(radius)})
     return True
 
 
@@ -186,7 +239,26 @@ def update_probes(scene, rendered, frame, log=print):
             log(f"probe {obj.name!r}: skipped, {props.volume.name!r} isn't rendered")
             continue
         if update_probe(scene, obj, frame):
-            log(f"probe {obj.name!r}: wrote {props.image.name!r}")
+            log(f"probe {obj.name!r}: updated" + (f" {props.image.name!r}" if props.image is not None else ""))
+
+
+def bake(scene, obj, frames):
+    """Run the probe on each of `frames` and keyframe its values there, so
+    drivers on them have each frame's value before that frame renders.
+    Returns the keyframed names.
+    """
+    current = scene.frame_current
+    names = set()
+    try:
+        for frame in frames:
+            scene.frame_set(frame)
+            update_probe(scene, obj)
+            for name in obj.get(VALUES_KEY, {}).keys():
+                obj.keyframe_insert(f'["{VALUES_KEY}"]["{name}"]', frame=frame, group="yt Probe")
+                names.add(name)
+    finally:
+        scene.frame_set(current)
+    return sorted(names)
 
 
 def reset(obj):
@@ -196,12 +268,25 @@ def reset(obj):
     probe_analysis.forget(_probe_id(obj))
 
 
-def add_probe(context, volume):
-    """A Sphere Empty probing `volume`, at the 3D cursor, and a "yt Image
-    Panel" showing its Image in the annotation scene. Returns the probe.
+# kind -> (label, analysis, panel group, params, update)
+KINDS = {
+    "PHASE": ("Phase Diagram", DEFAULT_ANALYSIS, PANEL_GROUP, {}, "ON_CHANGE"),
+    "HISTORY": ("Time History", "yt_volumes.probe_analysis:history", LINE_GROUP,
+                {"fields": "gas, temperature", "x": "frame"}, "EVERY_FRAME"),
+    "VALUES": ("Values", "yt_volumes.probe_analysis:quantities", LABEL_GROUP,
+               {"fields": "gas, temperature"}, "ON_CHANGE"),
+}
+
+
+def add_probe(context, volume, kind="PHASE"):
+    """A Sphere Empty probing `volume`, at the 3D cursor, and an annotation
+    showing it in the annotation scene ("yt Image Panel" for a phase diagram,
+    "yt Line Panel" for a time history, "yt Probe Label" for values).
+    Returns the probe.
     """
+    label, analysis, group, params, update = KINDS[kind]
     scene = annotations.main_scene(context.scene)
-    obj = bpy.data.objects.new(f"{volume.name} Probe", None)
+    obj = bpy.data.objects.new(f"{volume.name} {label} Probe", None)
     obj.empty_display_type = "SPHERE"
     obj.empty_display_size = 0.1 * max(volume.empty_display_size * max(volume.matrix_world.to_scale()), 1e-6)
     obj.location = scene.cursor.location
@@ -209,10 +294,18 @@ def add_probe(context, volume):
     props = obj.yt_probe
     props.is_probe = True
     props.volume = volume
-    props.image = new_image(f"yt Probe {obj.name}")
-    panel = annotations.add_from_library(scene, PANEL_GROUP)
-    panel.name = f"{obj.name} Panel"
-    annotations._set_input(panel.modifiers[0], "Image", props.image)
+    props.analysis = analysis
+    props.update = update
+    if kind == "HISTORY":
+        params = {**params, "x_range": f"{scene.frame_start}, {scene.frame_end}"}
+    for key, value in params.items():
+        item = props.params.add()
+        item.key, item.value = key, value
+    panel = annotations.add_from_library(scene, group, volume, probe=obj)
+    panel.name = f"{obj.name} {group.removeprefix('yt ')}"
+    if group != LABEL_GROUP:
+        props.image = new_image(f"yt Probe {obj.name}")
+        annotations._set_input(panel.modifiers[0], "Image", props.image)
     return obj
 
 
@@ -222,18 +315,27 @@ def active_probe(context):
 
 
 class VOLUMEOVERRIDE_OT_add_probe(bpy.types.Operator):
-    """Add a sphere that runs a phase diagram on the active volume's data, shown in the annotation scene"""
+    """Add a sphere that analyses the active volume's data, shown in the annotation scene"""
 
     bl_idname = "volume_override.add_probe"
     bl_label = "Add Probe"
     bl_options = {"REGISTER", "UNDO"}
+
+    kind: bpy.props.EnumProperty(
+        name="Kind",
+        items=(
+            ("PHASE", "Phase Diagram", "Gas mass over density and temperature, as a colormapped plot"),
+            ("HISTORY", "Time History", "Mass-weighted mean temperature over the frames, as a line plot"),
+            ("VALUES", "Values", "Mass-weighted mean temperature, as a label and a value for drivers"),
+        ),
+    )
 
     @classmethod
     def poll(cls, context):
         return annotations.active_volume(context) is not None
 
     def execute(self, context):
-        obj = add_probe(context, annotations.active_volume(context))
+        obj = add_probe(context, annotations.active_volume(context), self.kind)
         for selected in context.selected_objects:
             selected.select_set(False)
         if obj.name in context.view_layer.objects:
@@ -258,6 +360,30 @@ class VOLUMEOVERRIDE_OT_update_probe(bpy.types.Operator):
         except (LookupError, ValueError, NotImplementedError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class VOLUMEOVERRIDE_OT_bake_probe(bpy.types.Operator):
+    """Run the active probe on every frame of the scene's range and keyframe its values"""
+
+    bl_idname = "volume_override.bake_probe"
+    bl_label = "Bake Values"
+
+    @classmethod
+    def poll(cls, context):
+        return active_probe(context) is not None
+
+    def execute(self, context):
+        scene = annotations.main_scene(context.scene)
+        try:
+            names = bake(scene, active_probe(context), range(scene.frame_start, scene.frame_end + 1))
+        except (LookupError, ValueError, NotImplementedError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        if not names:
+            self.report({"WARNING"}, "The analysis returned no values to keyframe")
+        else:
+            self.report({"INFO"}, f"Keyframed {', '.join(names)} over frames {scene.frame_start}-{scene.frame_end}")
         return {"FINISHED"}
 
 
@@ -330,15 +456,24 @@ class VOLUMEOVERRIDE_PT_probe(bpy.types.Panel):
         sub.operator(VOLUMEOVERRIDE_OT_remove_probe_param.bl_idname, icon="REMOVE", text="")
         row = layout.row(align=True)
         row.operator(VOLUMEOVERRIDE_OT_update_probe.bl_idname, icon="FILE_REFRESH")
+        row.operator(VOLUMEOVERRIDE_OT_bake_probe.bl_idname, icon="KEYINGSET")
         row.operator(VOLUMEOVERRIDE_OT_reset_probe.bl_idname, icon="LOOP_BACK")
+        values = obj.get(VALUES_KEY)
+        if values:
+            box = layout.box()
+            box.label(text='Values (drivers: ["yt_values"]["name"]):')
+            for name in values.keys():
+                box.prop(obj, f'["{VALUES_KEY}"]["{name}"]', text=name)
 
 
 def _draw_add_menu(self, context):
-    self.layout.operator(VOLUMEOVERRIDE_OT_add_probe.bl_idname, icon="SPHERE")
+    for kind, (label, *_rest) in KINDS.items():
+        self.layout.operator(VOLUMEOVERRIDE_OT_add_probe.bl_idname, text=f"Probe: {label}", icon="SPHERE").kind = kind
 
 
 _CLASSES = (
-    YtProbeProperties, VOLUMEOVERRIDE_OT_add_probe, VOLUMEOVERRIDE_OT_update_probe, VOLUMEOVERRIDE_OT_reset_probe,
+    YtProbeProperties, VOLUMEOVERRIDE_OT_add_probe, VOLUMEOVERRIDE_OT_update_probe, VOLUMEOVERRIDE_OT_bake_probe,
+    VOLUMEOVERRIDE_OT_reset_probe,
     VOLUMEOVERRIDE_OT_add_probe_param, VOLUMEOVERRIDE_OT_remove_probe_param, VOLUMEOVERRIDE_PT_probe,
 )
 
